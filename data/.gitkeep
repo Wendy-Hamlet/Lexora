@@ -1,0 +1,2 @@
+# Runtime artifacts (raw/, canonical/, index/, cache/) are gitignored.
+# This file exists only to preserve the directory in git.

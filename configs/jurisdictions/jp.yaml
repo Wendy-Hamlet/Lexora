@@ -1,0 +1,33 @@
+jurisdiction: "Japan"
+iso_code: "JP"
+primary_language: "ja"
+additional_languages: ["en"]
+legal_system: "civil"
+
+ocr_languages: ["jpn", "eng"]
+
+keywords_by_indicator:
+  "6.1":
+    ja: ["越境移転", "国外移転", "外国にある第三者"]
+    en: ["cross-border transfer", "third party located in a foreign country"]
+  "6.2":
+    ja: ["国内保存", "データ・ローカライゼーション"]
+    en: ["data localisation"]
+  "7.1":
+    ja: ["個人情報", "個人情報取扱事業者", "個人情報保護法"]
+    en: ["personal information", "APPI"]
+
+portals:
+  - name: "e-Gov Law Search (法令検索)"
+    url: "https://elaws.e-gov.go.jp/"
+    source_type: "primary"
+    fetch_method: "http"
+    search_query: "個人情報の保護に関する法律"
+    notes: "Authoritative consolidated statute text from the Japanese government."
+
+  - name: "Personal Information Protection Commission (PPC)"
+    url: "https://www.ppc.go.jp/"
+    source_type: "secondary"
+    fetch_method: "http"
+    search_query: "ガイドライン"
+    notes: "PPC guidelines — non-binding unless they reproduce a primary instrument."

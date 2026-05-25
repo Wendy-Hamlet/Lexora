@@ -1,0 +1,121 @@
+# RDTII 2.1 indicator definitions — minimum coverage Pillars 6 and 7.
+# Source: UN ESCAP Regional Digital Trade Integration Index methodology.
+# Keep this file as the single source of truth for indicator IDs used by the LLM verifier.
+
+pillars:
+  - pillar: 6
+    name: "Cross-Border Data Policies"
+    indicators:
+      - id: "6.1"
+        name: "Cross-border data flow restrictions"
+        description: >
+          Whether the jurisdiction restricts or conditions the transfer of personal
+          or non-personal data to recipients outside its borders.
+        keywords:
+          - "cross-border transfer"
+          - "transfer abroad"
+          - "transfer to a third country"
+          - "international data transfer"
+
+      - id: "6.2"
+        name: "Data localisation requirements"
+        description: >
+          Whether the jurisdiction requires data (personal, financial, government,
+          or sector-specific) to be stored or processed within its territory.
+        keywords:
+          - "data localisation"
+          - "local storage"
+          - "store within"
+          - "stored in country"
+
+      - id: "6.3"
+        name: "Conditions for lawful transfer"
+        description: >
+          Mechanisms permitting transfer (e.g. adequacy decisions, standard
+          contractual clauses, binding corporate rules, explicit consent,
+          government authorisation).
+        keywords:
+          - "adequacy"
+          - "standard contractual clauses"
+          - "binding corporate rules"
+          - "explicit consent for transfer"
+
+      - id: "6.4"
+        name: "Government access to data"
+        description: >
+          Conditions under which the government may compel access to data held
+          by private entities, and any extraterritorial scope.
+        keywords:
+          - "government access"
+          - "lawful access"
+          - "production order"
+          - "national security"
+
+      - id: "6.5"
+        name: "Sector-specific cross-border rules"
+        description: >
+          Sector-specific (financial, health, telecom, cloud) rules that add or
+          relax cross-border data conditions.
+        keywords:
+          - "financial data"
+          - "health data"
+          - "telecom"
+          - "cloud computing"
+
+  - pillar: 7
+    name: "Domestic Data Protection & Privacy"
+    indicators:
+      - id: "7.1"
+        name: "Existence of personal data protection law"
+        description: >
+          Whether a horizontal personal data protection law exists, its scope
+          (public/private sectors), and the responsible authority.
+        keywords:
+          - "personal data protection"
+          - "data protection authority"
+          - "controller"
+          - "processor"
+
+      - id: "7.2"
+        name: "Data subject rights"
+        description: >
+          Rights granted to data subjects (access, correction, deletion,
+          portability, objection, withdrawal of consent).
+        keywords:
+          - "right of access"
+          - "right to erasure"
+          - "data portability"
+          - "right to object"
+
+      - id: "7.3"
+        name: "Lawful basis and consent"
+        description: >
+          Lawful bases for processing personal data and conditions of valid
+          consent (explicit, informed, withdrawable).
+        keywords:
+          - "lawful basis"
+          - "consent"
+          - "withdraw consent"
+          - "legitimate interest"
+
+      - id: "7.4"
+        name: "Breach notification"
+        description: >
+          Obligations to notify the regulator and/or data subjects in the event
+          of a personal data breach, including timelines and thresholds.
+        keywords:
+          - "data breach notification"
+          - "notify the authority"
+          - "without undue delay"
+          - "72 hours"
+
+      - id: "7.5"
+        name: "Sanctions and enforcement"
+        description: >
+          Administrative, civil or criminal sanctions for violations and the
+          enforcement powers of the data protection authority.
+        keywords:
+          - "administrative fine"
+          - "penalty"
+          - "enforcement order"
+          - "imprisonment"

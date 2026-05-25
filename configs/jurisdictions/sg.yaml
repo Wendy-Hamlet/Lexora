@@ -1,0 +1,32 @@
+jurisdiction: "Singapore"
+iso_code: "SG"
+primary_language: "en"
+additional_languages: []
+legal_system: "common"
+
+ocr_languages: ["eng"]
+
+keywords_by_indicator:
+  "6.1":
+    en: ["cross-border transfer", "transfer abroad", "overseas transfer", "transfer outside Singapore"]
+  "6.2":
+    en: ["data localisation", "local storage", "stored within Singapore"]
+  "7.1":
+    en: ["personal data", "data protection officer", "PDPO"]
+  "7.3":
+    en: ["consent", "notification", "withdraw consent"]
+
+portals:
+  - name: "Singapore Statutes Online"
+    url: "https://sso.agc.gov.sg/"
+    source_type: "primary"
+    fetch_method: "http"
+    search_query: "personal data protection"
+    notes: "Official consolidated text of Acts and Subsidiary Legislation."
+
+  - name: "Personal Data Protection Commission (PDPC)"
+    url: "https://www.pdpc.gov.sg/"
+    source_type: "secondary"
+    fetch_method: "http"
+    search_query: "advisory guidelines"
+    notes: "Advisory guidelines — non-binding unless quoting a primary instrument."

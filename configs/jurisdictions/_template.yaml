@@ -1,0 +1,20 @@
+# Jurisdiction profile template.
+# Copy to <iso_code>.yaml and fill in. See docs/jurisdiction_profile.md for full schema.
+
+jurisdiction: "<Country Name>"
+iso_code: "<XX>"                  # ISO 3166-1 alpha-2
+primary_language: "<bcp47>"       # e.g. en, ja, th, zh, ko, vi, id
+additional_languages: []
+legal_system: "civil"             # civil | common | hybrid
+
+ocr_languages: []                 # Tesseract codes, e.g. ["eng"], ["jpn"], ["tha"]
+
+keywords_by_indicator: {}         # see existing profiles for examples
+
+portals:
+  - name: "<official portal name>"
+    url: "https://example.gov.xx/"
+    source_type: "primary"        # primary | secondary
+    fetch_method: "http"          # http | sitemap | playwright | api
+    search_query: null
+    notes: null
