@@ -86,3 +86,32 @@ CONFLICT tag for human review rather than a unilateral pick; (iv) scope creep
 beyond Pillars 6 and 7 — other potential Pillars are gated behind the
 indicator definition library and only enabled once Pillar 6 or 7 hit the eval
 bar.
+
+---
+
+## Appendix — Memo vs. Code (known discrepancies)
+
+The narrative above was finalized in a parallel track to the code. After the
+supervisor's review and a subsequent tech-team consolidation, four design
+points in the Memo were superseded. The repository implements the newer
+design; the table below records the deltas for transparency.
+
+| Topic                | Memo description                                                  | Code implementation                                                                                                  |
+|----------------------|-------------------------------------------------------------------|----------------------------------------------------------------------------------------------------------------------|
+| Quote validation     | "byte level / UTF-8 sub-string match"                             | NFKC + whitespace normalization; tolerates OCR line-break drift, rejects paraphrases (`src/lexora/cite/validator.py`) |
+| Document schema      | "canonical XML / Akoma Ntoso schema"                              | Smaller canonical citation schema; Akoma Ntoso kept as an optional future export only                                |
+| Conflict resolution  | "jurisdiction-authority graph + recency rules"                    | No automatic precedence; system shows all candidates, human reviewer decides                                         |
+| OCR                  | "dual-engine cross-check"                                         | Page-level confidence triage + `UNVERIFIED_SCAN` quarantine; re-OCR once on medium-confidence pages                  |
+
+Additionally, the code introduces three points not stated in the Memo:
+
+- **Primary vs. secondary source rule** — only `SourceType.primary` is citable;
+  guidelines are discovery context unless they reproduce and link to a primary
+  instrument.
+- **Quote-by-span-ID orchestrator pattern** — the LLM emits IDs only; the
+  orchestrator copies quote text from canonical storage. Hallucination is
+  prevented by construction, not by post-hoc validation.
+- **Evaluation methodology** — 50–100 gold clauses across the demo
+  jurisdictions, with six metrics (retrieval recall@k, indicator precision,
+  citation exact-match rate, OCR citable-page rate, abstention quality,
+  conflict-detection accuracy). Harness skeleton in `scripts/eval_gold_set.py`.
