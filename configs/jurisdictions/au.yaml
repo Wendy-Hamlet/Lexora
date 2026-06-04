@@ -9,6 +9,12 @@ legal_system: "common"
 
 ocr_languages: ["eng"]
 
+known_instruments:
+  - "Privacy Act 1988"
+  - "Security of Critical Infrastructure Act 2018"
+  - "Telecommunications (Interception and Access) Act 1979"
+  - "My Health Records Act 2012"
+
 keywords_by_indicator:
   "6.1":
     en: ["held or processed outside national borders", "My Health Records Act", "must not be held"]
@@ -31,9 +37,10 @@ portals:
   - name: "Federal Register of Legislation"
     url: "https://www.legislation.gov.au/"
     source_type: "primary"
-    fetch_method: "http"
-    search_query: "privacy"
-    notes: "Authoritative consolidated Commonwealth Acts and legislative instruments."
+    fetch_method: "api"   # backed by the OData API (au_legislation_api strategy)
+    search_query: "privacy act"
+    search_url_template: "https://www.legislation.gov.au/search/text/{query}"
+    notes: "Authoritative consolidated Commonwealth Acts. Discovered via api.prod.legislation.gov.au OData (the SPA's harvested links are a browse-all list); search_url_template kept as a browser fallback."
 
   - name: "Office of the Australian Information Commissioner (OAIC)"
     url: "https://www.oaic.gov.au/"

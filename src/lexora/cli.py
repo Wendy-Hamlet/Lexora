@@ -66,6 +66,117 @@ def collect(
 
 
 @app.command()
+def discover(
+    jurisdiction: str = typer.Option(..., "--jurisdiction", "-j", help="ISO code, e.g. SG"),
+    query: Optional[str] = typer.Option(None, "--query", "-q", help="Override the portal search query"),
+    config_dir: Path = typer.Option(Path("configs/jurisdictions"), "--config-dir"),
+    limit: int = typer.Option(5, "--limit", help="Top candidates per portal"),
+    browser: bool = typer.Option(False, "--browser", help="Render every portal with a headless browser"),
+) -> None:
+    """Autonomously discover candidate instrument URLs on each portal.
+
+    This is the discovery half of the mandatory crawl: instead of being handed a
+    URL, Lexora searches each portal and ranks the links most likely to be the
+    primary legal instrument. JS / anti-bot portals (SG SSO 403, AU SPA) are
+    rendered with a headless browser automatically.
+    """
+    from lexora.collect.discovery import discover as run_discovery
+    from lexora.collect.profile_loader import load_profile
+
+    profile = load_profile(config_dir / f"{jurisdiction.lower()}.yaml")
+    console.print(f"[bold]Discovery — {profile.jurisdiction} ({profile.iso_code})[/bold]")
+
+    for portal in profile.portals:
+        results = run_discovery(
+            portal, query=query, limit=limit, force_browser=browser,
+            known_instruments=profile.known_instruments,
+        )
+        table = Table(title=f"{portal.name}  ·  {portal.source_type.value}", show_lines=False)
+        table.add_column("score", justify="right")
+        table.add_column("via")
+        table.add_column("tag")
+        table.add_column("×", justify="right")
+        table.add_column("type")
+        table.add_column("title")
+        table.add_column("url")
+        for r in results:
+            title = (r.title[:48] + "…") if len(r.title) > 48 else r.title
+            tag = r.discovery_tag or ""
+            tag_disp = f"[green]{tag}[/green]" if tag == "KNOWN" else (f"[yellow]{tag}[/yellow]" if tag else "")
+            table.add_row(
+                f"{r.score:.2f}", r.via, tag_disp, str(r.n_variants),
+                "PDF" if r.is_pdf_link else "page", title, r.url,
+            )
+        if not results:
+            table.add_row("—", "—", "—", "—", "—", "[dim]no candidates[/dim]", "")
+        console.print(table)
+
+
+@app.command()
+def map(  # noqa: A001 - CLI verb
+    jurisdiction: str = typer.Option(..., "--jurisdiction", "-j", help="ISO code, e.g. my"),
+    query: Optional[str] = typer.Option(None, "--query", "-q", help="Override the portal search query"),
+    portal_index: int = typer.Option(0, "--portal-index", help="Which profile portal to use"),
+    config_dir: Path = typer.Option(Path("configs/jurisdictions"), "--config-dir"),
+    indicators_path: Path = typer.Option(Path("configs/rdtii_indicators.yaml"), "--indicators"),
+    out: Path = typer.Option(Path("outputs") / "map.jsonld", "--out", "-o"),
+    top_k: int = typer.Option(1, "--top-k"),
+    min_score: float = typer.Option(0.1, "--min-score"),
+) -> None:
+    """Fully autonomous: discover the top instrument on a portal, resolve its full
+    text, and emit verbatim-validated citations as submission CSV + JSON-LD.
+
+    No URL is handed in — Lexora searches the portal, picks the instrument, fetches
+    its full text (PDF when available) and maps it to the RDTII indicators."""
+    from lexora.collect.profile_loader import load_profile
+    from lexora.export.csv_exporter import to_csv
+    from lexora.export.jsonld_exporter import to_jsonld
+    from lexora.indicators import load_indicators
+    from lexora.pipeline import run_pipeline_autodiscover
+
+    profile = load_profile(config_dir / f"{jurisdiction.lower()}.yaml")
+    indicators = load_indicators(indicators_path)
+    portal = profile.portals[portal_index]
+    console.print(f"[bold]Autonomous map — {profile.jurisdiction} ({profile.iso_code})[/bold]")
+    console.print(f"  portal: {portal.name} · query: {query or portal.search_query!r}")
+
+    top, artifacts = run_pipeline_autodiscover(
+        portal=portal, profile=profile, indicators=indicators,
+        query=query, top_k=top_k, min_score=min_score,
+    )
+    if top is None:
+        console.print("[red]No instrument discovered.[/red]")
+        raise typer.Exit(1)
+
+    tag = top.discovery_tag or "-"
+    console.print(f"  [green]discovered[/green]: {top.title}  [{tag}]  → {top.url}")
+    d = artifacts.document
+    colour = "green" if 200 <= d.http_status < 300 else "red"
+    console.print(
+        f"  full text: HTTP [{colour}]{d.http_status}[/{colour}] · {d.content_type} · "
+        f"{len(artifacts.pages)} page(s) / {len(artifacts.blocks)} block(s) · "
+        f"{len(artifacts.clauses)} clause(s)"
+    )
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    n = to_jsonld(artifacts.citations, out)
+    csv_out = out.with_suffix(".csv")
+    to_csv(artifacts.citations, csv_out)
+
+    table = Table(title=f"Lexora map — {profile.jurisdiction}")
+    table.add_column("indicator")
+    table.add_column("clause")
+    table.add_column("conf", justify="right")
+    table.add_column("quote (first 70 chars)")
+    for c in artifacts.citations:
+        quote = c.quote.replace("\n", " ")
+        table.add_row(c.indicator_id, c.article_path, f"{c.confidence:.2f}",
+                      (quote[:67] + "...") if len(quote) > 70 else quote)
+    console.print(table)
+    console.print(f"[green]Wrote {n} citation(s)[/green] to {csv_out} (submission CSV) and {out} (JSON-LD)")
+
+
+@app.command()
 def extract(document_id: str = typer.Option(..., "--document-id", "-d")) -> None:
     """Run extraction (HTML / PDF text / OCR) on a raw document."""
     raise NotImplementedError("extract() — implement in lexora.extract")
@@ -95,6 +206,7 @@ def demo(
     pdf: Optional[Path] = typer.Option(None, "--pdf", "-p", help="Local PDF (manual-upload fallback)"),
     url: Optional[str] = typer.Option(None, "--url", help="LIVE-fetch this URL (PDF or HTML)"),
     source_url: Optional[str] = typer.Option(None, "--source-url", "-u", help="Canonical URL (required with --pdf)"),
+    browser: bool = typer.Option(False, "--browser", help="With --url: escalate to a headless browser on 403/429 (e.g. SG SSO)"),
     portal_name: str = typer.Option("manual-upload", "--portal"),
     title: Optional[str] = typer.Option(None, "--title"),
     legal_form: str = typer.Option("statute", "--legal-form"),
@@ -133,6 +245,7 @@ def demo(
             legal_form=legal_form,
             top_k=top_k,
             min_score=min_score,
+            browser_fallback=browser,
         )
         d = artifacts.document
         colour = "green" if 200 <= d.http_status < 300 else "red"

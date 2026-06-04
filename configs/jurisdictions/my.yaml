@@ -9,6 +9,12 @@ legal_system: "common"
 
 ocr_languages: ["eng", "msa"]
 
+known_instruments:
+  - "Personal Data Protection Act 2010"
+  - "Cyber Security Act 2024"
+  - "Computer Crimes Act 1997"
+  - "Communications and Multimedia Act 1998"
+
 keywords_by_indicator:
   "6.1":
     en: ["transfer of personal data out of Malaysia", "Personal Data Protection Act", "Act 709"]
@@ -31,9 +37,9 @@ portals:
   - name: "Laws of Malaysia (Attorney General's Chambers)"
     url: "https://lom.agc.gov.my/"
     source_type: "primary"
-    fetch_method: "http"
+    fetch_method: "api"   # Fess/Solr proxy (my_legislation_api strategy)
     search_query: "personal data protection"
-    notes: "Official AGC repository of consolidated Acts (the controlling primary source)."
+    notes: "Official AGC repository. Discovered via fess-proxy.php (Fess/Solr JSON); results carry _os_url like act-detail.php?act=709 (PDPA = Act 709)."
 
   - name: "Personal Data Protection Department (JPDP)"
     url: "https://www.pdp.gov.my/"

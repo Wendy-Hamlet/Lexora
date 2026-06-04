@@ -1,0 +1,410 @@
+"""Discovery layer (Zone 1, stage 1): search -> candidate instrument URLs.
+
+Slice 1 fetched a known URL. The mandatory crawl, however, must *discover* which
+instrument to fetch. This module answers a single question:
+
+    given a portal and a query, which URLs on that portal are likely to be the
+    primary legal instrument we want?
+
+Discovery is uniform across portals: fetch a results page (over HTTP, or via a
+headless browser for JS / anti-bot portals such as Singapore SSO which returns
+403 to plain clients), then harvest and rank the anchor links on that page with
+:func:`harvest_candidates` — a pure function that needs no network and is fully
+unit-tested. The ranking favours links that (a) overlap the query terms, (b)
+point at a legal instrument (``.pdf``, paths containing ``act`` / ``legislation``
+/ a year), and drops site chrome (login, contact, social, sitemap).
+
+The fetched-vs-rendered split is driven by ``PortalSpec.fetch_method`` /
+``search_url_template`` so the same code path serves MY (server-rendered HTML),
+AU (SPA) and SG (403 -> browser).
+"""
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass
+from urllib.parse import quote, urljoin, urlparse, urlunparse
+
+import httpx
+from bs4 import BeautifulSoup
+from rapidfuzz import fuzz
+
+from lexora.collect.crawler import DEFAULT_UA
+from lexora.models.source import FetchMethod, PortalSpec, SourceType
+
+# Tokens that mark a link as legal-instrument-like (boost) or site-chrome (drop).
+_INSTRUMENT_MARKERS = (
+    "act", "legislation", "statute", "law", "/cap", "bill", "regulation",
+    "ordinance", "gazette", "decree", "code",
+)
+_CHROME_MARKERS = (
+    "login", "signin", "sign-in", "register", "logout", "contact", "about",
+    "sitemap", "privacy-policy", "terms", "feedback", "subscribe", "rss",
+    "facebook.com", "twitter.com", "x.com", "linkedin.com", "youtube.com",
+    "instagram.com", "javascript:", "mailto:", "tel:",
+)
+_RESULT_CONTAINER = re.compile(r"result|item|card|search|title|listing|row", re.I)
+_YEAR = re.compile(r"\b(19|20)\d{2}\b")
+_TOKEN = re.compile(r"[a-z0-9]+", re.IGNORECASE)
+
+# Fuzzy title-vs-known-name thresholds for the Discovery Tag.
+_KNOWN_THRESHOLD = 0.80   # >= -> KNOWN (matches a listed instrument)
+_NEW_CEILING = 0.55       # instrument-like + relevant but < this -> NEW candidate
+
+# Tags (kept as plain strings; the citation layer maps them to DiscoveryTag).
+TAG_KNOWN = "KNOWN"
+TAG_NEW = "NEW"
+
+
+@dataclass
+class DiscoveryResult:
+    """One candidate instrument URL surfaced from a portal.
+
+    `score` is normalized to [0, 1]. `n_variants` is how many raw links collapsed
+    into this instrument (a relevance signal of its own — an Act that matched many
+    provisions surfaces many deep-links). `discovery_tag` is KNOWN / NEW / None and
+    `matched_instrument` names the known instrument a KNOWN hit matched.
+    """
+
+    url: str
+    title: str
+    source_type: SourceType
+    score: float
+    via: str  # "http" | "browser" | "api"
+    is_pdf_link: bool
+    discovery_tag: str | None = None
+    matched_instrument: str | None = None
+    n_variants: int = 1
+    # A direct full-text source (usually a PDF) for this instrument, when the
+    # portal exposes one — the entry point for two-stage discovery (stage 2 feeds
+    # the proven PDF pipeline). None means "fetch `url` and locate it".
+    fulltext_url: str | None = None
+
+
+def _tokens(text: str) -> set[str]:
+    return {t.lower() for t in _TOKEN.findall(text)}
+
+
+def _normalize_url(url: str) -> str:
+    """Collapse duplicate slashes in the path (some SPAs emit `//Act/...`)."""
+    parts = urlparse(url)
+    path = re.sub(r"/{2,}", "/", parts.path)
+    return urlunparse(parts._replace(path=path))
+
+
+def _canonical_key(url: str) -> str:
+    """Instrument-level identity: scheme+host+path, ignoring query and fragment.
+
+    Collapses the many deep-links a portal emits for one Act (e.g. SG SSO
+    `/Act/PDPA2012?ProvIds=P12-` vs `?ProvIds=pr5-`) onto a single instrument.
+    """
+    p = urlparse(url)
+    path = re.sub(r"/{2,}", "/", p.path).rstrip("/")
+    return f"{p.scheme}://{p.netloc}{path}".lower()
+
+
+_PROVISION_MARKER = re.compile(r"provids|prov=|/pr\d|#pr", re.I)
+
+
+def _pick_representative(urls: set[str]) -> str:
+    """Among variant URLs for one instrument, prefer the Act-level link: penalize
+    provision deep-links (e.g. `?ProvIds=...`) first, then fewest params, then
+    shortest."""
+    return min(
+        urls,
+        key=lambda u: (bool(_PROVISION_MARKER.search(u)), u.count("?") + u.count("&"), len(u)),
+    )
+
+
+def _is_chrome(href_l: str, text_l: str) -> bool:
+    return any(m in href_l or m in text_l for m in _CHROME_MARKERS)
+
+
+def _context_text(a) -> str:
+    """Text of the link's nearest result container (or preceding heading).
+
+    Recovers the instrument title when a portal renders it outside the anchor
+    (e.g. AU result cards put the name in a heading and the `<a>` says 'View')."""
+    container = a.find_parent(["li", "tr", "article"])
+    if container is None:
+        container = a.find_parent("div", class_=_RESULT_CONTAINER)
+    if container is not None:
+        return " ".join(container.get_text(" ", strip=True).split())[:240]
+    heading = a.find_previous(["h1", "h2", "h3", "h4"])
+    if heading is not None:
+        return " ".join(heading.get_text(" ", strip=True).split())[:120]
+    return ""
+
+
+def _fuzzy_known(text: str, known: list[str]) -> tuple[float, str | None]:
+    """Best fuzzy match of `text` against the known instrument names, in [0,1]."""
+    best, name = 0.0, None
+    tl = text.lower()
+    for inst in known:
+        s = fuzz.token_set_ratio(inst.lower(), tl) / 100.0
+        if s > best:
+            best, name = s, inst
+    return best, name
+
+
+def _score_link(
+    query_tokens: set[str],
+    known: list[str],
+    href: str,
+    anchor_text: str,
+    context_text: str,
+) -> tuple[float, bool, str | None, str | None, str]:
+    """Score one link in [0, 1]. Returns (score, is_pdf, tag, matched, title)."""
+    href_l = href.lower()
+    is_pdf = href_l.endswith(".pdf") or ".pdf?" in href_l
+    title = anchor_text if len(anchor_text) >= 12 else (context_text or anchor_text)
+
+    haystack = _tokens(anchor_text) | _tokens(context_text) | _tokens(urlparse(href).path)
+    q_overlap = (len(query_tokens & haystack) / len(query_tokens)) if query_tokens else 0.0
+
+    fuzzy, matched = _fuzzy_known(title or context_text, known) if known else (0.0, None)
+    relevance = max(q_overlap, fuzzy)
+
+    title_l = (title or "").lower()
+    instrument_like = any(m in href_l or m in title_l for m in _INSTRUMENT_MARKERS)
+    bonus = 0.0
+    if is_pdf:
+        bonus += 0.15
+    if instrument_like:
+        bonus += 0.10
+    if _YEAR.search(href_l) or _YEAR.search(title_l):
+        bonus += 0.05
+    score = min(1.0, 0.75 * relevance + bonus)
+
+    tag: str | None = None
+    if known:
+        if fuzzy >= _KNOWN_THRESHOLD:
+            tag = TAG_KNOWN
+        elif instrument_like and q_overlap >= 0.5 and fuzzy < _NEW_CEILING:
+            tag = TAG_NEW
+    if tag != TAG_KNOWN:
+        matched = None  # matched_instrument is only meaningful for a KNOWN hit
+    return score, is_pdf, tag, matched, title
+
+
+def harvest_candidates(
+    html: str | bytes,
+    *,
+    base_url: str,
+    query: str | None,
+    source_type: SourceType,
+    via: str = "http",
+    limit: int = 10,
+    min_score: float = 0.1,
+    known_instruments: list[str] | None = None,
+) -> list[DiscoveryResult]:
+    """Harvest and rank candidate instrument links from a results/landing page.
+
+    Pure function (no network). For each anchor it scores relevance from the
+    anchor text, its surrounding result-container text and the URL path; collapses
+    the many deep-links of one instrument onto a single canonical entry; and tags
+    each instrument KNOWN / NEW against `known_instruments`. Returns the top
+    instruments ranked by normalized score, then by how many variants matched.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    query_tokens = _tokens(query) if query else set()
+    known = known_instruments or []
+
+    agg: dict[str, dict] = {}
+    for a in soup.find_all("a", href=True):
+        raw = a["href"].strip()
+        if not raw or raw.startswith("#"):
+            continue
+        anchor_text = " ".join(a.get_text(" ", strip=True).split())
+        if _is_chrome(raw.lower(), anchor_text.lower()):
+            continue
+        url = _normalize_url(urljoin(base_url, raw))
+        if urlparse(url).scheme not in ("http", "https"):
+            continue
+
+        context_text = _context_text(a)
+        score, is_pdf, tag, matched, title = _score_link(
+            query_tokens, known, url, anchor_text, context_text
+        )
+        if score < min_score:
+            continue
+
+        key = _canonical_key(url)
+        rec = agg.get(key)
+        if rec is None:
+            agg[key] = {
+                "score": score, "urls": {url}, "title": title, "is_pdf": is_pdf,
+                "tag": tag, "matched": matched,
+            }
+        else:
+            rec["urls"].add(url)
+            rec["score"] = max(rec["score"], score)
+            rec["is_pdf"] = rec["is_pdf"] or is_pdf
+            if tag == TAG_KNOWN:
+                rec["tag"] = TAG_KNOWN
+                rec["matched"] = rec["matched"] or matched
+            elif tag == TAG_NEW and rec["tag"] is None:
+                rec["tag"] = TAG_NEW
+            if title and len(title) > len(rec["title"]):
+                rec["title"] = title
+
+    results = [
+        DiscoveryResult(
+            url=_pick_representative(rec["urls"]),
+            title=rec["title"],
+            source_type=source_type,
+            score=rec["score"],
+            via=via,
+            is_pdf_link=rec["is_pdf"],
+            discovery_tag=rec["tag"],
+            matched_instrument=rec["matched"],
+            n_variants=len(rec["urls"]),
+        )
+        for rec in agg.values()
+    ]
+    results.sort(key=lambda r: (r.score, r.n_variants), reverse=True)
+    return results[:limit]
+
+
+def _search_url(portal: PortalSpec, query: str | None) -> str:
+    """Build the page URL to harvest: a templated search URL when the portal
+    provides one, otherwise the portal landing page."""
+    if portal.search_url_template and query:
+        # `quote` (space -> %20) works in both a path segment (AU /search/text/...)
+        # and a query string; `quote_plus` (space -> +) is only valid in the latter.
+        return portal.search_url_template.replace("{query}", quote(query, safe=""))
+    return str(portal.url)
+
+
+def _fetch_page(
+    url: str,
+    *,
+    force_browser: bool,
+    client: httpx.Client | None,
+    timeout: float,
+    user_agent: str,
+) -> tuple[str | bytes, str]:
+    """Fetch a page's HTML, escalating to a headless browser on anti-bot 403/429
+    (or when ``force_browser``). Returns ``(html, via)`` where via is http|browser."""
+    use_browser = force_browser
+    html: str | bytes = ""
+    if not use_browser:
+        owns = client is None
+        client = client or httpx.Client(
+            follow_redirects=True, timeout=timeout, headers={"User-Agent": user_agent}
+        )
+        try:
+            resp = client.get(url)
+            if resp.status_code in (403, 429):
+                use_browser = True  # anti-bot — escalate to a real browser
+            else:
+                html = resp.content
+        finally:
+            if owns:
+                client.close()
+
+    if use_browser:
+        # Render with the browser's own realistic UA — forwarding the polite HTTP
+        # bot UA here just re-triggers the anti-bot 403 we are escalating past.
+        from lexora.collect.browser import render
+
+        html = render(url, timeout=timeout).html
+        return html, "browser"
+    return html, "http"
+
+
+def resolve_fulltext(
+    result: DiscoveryResult,
+    *,
+    query: str | None = None,
+    client: httpx.Client | None = None,
+    timeout: float = 30.0,
+    user_agent: str = DEFAULT_UA,
+    force_browser: bool = False,
+) -> str | None:
+    """Two-stage discovery, stage 2: turn an instrument page into a fetchable
+    full-text source.
+
+    Returns, in priority order: an explicit ``fulltext_url`` the strategy already
+    captured (MY); the result URL itself if it is already a PDF; otherwise the
+    best ``.pdf`` link found on the instrument page (SG SSO 'Download', AU
+    'downloads'). ``None`` if no full-text source can be located — the caller can
+    still fall back to extracting the instrument page's HTML.
+    """
+    if result.fulltext_url:
+        return result.fulltext_url
+    if result.is_pdf_link:
+        return result.url
+
+    html, _ = _fetch_page(
+        result.url, force_browser=force_browser, client=client,
+        timeout=timeout, user_agent=user_agent,
+    )
+    if not html:
+        return None
+    pdfs = [
+        c for c in harvest_candidates(
+            html, base_url=result.url, query=query or result.title,
+            source_type=result.source_type, min_score=0.0, limit=25,
+        )
+        if c.is_pdf_link
+    ]
+    return pdfs[0].url if pdfs else None
+
+
+def discover(
+    portal: PortalSpec,
+    *,
+    query: str | None = None,
+    client: httpx.Client | None = None,
+    limit: int = 10,
+    min_score: float = 0.1,
+    timeout: float = 30.0,
+    user_agent: str = DEFAULT_UA,
+    force_browser: bool = False,
+    known_instruments: list[str] | None = None,
+) -> list[DiscoveryResult]:
+    """Discover candidate instrument URLs on a portal for a query.
+
+    The query defaults to ``portal.search_query``. The page is fetched over HTTP
+    unless the portal declares ``fetch_method: playwright`` (or ``force_browser``
+    is set, or HTTP returns 403/429), in which case it is rendered with a
+    headless browser. ``known_instruments`` (typically ``profile.known_instruments``)
+    drives KNOWN / NEW tagging. Returns ranked :class:`DiscoveryResult`.
+    """
+    query = query or portal.search_query
+
+    # A registered per-portal strategy (e.g. AU's OData API) takes precedence;
+    # fall back to generic harvesting if it yields nothing.
+    from lexora.collect.strategies import strategy_for
+
+    strat = strategy_for(portal)
+    if strat is not None:
+        hits = strat(
+            portal, query=query, limit=limit, min_score=min_score,
+            timeout=timeout, known_instruments=known_instruments,
+        )
+        if hits:
+            return hits
+
+    page_url = _search_url(portal, query)
+    use_browser = force_browser or portal.fetch_method is FetchMethod.playwright
+    html, via = _fetch_page(
+        page_url, force_browser=use_browser, client=client,
+        timeout=timeout, user_agent=user_agent,
+    )
+
+    if not html:
+        return []
+    return harvest_candidates(
+        html,
+        base_url=page_url,
+        query=query,
+        source_type=portal.source_type,
+        via=via,
+        limit=limit,
+        min_score=min_score,
+        known_instruments=known_instruments,
+    )
+
+
+__all__ = ["DiscoveryResult", "harvest_candidates", "discover", "resolve_fulltext"]

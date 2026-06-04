@@ -22,7 +22,9 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from lexora.cite.citation_builder import build_citation
 from lexora.cite.validator import validate_claim
@@ -33,8 +35,11 @@ from lexora.extract.pdf_text_extractor import PdfPage, extract_pdf_bytes, extrac
 from lexora.models.citation import Citation, ClaimLabel, EvidenceClaim, ReviewStatus
 from lexora.models.clause import Clause
 from lexora.models.indicator import RDTIIIndicator
-from lexora.models.source import RawDocument, SourceProfile, SourceType
+from lexora.models.source import PortalSpec, RawDocument, SourceProfile, SourceType
 from lexora.structure.legal_parser import parse_structure, parse_structure_html
+
+if TYPE_CHECKING:
+    from lexora.collect.discovery import DiscoveryResult
 
 
 @dataclass
@@ -133,6 +138,56 @@ def run_pipeline_from_url(
     )
 
 
+def run_pipeline_autodiscover(
+    *,
+    portal: PortalSpec,
+    profile: SourceProfile,
+    indicators: list[RDTIIIndicator],
+    query: str | None = None,
+    dest_dir: Path | None = None,
+    top_k: int = 1,
+    min_score: float = 0.1,
+    timeout: float = 60.0,
+) -> tuple[DiscoveryResult | None, DemoArtifacts]:
+    """Fully autonomous path: discover the top instrument on a portal, resolve its
+    full text (PDF when available), then run the live pipeline on it.
+
+    Returns ``(DiscoveryResult | None, DemoArtifacts)``. This is the end-to-end
+    mandatory-crawl flow — no URL is handed in; Lexora searches, picks, fetches
+    and maps on its own.
+    """
+    from lexora.collect.discovery import discover, resolve_fulltext
+    from lexora.models.source import FetchMethod
+
+    force_browser = portal.fetch_method is FetchMethod.playwright
+    dest_dir = dest_dir or (Path("data") / "raw" / profile.iso_code.lower())
+
+    hits = discover(
+        portal, query=query, known_instruments=profile.known_instruments,
+        force_browser=force_browser, timeout=timeout, limit=max(top_k, 3),
+    )
+    if not hits:
+        empty = RawDocument(
+            document_id=f"{profile.iso_code.lower()}:none",
+            source_url=str(portal.url),
+            retrieval_timestamp=datetime.now(timezone.utc),
+            http_status=0, sha256="sha256:", content_type="", bytes_path="",
+            portal_name=portal.name, jurisdiction=profile.iso_code,
+            source_type=portal.source_type, title=None,
+        )
+        return None, DemoArtifacts(document=empty, clauses=[], citations=[])
+
+    top = hits[0]
+    fulltext = resolve_fulltext(top, query=query, force_browser=force_browser, timeout=timeout)
+    target = fulltext or top.url
+    artifacts = run_pipeline_from_url(
+        url=target, profile=profile, indicators=indicators, portal_name=portal.name,
+        source_type=portal.source_type, dest_dir=dest_dir, top_k=top_k,
+        min_score=min_score, browser_fallback=force_browser, timeout=timeout,
+    )
+    return top, artifacts
+
+
 def _citations_from_clauses(
     clauses: list[Clause],
     document: RawDocument,
@@ -211,4 +266,9 @@ def _normalize_score(score: float) -> float:
     return float(max(0.0, min(1.0, math.tanh(score / 5.0))))
 
 
-__all__ = ["DemoArtifacts", "run_demo_pipeline", "run_pipeline_from_url"]
+__all__ = [
+    "DemoArtifacts",
+    "run_demo_pipeline",
+    "run_pipeline_from_url",
+    "run_pipeline_autodiscover",
+]

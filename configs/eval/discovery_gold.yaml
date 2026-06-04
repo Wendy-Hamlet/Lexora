@@ -1,0 +1,58 @@
+# Discovery evaluation gold set — Round 1 economies.
+#
+# Anti-overfitting design: each target carries MULTIPLE queries in two modes —
+#   * name      : the query contains (part of) the instrument's name (tests
+#                 name-driven lookup);
+#   * indicator : an RDTII-concept phrasing that does NOT contain the law name
+#                 (tests genuine full-text discovery — the capability that finds
+#                 NEW evidence).
+# A hit = a candidate whose URL / title / full-text matches `match_re` (an
+# instrument identity regex), so different URL shapes (act=709 vs "Act 709 ori.pdf")
+# all count. `expect_miss: true` marks a query the portal genuinely cannot serve
+# (e.g. AU has no full-text search) — honored when discovery returns no match.
+
+k: 5
+
+targets:
+  - id: sg-pdpa
+    jurisdiction: SG
+    instrument: "Personal Data Protection Act 2012"
+    match_re: "PDPA2012"
+    queries:
+      - {mode: name, q: "personal data protection"}
+      - {mode: indicator, q: "consent to collect use or disclose personal data"}
+      - {mode: indicator, q: "transfer personal data to a country outside singapore"}
+
+  - id: sg-cybersecurity
+    jurisdiction: SG
+    instrument: "Cybersecurity Act 2018"
+    match_re: "CA2018"
+    queries:
+      - {mode: name, q: "cybersecurity act"}
+      - {mode: indicator, q: "critical information infrastructure cybersecurity duties"}
+
+  - id: au-privacy
+    jurisdiction: AU
+    instrument: "Privacy Act 1988"
+    match_re: "C2004A03712"
+    queries:
+      - {mode: name, q: "privacy act 1988"}
+      - {mode: name, q: "privacy act"}
+      # AU OData has no usable full-text search -> an indicator phrasing must miss.
+      - {mode: indicator, q: "cross-border disclosure of personal information", expect_miss: true}
+
+  - id: my-pdpa
+    jurisdiction: MY
+    instrument: "Personal Data Protection Act 2010 (Act 709)"
+    match_re: "act=709|act[ _]?709"
+    queries:
+      - {mode: name, q: "personal data protection"}
+      - {mode: indicator, q: "transfer of personal data out of malaysia"}
+
+  - id: my-cybersecurity
+    jurisdiction: MY
+    instrument: "Cyber Security Act 2024 (Act 854)"
+    match_re: "act=854|act[ _]?854"
+    queries:
+      - {mode: name, q: "cyber security act"}
+      - {mode: indicator, q: "critical national information infrastructure protection"}

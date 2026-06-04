@@ -77,6 +77,23 @@ def robots_allows(url: str, user_agent: str = DEFAULT_UA) -> bool:
         return True
 
 
+def _browser_render(url: str, *, timeout: float):
+    """Render `url` with a headless browser, or return None if Playwright is
+    unavailable / rendering fails (caller keeps the original HTTP response).
+
+    The browser uses its own realistic UA — forwarding the polite HTTP bot UA
+    would just re-trigger the anti-bot 403 we are escalating past.
+    """
+    try:
+        from lexora.collect.browser import is_available, render
+
+        if not is_available():
+            return None
+        return render(url, timeout=timeout)
+    except Exception:
+        return None
+
+
 def _rate_limit(host: str, min_interval: float) -> None:
     if min_interval <= 0:
         return
@@ -102,6 +119,7 @@ def fetch(
     retries: int = 2,
     respect_robots: bool = False,
     min_interval: float = 0.0,
+    browser_fallback: bool = False,
     client: httpx.Client | None = None,
 ) -> FetchResult:
     """Fetch a single URL live and return its bytes + a RawDocument record.
@@ -109,6 +127,11 @@ def fetch(
     Bytes are persisted content-addressed under `dest_dir` when given. A non-2xx
     response is returned (status captured) rather than raised; only transport
     errors after `retries` propagate.
+
+    When ``browser_fallback`` is set and the server answers 403/429 (anti-bot,
+    e.g. Singapore SSO), the URL is re-fetched with a headless browser and the
+    rendered DOM replaces the body — provided Playwright is installed. If it is
+    not, the original 403 is returned unchanged (graceful degradation).
     """
     if respect_robots and not robots_allows(url, user_agent):
         raise PermissionError(f"robots.txt disallows fetching {url}")
@@ -139,10 +162,21 @@ def fetch(
             client.close()
 
     body = response.content
-    sha = sha256_bytes(body)
+    status = response.status_code
+    final_url = str(response.url)
     content_type = response.headers.get(
         "content-type", "application/octet-stream"
     ).split(";")[0].strip()
+
+    if browser_fallback and status in (403, 429):
+        rendered = _browser_render(final_url, timeout=timeout)
+        if rendered is not None:
+            body = rendered.html.encode("utf-8")
+            status = rendered.status or status
+            final_url = rendered.final_url
+            content_type = rendered.content_type
+
+    sha = sha256_bytes(body)
 
     bytes_path = ""
     if dest_dir is not None:
@@ -156,9 +190,9 @@ def fetch(
 
     document = RawDocument(
         document_id=_document_id(jurisdiction, sha),
-        source_url=str(response.url),
+        source_url=final_url,
         retrieval_timestamp=datetime.now(timezone.utc),
-        http_status=response.status_code,
+        http_status=status,
         sha256=sha,
         content_type=content_type,
         bytes_path=bytes_path,

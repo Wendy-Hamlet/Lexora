@@ -40,6 +40,11 @@ class PortalSpec(BaseModel):
     source_type: SourceType
     fetch_method: FetchMethod = FetchMethod.http
     search_query: str | None = None
+    # Optional template to turn a query into a portal search URL, e.g.
+    #   "https://lom.agc.gov.my/search.php?keyword={query}"
+    # `{query}` is URL-encoded before substitution. When absent, discovery
+    # harvests candidate links from the portal landing page instead.
+    search_url_template: str | None = None
     notes: str | None = None
 
 
@@ -53,6 +58,11 @@ class SourceProfile(BaseModel):
     legal_system: LegalSystem
     ocr_languages: list[str] = Field(default_factory=list)
     keywords_by_indicator: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
+    # Canonical names of the primary instruments we expect to find in this
+    # jurisdiction. Discovery fuzzy-matches candidate titles against these to
+    # tag KNOWN hits and to flag instrument-like links that match nothing here
+    # as NEW-evidence candidates.
+    known_instruments: list[str] = Field(default_factory=list)
     portals: list[PortalSpec] = Field(default_factory=list)
 
 

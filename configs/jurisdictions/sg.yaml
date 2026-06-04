@@ -9,6 +9,12 @@ legal_system: "common"
 
 ocr_languages: ["eng"]
 
+known_instruments:
+  - "Personal Data Protection Act 2012"
+  - "Cybersecurity Act 2018"
+  - "Computer Misuse Act"
+  - "Criminal Procedure Code"
+
 keywords_by_indicator:
   "6.1":
     en: ["transfer outside Singapore", "local processing", "ban on transfer"]
@@ -31,9 +37,10 @@ portals:
   - name: "Singapore Statutes Online"
     url: "https://sso.agc.gov.sg/"
     source_type: "primary"
-    fetch_method: "http"
+    fetch_method: "playwright"   # SSO returns 403 to plain clients; render to search
     search_query: "personal data protection"
-    notes: "Official consolidated text of Acts and Subsidiary Legislation (AGC)."
+    search_url_template: "https://sso.agc.gov.sg/Search/Content?Phrase={query}&PhraseType=AllWords"
+    notes: "Official consolidated text of Acts and Subsidiary Legislation (AGC). Verified: discovery ranks /Act/PDPA2012 first via headless browser."
 
   - name: "Personal Data Protection Commission (PDPC)"
     url: "https://www.pdpc.gov.sg/"
