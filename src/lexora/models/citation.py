@@ -23,6 +23,25 @@ class ClaimLabel(str, Enum):
     uncertain = "uncertain"
 
 
+class DiscoveryTag(str, Enum):
+    """Whether the provision was supplied in the sample kit or found by the tool.
+
+    NEW provisions are worth 20 of the 40 Substantive-Accuracy points, so this
+    field is required in the official output template.
+    """
+
+    new = "NEW"
+    known = "KNOWN"
+
+
+class Coverage(str, Enum):
+    """RDTII coverage of a measure. Carried for gold-data matching / JSON; not a
+    column in the submission CSV template."""
+
+    horizontal = "Horizontal"
+    sectoral = "Sectoral"
+
+
 class ReviewStatus(str, Enum):
     verified = "VERIFIED"
     low_ocr_confidence = "LOW_OCR_CONFIDENCE"
@@ -46,20 +65,35 @@ class EvidenceClaim(BaseModel):
 
 
 class Citation(BaseModel):
-    """Final, validated citation released to the audit UI / exports."""
+    """Final, validated citation released to the audit UI / exports.
 
-    indicator_id: str
+    Field set is a superset of the official OUTPUT_TEMPLATE columns plus the
+    provenance fields needed for the verbatim audit trail. The CSV exporter
+    projects this onto the exact 13-column submission schema.
+    """
+
+    # --- official output columns (OUTPUT_TEMPLATE_31MAY.xlsx) ---
+    economy: str = ""  # official UN economy name, e.g. "Singapore"
+    title: str  # "Law Name" — full official statute name + year
+    law_number: str = ""  # "Law Number / Ref" — e.g. "Act 709", "No. 9 of 2018"
+    last_amended: str = ""  # "Last Amended" — year; blank if not amended
+    indicator_id: str  # "Indicator ID" — submission code, e.g. "P6-I4"
+    article_path: str  # "Article / Section" — e.g. "S. 26(1)"
+    discovery_tag: DiscoveryTag = DiscoveryTag.known
+    page_or_dom_anchor: str  # "Location Reference" — PDF page | HTML anchor
+    quote: str  # "Verbatim Snippet" — copied from canonical span (never the LLM)
+    mapping_rationale: str = ""  # max 300 chars
+    source_url: HttpUrl  # direct URL to the law on the official portal
+    confidence: float = Field(ge=0.0, le=1.0)
+    notes: str = ""
+
+    # --- provenance / audit (JSON export + UI, not in submission CSV) ---
     clause_id: str
-    source_url: HttpUrl
     retrieval_timestamp: datetime
     document_hash: str  # sha256:<hex>
-    title: str
     jurisdiction: str
     legal_form: str  # statute | regulation | gazette | treaty | guideline
-    article_path: str
-    page_or_dom_anchor: str
+    coverage: Coverage | None = None
     char_start: int = Field(ge=0)
     char_end: int = Field(ge=0)
-    quote: str  # copied from canonical span by the orchestrator
-    confidence: float = Field(ge=0.0, le=1.0)
     review_status: ReviewStatus = ReviewStatus.verified

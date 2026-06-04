@@ -53,8 +53,8 @@ portals:
 
 ## Currently shipped profiles
 
-- `sg.yaml` — Singapore
-- `jp.yaml` — Japan
-- `th.yaml` — Thailand
+- `sg.yaml` — Singapore (Round 1)
+- `au.yaml` — Australia (Round 1)
+- `my.yaml` — Malaysia (Round 1)
 
 Use `_template.yaml` as a starting point.

@@ -1,3 +1,6 @@
+# Singapore — Round 1 economy. Common-law, English.
+# Keyword keys are RDTII canonical ids (6.1..7.5); see configs/rdtii_indicators.yaml.
+
 jurisdiction: "Singapore"
 iso_code: "SG"
 primary_language: "en"
@@ -8,13 +11,21 @@ ocr_languages: ["eng"]
 
 keywords_by_indicator:
   "6.1":
-    en: ["cross-border transfer", "transfer abroad", "overseas transfer", "transfer outside Singapore"]
+    en: ["transfer outside Singapore", "local processing", "ban on transfer"]
   "6.2":
-    en: ["data localisation", "local storage", "stored within Singapore"]
+    en: ["stored within Singapore", "local storage", "data localisation"]
+  "6.4":
+    en: ["transfer personal data to a country or territory outside Singapore", "comparable to the protection", "prescribed under this Act"]
   "7.1":
-    en: ["personal data", "data protection officer", "PDPO"]
+    en: ["Personal Data Protection Act", "data protection officer", "consent"]
+  "7.2":
+    en: ["Cybersecurity Act", "critical information infrastructure", "Computer Misuse Act"]
   "7.3":
-    en: ["consent", "notification", "withdraw consent"]
+    en: ["cease retaining", "retention", "keep records"]
+  "7.4":
+    en: ["data protection officer", "appoint one or more"]
+  "7.5":
+    en: ["access to decrypted information", "Criminal Procedure Code", "power to access computers"]
 
 portals:
   - name: "Singapore Statutes Online"
@@ -22,7 +33,7 @@ portals:
     source_type: "primary"
     fetch_method: "http"
     search_query: "personal data protection"
-    notes: "Official consolidated text of Acts and Subsidiary Legislation."
+    notes: "Official consolidated text of Acts and Subsidiary Legislation (AGC)."
 
   - name: "Personal Data Protection Commission (PDPC)"
     url: "https://www.pdpc.gov.sg/"
@@ -30,3 +41,17 @@ portals:
     fetch_method: "http"
     search_query: "advisory guidelines"
     notes: "Advisory guidelines — non-binding unless quoting a primary instrument."
+
+  - name: "Cyber Security Agency of Singapore (CSA)"
+    url: "https://www.csa.gov.sg/"
+    source_type: "secondary"
+    fetch_method: "http"
+    search_query: "Cybersecurity Act"
+    notes: "Discovery context for P7-I2; the primary instrument is the Cybersecurity Act 2018 on SSO."
+
+  - name: "Infocomm Media Development Authority (IMDA)"
+    url: "https://www.imda.gov.sg/"
+    source_type: "secondary"
+    fetch_method: "http"
+    search_query: null
+    notes: "Telecom licence conditions referenced under P7-I3 / P7-I5."

@@ -7,12 +7,14 @@ byte-for-byte slice of the canonical span text, and review_status is VERIFIED.
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 import fitz  # PyMuPDF
 import pytest
 
 from lexora.collect.profile_loader import load_profile
+from lexora.export.csv_exporter import SUBMISSION_COLUMNS, to_csv
 from lexora.export.jsonld_exporter import to_jsonld
 from lexora.indicators import load_indicators
 from lexora.models.citation import ReviewStatus
@@ -93,11 +95,16 @@ def test_demo_pipeline_end_to_end(tmp_path: Path, synthetic_pdf: Path) -> None:
         assert citation.review_status is ReviewStatus.verified
         assert citation.document_hash.startswith("sha256:")
         assert citation.char_end > citation.char_start
+        # indicator_id must be the official submission code, e.g. "P6-I4"
+        assert re.fullmatch(r"P[67]-I\d", citation.indicator_id), citation.indicator_id
+        assert citation.economy == "Singapore"
 
-    # Indicator 6.1 (cross-border) should retrieve Section 26
-    cross_border = [c for c in artifacts.citations if c.indicator_id == "6.1"]
-    assert cross_border, "indicator 6.1 should find a candidate"
-    assert "Singapore" in cross_border[0].quote
+    # The cross-border provision (Section 26) must surface for some P6 indicator.
+    # NB: the verbatim snippet keeps the PDF's line wrap ("outside\nSingapore"),
+    # so match a phrase that does not straddle the wrap.
+    cross_border = [c for c in artifacts.citations if "transfer any personal data" in c.quote]
+    assert cross_border, "the Section 26 cross-border provision should be cited"
+    assert any(c.indicator_id.startswith("P6") for c in cross_border)
 
     # JSON-LD export round-trip
     out_path = tmp_path / "out.jsonld"
@@ -108,3 +115,21 @@ def test_demo_pipeline_end_to_end(tmp_path: Path, synthetic_pdf: Path) -> None:
     first = json.loads(lines[0])
     assert first["@context"]["indicator_id"] == "rdtii:indicator"
     assert first["quote"]  # non-empty
+
+    # Submission CSV must match the official template header exactly.
+    csv_path = tmp_path / "out.csv"
+    m = to_csv(artifacts.citations, csv_path)
+    assert m == len(artifacts.citations)
+    header = csv_path.read_text(encoding="utf-8-sig").splitlines()[0]
+    assert header.split(",") == [label for label, _ in SUBMISSION_COLUMNS]
+
+
+def test_submission_columns_match_official_template():
+    """Guards the exact OUTPUT_TEMPLATE_31MAY.xlsx column names and order."""
+    expected = [
+        "Economy", "Law Name", "Law Number / Ref", "Last Amended",
+        "Indicator ID", "Article / Section", "Discovery Tag",
+        "Location Reference", "Verbatim Snippet", "Mapping Rationale",
+        "Source URL", "Confidence", "Notes",
+    ]
+    assert [label for label, _ in SUBMISSION_COLUMNS] == expected

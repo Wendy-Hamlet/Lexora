@@ -1,0 +1,43 @@
+# Australia — Round 1 economy. Common-law (federal), English.
+# Keyword keys are RDTII canonical ids (6.1..7.5); see configs/rdtii_indicators.yaml.
+
+jurisdiction: "Australia"
+iso_code: "AU"
+primary_language: "en"
+additional_languages: []
+legal_system: "common"
+
+ocr_languages: ["eng"]
+
+keywords_by_indicator:
+  "6.1":
+    en: ["held or processed outside national borders", "My Health Records Act", "must not be held"]
+  "6.2":
+    en: ["stored and processed within Australia", "local storage"]
+  "6.4":
+    en: ["Australian Privacy Principle 8", "cross-border disclosure", "APP 8", "Privacy Act 1988"]
+  "7.1":
+    en: ["Privacy Act 1988", "Australian Privacy Principles", "personal information"]
+  "7.2":
+    en: ["Security of Critical Infrastructure Act", "cyber security", "critical infrastructure"]
+  "7.3":
+    en: ["keep specific telecommunications data", "data retention", "Telecommunications (Interception and Access) Act"]
+  "7.4":
+    en: ["Privacy Impact Assessment", "data protection officer"]
+  "7.5":
+    en: ["computer access warrant", "intercept", "without a warrant", "law enforcement"]
+
+portals:
+  - name: "Federal Register of Legislation"
+    url: "https://www.legislation.gov.au/"
+    source_type: "primary"
+    fetch_method: "http"
+    search_query: "privacy"
+    notes: "Authoritative consolidated Commonwealth Acts and legislative instruments."
+
+  - name: "Office of the Australian Information Commissioner (OAIC)"
+    url: "https://www.oaic.gov.au/"
+    source_type: "secondary"
+    fetch_method: "http"
+    search_query: "Australian Privacy Principles"
+    notes: "Privacy regulator guidance — discovery context, not binding text."

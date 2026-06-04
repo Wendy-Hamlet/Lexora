@@ -41,17 +41,19 @@ See [`docs/architecture.md`](docs/architecture.md) for the full design and
 **MVP under active development for Hackathon 2026.**
 
 - [x] Repository scaffold + canonical data models
-- [x] Jurisdiction profile schema + 3 demo profiles (Singapore, Japan, Thailand)
-- [x] RDTII Pillar 6 + 7 indicator definitions
+- [x] Jurisdiction profile schema + 3 Round 1 economy profiles (Singapore, Australia, Malaysia)
+- [x] RDTII Pillar 6 + 7 indicator definitions (9 regulatory indicators, official codes P6-I1…P7-I5)
 - [x] Citation validator (verbatim contract)
-- [ ] Source collectors per jurisdiction
+- [x] Slice 0 end-to-end pipeline (collect → … → cite → export) on a local PDF
+- [x] Submission CSV matching the official OUTPUT_TEMPLATE schema
+- [ ] Live portal crawling (mandatory for scoring)
 - [ ] OCR pipeline + confidence triage
 - [ ] Hybrid retrieval (BM25 + multilingual embeddings)
 - [ ] LLM verifier (vLLM-served open weights)
 - [ ] Review UI (side-by-side audit)
 - [ ] Gold-set evaluation harness
 
-Round 1 deliverable: 2026-07-20 · Round 2: 2026-09-30 · Final demo: 2026-10-15.
+Round 1 submission: 2026-07-20 · 20 shortlisted: 2026-07-31 · live e-pitch: 2026-08-03 · 5 finalists: 2026-08-05 · Bangkok finale: Oct 2026.
 
 ## Quick start
 
@@ -81,7 +83,7 @@ Lexora/
 │   ├── storage/            # SQLite/PostgreSQL + object store
 │   └── api/                # FastAPI app
 ├── configs/
-│   ├── jurisdictions/      # one YAML per country (sg, jp, th, …)
+│   ├── jurisdictions/      # one YAML per economy (sg, au, my, …)
 │   └── rdtii_indicators.yaml
 ├── docs/                   # architecture, memo, schemas
 ├── tests/
@@ -91,9 +93,11 @@ Lexora/
 
 ## Demo scope
 
-The MVP covers **three demo jurisdictions** (Singapore, Japan, Thailand) and
-RDTII Pillars 6 and 7. New jurisdictions are added by writing one YAML profile
-under `configs/jurisdictions/` — see [`docs/jurisdiction_profile.md`](docs/jurisdiction_profile.md).
+Round 1 covers the **three mandatory economies** (Singapore, Australia, Malaysia)
+and RDTII Pillars 6 and 7. Final-round economies (Thailand, China, India,
+Indonesia, Russian Federation, Lao PDR, Mongolia, Timor-Leste) are added by
+writing one YAML profile under `configs/jurisdictions/` — see
+[`docs/jurisdiction_profile.md`](docs/jurisdiction_profile.md).
 
 ## License
 

@@ -1,0 +1,50 @@
+# Malaysia — Round 1 economy (the hard one: error-checking + new-data discovery).
+# Common-law based, English. Keyword keys are RDTII canonical ids (6.1..7.5).
+
+jurisdiction: "Malaysia"
+iso_code: "MY"
+primary_language: "en"
+additional_languages: ["ms"]
+legal_system: "common"
+
+ocr_languages: ["eng", "msa"]
+
+keywords_by_indicator:
+  "6.1":
+    en: ["transfer of personal data out of Malaysia", "Personal Data Protection Act", "Act 709"]
+  "6.2":
+    en: ["local storage", "stored within Malaysia", "data localization"]
+  "6.4":
+    en: ["transfer any personal data out of Malaysia", "conditions for transfer", "Schedule"]
+  "7.1":
+    en: ["Personal Data Protection Act 2010", "Act 709", "comprehensive data protection"]
+  "7.2":
+    en: ["Cyber Security Act 2024", "Act 854", "Computer Crimes Act", "Act 563"]
+  "7.3":
+    en: ["retention", "shall not be kept longer", "retention principle"]
+  "7.4":
+    en: ["data protection officer", "Personal Data Protection (Amendment)", "Act A1727"]
+  "7.5":
+    en: ["access to computerised data", "Section 116B", "intercept communication", "authorised officer"]
+
+portals:
+  - name: "Laws of Malaysia (Attorney General's Chambers)"
+    url: "https://lom.agc.gov.my/"
+    source_type: "primary"
+    fetch_method: "http"
+    search_query: "personal data protection"
+    notes: "Official AGC repository of consolidated Acts (the controlling primary source)."
+
+  - name: "Personal Data Protection Department (JPDP)"
+    url: "https://www.pdp.gov.my/"
+    source_type: "secondary"
+    fetch_method: "http"
+    search_query: "code of practice"
+    notes: "Sectoral codes of practice (banking, communications) — secondary unless reproducing Act 709."
+
+  - name: "Malaysian Communications and Multimedia Commission (MCMC)"
+    url: "https://www.mcmc.gov.my/"
+    source_type: "secondary"
+    fetch_method: "http"
+    search_query: null
+    notes: "Communications & Multimedia Act 1998 and related instruments."

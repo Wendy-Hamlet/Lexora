@@ -48,6 +48,7 @@ data/canonical/
 data/index/
 data/cache/
 data/models/
+outputs/
 *.sqlite
 *.sqlite3
 *.db

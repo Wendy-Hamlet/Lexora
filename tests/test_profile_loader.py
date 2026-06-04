@@ -11,7 +11,7 @@ from lexora.models.source import LegalSystem, SourceType
 CONFIG_DIR = Path(__file__).resolve().parent.parent / "configs" / "jurisdictions"
 
 
-@pytest.mark.parametrize("iso", ["sg", "jp", "th"])
+@pytest.mark.parametrize("iso", ["sg", "au", "my"])
 def test_shipped_profiles_load(iso):
     profile = load_profile(CONFIG_DIR / f"{iso}.yaml")
     assert profile.iso_code.lower() == iso
@@ -23,4 +23,4 @@ def test_shipped_profiles_load(iso):
 
 def test_load_all_skips_template():
     profiles = load_all_profiles(CONFIG_DIR)
-    assert set(profiles.keys()) == {"SG", "JP", "TH"}
+    assert set(profiles.keys()) == {"SG", "AU", "MY"}

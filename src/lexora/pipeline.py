@@ -88,6 +88,7 @@ def run_demo_pipeline(
                 clause=clause,
                 document=document,
                 legal_form=legal_form,
+                economy=profile.jurisdiction,
                 bm25_score=hit.score,
             )
             if citation is not None:
@@ -102,13 +103,15 @@ def _materialize(
     clause: Clause,
     document: RawDocument,
     legal_form: str,
+    economy: str,
     bm25_score: float,
 ) -> Citation | None:
     """One-clause-one-indicator: synthesize a verifier-shaped claim and run it
-    through the same validator the real LLM verifier will use."""
+    through the same validator the real LLM verifier will use. The claim carries
+    the official submission code (e.g. "P6-I4") as its indicator_id."""
     confidence = _normalize_score(bm25_score)
     claim = EvidenceClaim(
-        indicator_id=indicator.id,
+        indicator_id=indicator.submission_id,
         clause_id=clause.clause_id,
         quote_span_id=clause.span.span_id,
         label=ClaimLabel.match,
@@ -128,6 +131,7 @@ def _materialize(
         document=document,
         legal_form=legal_form,
         article_path=clause.structural_path,
+        economy=economy,
         review_status=status,
     )
 

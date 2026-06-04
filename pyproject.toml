@@ -77,7 +77,9 @@ target-version = "py310"
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM"]
 # B008: Typer / FastAPI rely on call-in-default for Option/Depends.
-ignore = ["E501", "B008"]
+# UP045: Typer Option type hints need `Optional[X]`, not `X | None`, on older
+#        Typer versions — keep the compatible form.
+ignore = ["E501", "B008", "UP045"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

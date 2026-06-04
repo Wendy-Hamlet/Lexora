@@ -1,121 +1,187 @@
-# RDTII 2.1 indicator definitions — minimum coverage Pillars 6 and 7.
-# Source: UN ESCAP Regional Digital Trade Integration Index methodology.
-# Keep this file as the single source of truth for indicator IDs used by the LLM verifier.
+# RDTII 2.1 indicator definitions — Pillars 6 & 7 (regulatory indicators only).
+#
+# Source of truth: the "RDTII 2.1 Methodology" sheet of the official
+# "ESCAP-RDTII-2.1_ Round 1 Database.xlsx" and the ESCAP RDTII 2.1 Guide.
+# These names/criteria are authoritative and OVERRIDE the simplified
+# "Indicator Reference" tab of OUTPUT_TEMPLATE_31MAY.xlsx (whose P6/P7 names
+# are inaccurate; the template's own example rows use the codes below).
+#
+# Code mapping: submission_id "P6-I4" == rdtii_id "6.4" (verified against the
+# template example rows and the gold country data).
+#
+# Scope note: Pillar 6 indicator 6.5 (binding agreement commitments) is a
+# NON-regulatory, third-party-sourced indicator and is out of automation
+# scope; only 6.1-6.4 are covered here. Pillar 7 covers 7.1-7.5.
+#
+# possible_scores: 0 = no/low compliance cost ... 1 = heavily regulated.
 
 pillars:
   - pillar: 6
-    name: "Cross-Border Data Policies"
+    name: "Cross-border Data Policies"
     indicators:
-      - id: "6.1"
-        name: "Cross-border data flow restrictions"
+      - submission_id: "P6-I1"
+        rdtii_id: "6.1"
+        name: "Ban and local processing requirements"
         description: >
-          Whether the jurisdiction restricts or conditions the transfer of personal
-          or non-personal data to recipients outside its borders.
+          Whether the law bans the cross-border transfer of data or requires
+          data to be processed locally. Exception: data localisation measures
+          applied to government data are not scored.
+        scoring_criteria: >
+          1) Ban and/or local processing requirement for all sectors or personal
+          data, OR more than one measure in category (2); 0.5) applied to a
+          specific sector, specific data, non-personal data, or transfer
+          prohibited to one country; 0) no requirement.
+        possible_scores: [1, 0.5, 0]
         keywords:
-          - "cross-border transfer"
-          - "transfer abroad"
-          - "transfer to a third country"
-          - "international data transfer"
+          - "must not transfer"
+          - "shall not transfer"
+          - "prohibition on transfer"
+          - "local processing"
+          - "process within"
+          - "ban on transfer"
 
-      - id: "6.2"
-        name: "Data localisation requirements"
+      - submission_id: "P6-I2"
+        rdtii_id: "6.2"
+        name: "Local storage requirements"
         description: >
-          Whether the jurisdiction requires data (personal, financial, government,
-          or sector-specific) to be stored or processed within its territory.
+          Whether the law requires data to be stored within the territory.
+          Exception: data localisation measures applied to government data are
+          not scored.
+        scoring_criteria: >
+          1) Local storage requirement for all sectors or personal data, OR more
+          than one measure in category (2); 0.5) applied to a specific sector,
+          specific data or non-personal data; 0) no requirement.
+        possible_scores: [1, 0.5, 0]
         keywords:
-          - "data localisation"
           - "local storage"
           - "store within"
-          - "stored in country"
+          - "stored in"
+          - "data localisation"
+          - "retain within"
+          - "kept within"
 
-      - id: "6.3"
-        name: "Conditions for lawful transfer"
+      - submission_id: "P6-I3"
+        rdtii_id: "6.3"
+        name: "Infrastructure requirements"
         description: >
-          Mechanisms permitting transfer (e.g. adequacy decisions, standard
-          contractual clauses, binding corporate rules, explicit consent,
-          government authorisation).
+          Whether transferring data abroad is subject to an infrastructure
+          requirement or the need to establish a data centre locally.
+          Exception: measures applied to government data are not scored.
+        scoring_criteria: "1) Infrastructure requirement; 0) no requirement."
+        possible_scores: [1, 0]
         keywords:
+          - "infrastructure requirement"
+          - "data centre"
+          - "data center"
+          - "local server"
+          - "establish facilities"
+
+      - submission_id: "P6-I4"
+        rdtii_id: "6.4"
+        name: "Conditional flow regimes"
+        description: >
+          Whether the law imposes conditions on cross-border data transfer
+          (e.g. adequacy, appropriate safeguards, comparable protection, or
+          individual consent). Exception: measures applied to government data
+          are not scored.
+        scoring_criteria: >
+          1) Conditions for all sectors or personal data; 0.5) conditions for
+          specific data or non-personal data; 0) no condition.
+        possible_scores: [1, 0.5, 0]
+        keywords:
+          - "except in accordance with"
+          - "conditions for transfer"
+          - "appropriate safeguards"
+          - "comparable to the protection"
           - "adequacy"
-          - "standard contractual clauses"
-          - "binding corporate rules"
-          - "explicit consent for transfer"
-
-      - id: "6.4"
-        name: "Government access to data"
-        description: >
-          Conditions under which the government may compel access to data held
-          by private entities, and any extraterritorial scope.
-        keywords:
-          - "government access"
-          - "lawful access"
-          - "production order"
-          - "national security"
-
-      - id: "6.5"
-        name: "Sector-specific cross-border rules"
-        description: >
-          Sector-specific (financial, health, telecom, cloud) rules that add or
-          relax cross-border data conditions.
-        keywords:
-          - "financial data"
-          - "health data"
-          - "telecom"
-          - "cloud computing"
+          - "consent to transfer"
 
   - pillar: 7
     name: "Domestic Data Protection & Privacy"
     indicators:
-      - id: "7.1"
-        name: "Existence of personal data protection law"
+      - submission_id: "P7-I1"
+        rdtii_id: "7.1"
+        name: "Lack of comprehensive legal framework for data protection"
         description: >
-          Whether a horizontal personal data protection law exists, its scope
-          (public/private sectors), and the responsible authority.
+          Whether the economy has a comprehensive (horizontal, cross-sectoral)
+          personal data protection legal framework.
+        scoring_criteria: >
+          1) No data protection legal framework; 0.5) framework only for specific
+          sectors (sectoral law); 0) comprehensive data protection framework.
+        possible_scores: [1, 0.5, 0]
         keywords:
           - "personal data protection"
-          - "data protection authority"
+          - "data protection"
+          - "data subject"
           - "controller"
           - "processor"
-
-      - id: "7.2"
-        name: "Data subject rights"
-        description: >
-          Rights granted to data subjects (access, correction, deletion,
-          portability, objection, withdrawal of consent).
-        keywords:
-          - "right of access"
-          - "right to erasure"
-          - "data portability"
-          - "right to object"
-
-      - id: "7.3"
-        name: "Lawful basis and consent"
-        description: >
-          Lawful bases for processing personal data and conditions of valid
-          consent (explicit, informed, withdrawable).
-        keywords:
-          - "lawful basis"
           - "consent"
-          - "withdraw consent"
-          - "legitimate interest"
 
-      - id: "7.4"
-        name: "Breach notification"
+      - submission_id: "P7-I2"
+        rdtii_id: "7.2"
+        name: "Lack of dedicated legal framework for cybersecurity"
         description: >
-          Obligations to notify the regulator and/or data subjects in the event
-          of a personal data breach, including timelines and thresholds.
+          Whether the economy has a dedicated cybersecurity legal framework
+          (horizontal, or focused on specific sectors).
+        scoring_criteria: >
+          1) No cybersecurity legal framework; 0.5) non-dedicated framework
+          and/or dedicated cybersecurity law for specific sectors only; 0)
+          dedicated horizontal cybersecurity legal framework.
+        possible_scores: [1, 0.5, 0]
         keywords:
-          - "data breach notification"
-          - "notify the authority"
-          - "without undue delay"
-          - "72 hours"
+          - "cybersecurity"
+          - "critical information infrastructure"
+          - "computer misuse"
+          - "cybercrime"
+          - "cyber security agency"
 
-      - id: "7.5"
-        name: "Sanctions and enforcement"
+      - submission_id: "P7-I3"
+        rdtii_id: "7.3"
+        name: "Minimum period of data retention requirements"
         description: >
-          Administrative, civil or criminal sanctions for violations and the
-          enforcement powers of the data protection authority.
+          Whether the law imposes a minimum period for retaining data.
+          Exception: requirements applied to government data are not scored.
+        scoring_criteria: "1) Minimum data retention requirement; 0) no requirement."
+        possible_scores: [1, 0]
         keywords:
-          - "administrative fine"
-          - "penalty"
-          - "enforcement order"
-          - "imprisonment"
+          - "retention period"
+          - "retain for"
+          - "keep records for"
+          - "minimum period"
+          - "period of retention"
+          - "maintain ... records"
+
+      - submission_id: "P7-I4"
+        rdtii_id: "7.4"
+        name: "Data Protection Impact Assessment (DPIA) or Data Protection Officer (DPO) requirements"
+        description: >
+          Whether firms are required to appoint a Data Protection Officer (DPO)
+          or to conduct a Data Protection Impact Assessment (DPIA).
+        scoring_criteria: >
+          1) DPO and DPIA, OR DPO only, applied to all sectors; 0.5) applied to a
+          specific sector; 0) no requirement.
+        possible_scores: [1, 0.5, 0]
+        keywords:
+          - "data protection officer"
+          - "appoint"
+          - "data protection impact assessment"
+          - "DPIA"
+          - "DPO"
+
+      - submission_id: "P7-I5"
+        rdtii_id: "7.5"
+        name: "Requirements to allow government access to personal data"
+        description: >
+          Whether measures allow the government to access personal data,
+          particularly without court orders.
+        scoring_criteria: >
+          1) Any measure allowing government access to data without court orders;
+          0) no measure.
+        possible_scores: [1, 0]
+        keywords:
+          - "access to computerised data"
+          - "lawful access"
+          - "interception"
+          - "without a warrant"
+          - "production order"
+          - "government access"

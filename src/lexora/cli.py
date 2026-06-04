@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Optional
 
 import typer
 from rich.console import Console
@@ -72,7 +73,7 @@ def demo(
     pdf: Path = typer.Option(..., "--pdf", "-p", exists=True, dir_okay=False, readable=True),
     source_url: str = typer.Option(..., "--source-url", "-u", help="Canonical URL of the source instrument"),
     portal_name: str = typer.Option("manual-upload", "--portal"),
-    title: str | None = typer.Option(None, "--title"),
+    title: Optional[str] = typer.Option(None, "--title"),
     legal_form: str = typer.Option("statute", "--legal-form"),
     config_dir: Path = typer.Option(Path("configs/jurisdictions"), "--config-dir"),
     indicators_path: Path = typer.Option(Path("configs/rdtii_indicators.yaml"), "--indicators"),
@@ -82,6 +83,7 @@ def demo(
 ) -> None:
     """Slice 0 end-to-end: ingest one PDF and emit verbatim-validated citations."""
     from lexora.collect.profile_loader import load_profile
+    from lexora.export.csv_exporter import to_csv
     from lexora.export.jsonld_exporter import to_jsonld
     from lexora.indicators import load_indicators
     from lexora.pipeline import run_demo_pipeline
@@ -105,6 +107,8 @@ def demo(
 
     out.parent.mkdir(parents=True, exist_ok=True)
     n = to_jsonld(artifacts.citations, out)
+    csv_out = out.with_suffix(".csv")
+    to_csv(artifacts.citations, csv_out)
 
     table = Table(title=f"Lexora demo — {profile.jurisdiction}", show_lines=False)
     table.add_column("indicator")
@@ -125,7 +129,7 @@ def demo(
         )
     console.print(table)
     console.print(
-        f"[green]Wrote {n} citation(s) to {out}[/green]  "
+        f"[green]Wrote {n} citation(s)[/green] to {csv_out} (submission CSV) and {out} (JSON-LD)  "
         f"(clauses={len(artifacts.clauses)}, pages={len(artifacts.pages)}, "
         f"doc={artifacts.document.document_id})"
     )
