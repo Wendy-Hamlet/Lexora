@@ -1,15 +1,21 @@
 """Reconstruct legal document structure into Clause objects.
 
-Slice 0/1 implements the Singapore Statutes Online style: numbered sections of
-the form ``26.—(1)`` or ``26.``, with optional subsections ``(2)``, ``(3)`` on
-continuation lines. Each clause is a section-or-subsection unit; its
-CanonicalSpan points back into the global document text by char offset, and
-carries either a page number (PDF) or a DOM anchor (HTML) for the citation's
-location reference.
+Common-law statutes number their provisions in two dominant styles:
+
+* **dotted** — Singapore SSO / Malaysia AGC: ``26.``, ``26.—(1)``, ``129. (1)``
+  (section number, a dot, optional inline subsection).
+* **spaced** — Australia's Federal Register: ``13  Short title``, ``2A  Objects``
+  (section number, two-plus spaces, a heading; no dot).
+
+The parser auto-detects which style dominates a document and rejects year-like
+false positives (e.g. ``2010.`` / ``1975.`` in citations or a table of contents,
+which previously mis-parsed AU Acts). Each clause is a section-or-subsection
+unit; its CanonicalSpan points back into the global document text by char offset
+and carries a page number (PDF) or DOM anchor (HTML).
 
 The parser is source-agnostic: `parse_structure` works on PDF pages and
-`parse_structure_html` on HTML blocks; both delegate to the same core, since
-the PDF page separator and the HTML block separator are identical ("\\n\\n").
+`parse_structure_html` on HTML blocks; both delegate to the same core, since the
+PDF page separator and the HTML block separator are identical ("\\n\\n").
 
 Civil-law packs (Article N. / 第N条) and ambiguity flagging are reserved for
 later slices.
@@ -24,7 +30,8 @@ from lexora.extract.html_extractor import BLOCK_SEPARATOR, HtmlBlock
 from lexora.extract.pdf_text_extractor import PAGE_SEPARATOR, PdfPage
 from lexora.models.clause import CanonicalSpan, Clause
 
-SECTION_OPENER = re.compile(
+# Dotted style (SG/MY): "26.", "26.—(1)", "129. (1)".
+_DOTTED = re.compile(
     r"""
     (?P<sec>\d+[A-Z]?)        # section number, e.g. 26 or 26A
     \.                        # literal dot
@@ -36,6 +43,16 @@ SECTION_OPENER = re.compile(
     """,
     re.VERBOSE,
 )
+
+# Spaced style (AU): "13  Short title", "2A  Objects of this Act" (no dot).
+_SPACED = re.compile(r"(?P<sec>\d+[A-Z]?)\s{2,}(?=\S)")
+
+# Section numbers that are really 4-digit years are almost always false positives
+# (a year in a citation, a TOC dotted-leader line, a commencement date).
+_YEARISH = re.compile(r"(?:19|20)\d{2}")
+
+# Back-compat alias (the dotted opener was the original public name).
+SECTION_OPENER = _DOTTED
 
 # locate(offset) -> (page_number | None, dom_anchor | None)
 Locator = Callable[[int], "tuple[int | None, str | None]"]
@@ -81,17 +98,34 @@ def parse_structure_html(document_id: str, blocks: Iterable[HtmlBlock]) -> list[
     return _parse(document_id, global_text, _make_locator(segments))
 
 
+def _detect_boundaries(global_text: str) -> list[tuple[int, str, str | None]]:
+    """Find section/subsection boundaries, auto-selecting the numbering style.
+
+    Each candidate must start a line and not be a 4-digit year. Both the dotted
+    (SG/MY) and spaced (AU) styles are scanned; the one yielding more valid
+    boundaries wins, so a document is parsed in its own style rather than a
+    hard-coded one.
+    """
+    best: list[tuple[int, str, str | None]] = []
+    for opener in (_DOTTED, _SPACED):
+        has_sub = "sub" in opener.groupindex
+        found: list[tuple[int, str, str | None]] = []
+        for match in opener.finditer(global_text):
+            if match.start() > 0 and global_text[match.start() - 1] not in {"\n", "\f"}:
+                continue
+            sec = match.group("sec")
+            if _YEARISH.fullmatch(sec):
+                continue
+            found.append((match.start(), sec, match.group("sub") if has_sub else None))
+        if len(found) > len(best):
+            best = found
+    return best
+
+
 def _parse(document_id: str, global_text: str, locate: Locator) -> list[Clause]:
     """Core: detect section/subsection boundaries in the global text and emit
     Clauses whose spans reference that same global text by char offset."""
-    boundaries: list[tuple[int, str, str | None]] = []  # (offset, section, subsection)
-    for match in SECTION_OPENER.finditer(global_text):
-        sec = match.group("sec")
-        sub = match.group("sub")
-        if match.start() > 0 and global_text[match.start() - 1] not in {"\n", "\f"}:
-            continue
-        boundaries.append((match.start(), sec, sub))
-
+    boundaries = _detect_boundaries(global_text)
     if not boundaries:
         return []
 
