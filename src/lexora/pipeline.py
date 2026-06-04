@@ -156,6 +156,7 @@ def run_pipeline_autodiscover(
     mandatory-crawl flow — no URL is handed in; Lexora searches, picks, fetches
     and maps on its own.
     """
+    from lexora.collect.browser import DEFAULT_UA as BROWSER_UA
     from lexora.collect.discovery import discover, resolve_fulltext
     from lexora.models.source import FetchMethod
 
@@ -181,10 +182,13 @@ def run_pipeline_autodiscover(
     top = hits[0]
     fulltext = resolve_fulltext(top, query=query, force_browser=force_browser, timeout=timeout)
     target = fulltext or top.url
+    # Fetch the full text with a browser UA so anti-bot portals (SG SSO) serve the
+    # PDF; browser_fallback still covers the case where only HTML is reachable.
     artifacts = run_pipeline_from_url(
         url=target, profile=profile, indicators=indicators, portal_name=portal.name,
         source_type=portal.source_type, dest_dir=dest_dir, top_k=top_k,
         min_score=min_score, browser_fallback=force_browser, timeout=timeout,
+        user_agent=BROWSER_UA,
     )
     return top, artifacts
 

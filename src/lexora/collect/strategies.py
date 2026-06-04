@@ -305,10 +305,64 @@ def strategy_for(portal: PortalSpec) -> Strategy | None:
     return None
 
 
+# --- Per-portal full-text (PDF) resolvers (two-stage discovery, stage 2) ---
+# Some portals serve the full-text PDF from a URL that isn't a plain `.pdf` link
+# on the page, so the generic `.pdf`-harvest in discovery.resolve_fulltext can't
+# find it. These resolvers know each portal's PDF convention.
+
+_AU_PDF_PATH = re.compile(r"/[^\"'\s]+/text/\w+/pdf")
+
+
+def sg_resolve_fulltext(result, *, timeout: float = 30.0) -> str | None:
+    """SG SSO serves the whole-Act PDF at ``<act-url>?ViewType=Pdf`` (fetchable
+    with a browser UA even though the HTML landing 403s bots)."""
+    base = result.url.split("?")[0].rstrip("/")
+    return f"{base}?ViewType=Pdf" if "/Act/" in base else None
+
+
+def au_resolve_fulltext(result, *, timeout: float = 30.0) -> str | None:
+    """AU FRL serves the latest-compilation PDF at a dated path
+    ``/{id}/{date}/{date}/text/original/pdf`` that is embedded in the rendered
+    downloads page (the date is the latest compilation, so APP-era amendments are
+    included — unlike the as-made PDF)."""
+    from urllib.parse import urljoin
+
+    from lexora.collect.browser import render
+
+    downloads = result.url.rstrip("/")
+    if not downloads.endswith("/downloads"):
+        downloads += "/downloads"
+    try:
+        html = render(downloads, timeout=timeout).html
+    except Exception:
+        return None
+    m = _AU_PDF_PATH.search(html)
+    return urljoin("https://www.legislation.gov.au/", m.group(0)) if m else None
+
+
+RESOLVERS: dict[str, Callable[..., str | None]] = {
+    "sso.agc.gov.sg": sg_resolve_fulltext,
+    "legislation.gov.au": au_resolve_fulltext,
+}
+
+
+def resolver_for(url: str) -> Callable[..., str | None] | None:
+    """Return the registered full-text resolver for a URL's host, or None."""
+    host = urlparse(url).netloc.lower()
+    for needle, fn in RESOLVERS.items():
+        if needle in host:
+            return fn
+    return None
+
+
 __all__ = [
     "Strategy",
     "au_legislation_api",
     "my_legislation_api",
+    "sg_resolve_fulltext",
+    "au_resolve_fulltext",
     "STRATEGIES",
+    "RESOLVERS",
     "strategy_for",
+    "resolver_for",
 ]

@@ -6,9 +6,13 @@ import os
 import httpx
 import pytest
 
+from lexora.collect.discovery import DiscoveryResult
 from lexora.collect.strategies import (
     au_legislation_api,
+    au_resolve_fulltext,
     my_legislation_api,
+    resolver_for,
+    sg_resolve_fulltext,
     strategy_for,
 )
 from lexora.models.source import FetchMethod, PortalSpec, SourceType
@@ -172,6 +176,28 @@ def test_my_api_handles_non_200():
     results = my_legislation_api(MY_PORTAL, query="x", client=client)
     client.close()
     assert results == []
+
+
+def _disc(url, **kw):
+    return DiscoveryResult(url=url, title="x", source_type=SourceType.primary,
+                           score=1.0, via="api", is_pdf_link=False, **kw)
+
+
+def test_sg_resolver_builds_pdf_url():
+    r = _disc("https://sso.agc.gov.sg/Act/PDPA2012?ViewType=Advance&Phrase=x")
+    assert sg_resolve_fulltext(r) == "https://sso.agc.gov.sg/Act/PDPA2012?ViewType=Pdf"
+
+
+def test_sg_resolver_skips_non_act_urls():
+    assert sg_resolve_fulltext(_disc("https://sso.agc.gov.sg/Browse/Act/Current")) \
+        == "https://sso.agc.gov.sg/Browse/Act/Current?ViewType=Pdf"  # has /Act/
+    assert sg_resolve_fulltext(_disc("https://sso.agc.gov.sg/")) is None
+
+
+def test_resolver_for_matches_hosts():
+    assert resolver_for("https://sso.agc.gov.sg/Act/PDPA2012") is sg_resolve_fulltext
+    assert resolver_for("https://www.legislation.gov.au/C2004A03712/latest") is au_resolve_fulltext
+    assert resolver_for("https://lom.agc.gov.my/act-detail.php?act=709") is None
 
 
 @pytest.mark.live

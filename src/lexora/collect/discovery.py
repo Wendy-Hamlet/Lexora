@@ -335,6 +335,16 @@ def resolve_fulltext(
     if result.is_pdf_link:
         return result.url
 
+    # A per-portal resolver knows the portal's PDF convention (SG ?ViewType=Pdf,
+    # AU dated /text/original/pdf) when it isn't a plain .pdf link on the page.
+    from lexora.collect.strategies import resolver_for
+
+    resolver = resolver_for(result.url)
+    if resolver is not None:
+        resolved = resolver(result, timeout=timeout)
+        if resolved:
+            return resolved
+
     html, _ = _fetch_page(
         result.url, force_browser=force_browser, client=client,
         timeout=timeout, user_agent=user_agent,
