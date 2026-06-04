@@ -15,6 +15,14 @@ known_instruments:
   - "Computer Crimes Act 1997"
   - "Communications and Multimedia Act 1998"
 
+# Act number -> canonical name, so Fess document records (filename titles) still
+# tag KNOWN by identity. Keys are matched against the discovered Act number.
+known_instrument_ids:
+  "709": "Personal Data Protection Act 2010"
+  "854": "Cyber Security Act 2024"
+  "563": "Computer Crimes Act 1997"
+  "588": "Communications and Multimedia Act 1998"
+
 keywords_by_indicator:
   "6.1":
     en: ["transfer of personal data out of Malaysia", "Personal Data Protection Act", "Act 709"]

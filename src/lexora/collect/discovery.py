@@ -362,6 +362,7 @@ def discover(
     user_agent: str = DEFAULT_UA,
     force_browser: bool = False,
     known_instruments: list[str] | None = None,
+    known_instrument_ids: dict[str, str] | None = None,
 ) -> list[DiscoveryResult]:
     """Discover candidate instrument URLs on a portal for a query.
 
@@ -382,6 +383,7 @@ def discover(
         hits = strat(
             portal, query=query, limit=limit, min_score=min_score,
             timeout=timeout, known_instruments=known_instruments,
+            known_instrument_ids=known_instrument_ids,
         )
         if hits:
             return hits

@@ -142,6 +142,31 @@ def test_my_api_finds_act_709_first():
     assert sum("act=709" in r.url for r in results) == 1
 
 
+def test_my_api_tags_known_by_act_id_on_filename_titles():
+    # Document records carry filename titles that defeat fuzzy name matching;
+    # the Act-number identity map must still tag them KNOWN.
+    doc_json = {"response": {"docs": [
+        {"_os_url": "https://lom.agc.gov.my/ilims/.../Act 709 ori.pdf",
+         "titleBI": "JW515839 Act 709.indd", "legislationStatus": "IBU"},
+    ]}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=doc_json)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    results = my_legislation_api(
+        MY_PORTAL, query="transfer of personal data out of malaysia", limit=5,
+        client=client,
+        known_instruments=["Personal Data Protection Act 2010"],
+        known_instrument_ids={"709": "Personal Data Protection Act 2010"},
+    )
+    client.close()
+    assert results
+    top = results[0]
+    assert top.discovery_tag == "KNOWN"  # tagged by Act-number identity, not title
+    assert top.matched_instrument == "Personal Data Protection Act 2010"
+
+
 def test_my_api_handles_non_200():
     client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(502)))
     results = my_legislation_api(MY_PORTAL, query="x", client=client)

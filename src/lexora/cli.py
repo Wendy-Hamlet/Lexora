@@ -90,6 +90,7 @@ def discover(
         results = run_discovery(
             portal, query=query, limit=limit, force_browser=browser,
             known_instruments=profile.known_instruments,
+            known_instrument_ids=profile.known_instrument_ids,
         )
         table = Table(title=f"{portal.name}  ·  {portal.source_type.value}", show_lines=False)
         table.add_column("score", justify="right")

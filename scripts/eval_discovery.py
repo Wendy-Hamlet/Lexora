@@ -79,6 +79,7 @@ def main() -> None:
                 results = discover(
                     portal, query=q, limit=k, force_browser=force_browser,
                     timeout=60.0, known_instruments=profile.known_instruments,
+                    known_instrument_ids=profile.known_instrument_ids,
                 )
                 rank = _rank_of(results, pattern)
                 err = None

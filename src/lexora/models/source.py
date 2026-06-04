@@ -63,6 +63,11 @@ class SourceProfile(BaseModel):
     # tag KNOWN hits and to flag instrument-like links that match nothing here
     # as NEW-evidence candidates.
     known_instruments: list[str] = Field(default_factory=list)
+    # Map a portal-native instrument identifier (e.g. MY Act number "709", AU
+    # "C2004A03712") to the canonical instrument name. Lets a strategy tag a hit
+    # KNOWN by identity even when the result's title is a filename that defeats
+    # fuzzy name matching (MY Fess document records).
+    known_instrument_ids: dict[str, str] = Field(default_factory=dict)
     portals: list[PortalSpec] = Field(default_factory=list)
 
 

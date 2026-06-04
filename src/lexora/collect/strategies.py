@@ -60,6 +60,19 @@ def _tag_for(fuzzy: float, known: list[str]) -> str | None:
     return None
 
 
+def _resolve_tag(
+    fuzzy: float, matched: str | None, ident: str, known: list[str],
+    ids: dict[str, str] | None,
+) -> tuple[str | None, str | None]:
+    """Tag + matched-name, preferring an identity hit (e.g. Act number / doc id)
+    over fuzzy name matching — so filename-titled records still resolve KNOWN."""
+    id_name = (ids or {}).get(ident)
+    if id_name:
+        return TAG_KNOWN, id_name
+    tag = _tag_for(fuzzy, known)
+    return tag, (matched if tag == TAG_KNOWN else None)
+
+
 def au_legislation_api(
     portal: PortalSpec,
     *,
@@ -68,6 +81,7 @@ def au_legislation_api(
     min_score: float = 0.1,
     timeout: float = 30.0,
     known_instruments: list[str] | None = None,
+    known_instrument_ids: dict[str, str] | None = None,
     client: httpx.Client | None = None,
 ) -> list[DiscoveryResult]:
     """Discover AU instruments via the Federal Register OData API.
@@ -120,7 +134,7 @@ def au_legislation_api(
         score = min(1.0, 0.8 * relevance + 0.1 * bool(v.get("isPrincipal")) + 0.1 * bool(v.get("isInForce")))
         if score < min_score:
             continue
-        tag = _tag_for(fuzzy, known)
+        tag, matched_name = _resolve_tag(fuzzy, matched, v["id"], known, known_instrument_ids)
         point = "latest" if v.get("isInForce") else "asmade"
         results.append(
             DiscoveryResult(
@@ -131,7 +145,7 @@ def au_legislation_api(
                 via="api",
                 is_pdf_link=False,
                 discovery_tag=tag,
-                matched_instrument=matched if tag == TAG_KNOWN else None,
+                matched_instrument=matched_name,
                 n_variants=1,
             )
         )
@@ -182,6 +196,7 @@ def my_legislation_api(
     min_score: float = 0.1,
     timeout: float = 30.0,
     known_instruments: list[str] | None = None,
+    known_instrument_ids: dict[str, str] | None = None,
     client: httpx.Client | None = None,
 ) -> list[DiscoveryResult]:
     """Discover MY instruments via the AGC Fess/Solr proxy (``fess-proxy.php``).
@@ -252,7 +267,7 @@ def my_legislation_api(
             g["fulltext"] = pdf_url
 
     results: list[DiscoveryResult] = []
-    for g in groups.values():
+    for act_id, g in groups.items():
         title = g["clean_title"] or g["any_title"]
         q_sim = _fuzzy_known(title, [query])[0] if query else 0.0
         fuzzy, matched = _fuzzy_known(title, known) if known else (0.0, None)
@@ -260,12 +275,13 @@ def my_legislation_api(
         score = min(1.0, 0.4 * g["solr_rel"] + 0.4 * max(q_sim, fuzzy) + 0.2 * g["principal"])
         if score < min_score:
             continue
-        tag = _tag_for(fuzzy, known)
+        # Act-number identity tags KNOWN even when the title is just a filename.
+        tag, matched_name = _resolve_tag(fuzzy, matched, act_id, known, known_instrument_ids)
         results.append(
             DiscoveryResult(
                 url=g["url"], title=title, source_type=portal.source_type, score=score,
                 via="api", is_pdf_link=g["url"].lower().endswith(".pdf"),
-                discovery_tag=tag, matched_instrument=matched if tag == TAG_KNOWN else None,
+                discovery_tag=tag, matched_instrument=matched_name,
                 fulltext_url=g["fulltext"], n_variants=g["count"],
             )
         )

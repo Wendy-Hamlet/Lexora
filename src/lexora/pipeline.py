@@ -164,6 +164,7 @@ def run_pipeline_autodiscover(
 
     hits = discover(
         portal, query=query, known_instruments=profile.known_instruments,
+        known_instrument_ids=profile.known_instrument_ids,
         force_browser=force_browser, timeout=timeout, limit=max(top_k, 3),
     )
     if not hits:
