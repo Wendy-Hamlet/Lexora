@@ -41,6 +41,11 @@ api = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.27",
 ]
+browser = [
+    # Headless-browser fetch fallback for anti-bot / JS-SPA portals (SG SSO 403,
+    # AU SPA). After install run `playwright install chromium` to fetch the engine.
+    "playwright>=1.44",
+]
 embeddings = [
     "sentence-transformers>=2.5",
     "torch>=2.2",

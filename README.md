@@ -46,12 +46,15 @@ See [`docs/architecture.md`](docs/architecture.md) for the full design and
 - [x] Citation validator (verbatim contract)
 - [x] Slice 0 end-to-end pipeline (collect → … → cite → export) on a local PDF
 - [x] Submission CSV matching the official OUTPUT_TEMPLATE schema
-- [ ] Live portal crawling (mandatory for scoring)
+- [x] **Live portal crawling** — autonomous discovery layer (search → rank → resolve), per-portal strategies (SG SSO via headless browser, AU OData API, MY Fess/Solr proxy)
+- [x] **Two-stage full-text resolution** — landing page → real full-text PDF for SG / AU / MY
+- [x] **Format-general structure parser** — dotted (SG/MY) + spaced (AU) numbering, auto-detected
+- [x] **End-to-end autonomous mapping** (`lexora map -j <iso>`) producing verbatim citations for SG / AU / MY
+- [x] **Anti-overfitting discovery eval** — multi-query (name vs indicator phrasing); NAME 6/6, INDICATOR 5/5 (all rank #1)
+- [ ] Hybrid retrieval (BM25 + multilingual embeddings) — next priority for mapping accuracy
+- [ ] LLM verifier (open-weights, served) on top of the verbatim validator
 - [ ] OCR pipeline + confidence triage
-- [ ] Hybrid retrieval (BM25 + multilingual embeddings)
-- [ ] LLM verifier (vLLM-served open weights)
 - [ ] Review UI (side-by-side audit)
-- [ ] Gold-set evaluation harness
 
 Round 1 submission: 2026-07-20 · 20 shortlisted: 2026-07-31 · live e-pitch: 2026-08-03 · 5 finalists: 2026-08-05 · Bangkok finale: Oct 2026.
 
@@ -66,7 +69,38 @@ python -m venv .venv && source .venv/bin/activate   # or .venv\Scripts\activate 
 pip install -e ".[dev]"
 pytest
 lexora --help
+
+# Optional: headless-browser fetch (needed for Singapore SSO, which 403s plain HTTP)
+pip install -e ".[browser]"
+playwright install chromium
 ```
+
+## Usage
+
+The mandatory live crawl is fully autonomous — no URL is handed in; Lexora
+searches each portal, ranks the candidates, fetches the full-text PDF and maps
+it to the RDTII indicators.
+
+```bash
+# Inspect the discovery + ranking on a portal (search → rank, no mapping)
+lexora discover -j sg
+
+# End-to-end autonomous mapping: discover → resolve full text → cite → export
+lexora map -j my            # Malaysia  (Fess/Solr full-text)
+lexora map -j sg            # Singapore (SSO via headless browser)
+lexora map -j au            # Australia (OData API)
+# → writes outputs/map.csv (official submission schema) + outputs/map.jsonld
+
+# Manual fallbacks
+lexora demo -j sg --url <pdf-or-html-url> --browser   # live-fetch one URL
+lexora demo -j sg --pdf path/to/act.pdf --source-url <url>   # local PDF
+
+# Anti-overfitting discovery evaluation
+python scripts/eval_discovery.py    # → outputs/eval_discovery.json
+```
+
+Network-touching tests are offline by default (`httpx.MockTransport`); run the
+live ones with `LEXORA_LIVE=1 pytest -m live`.
 
 ## Project layout
 
@@ -74,7 +108,7 @@ lexora --help
 Lexora/
 ├── src/lexora/             # Python package
 │   ├── models/             # Pydantic data contracts (citation, clause, source, indicator)
-│   ├── collect/            # Stage 1 — crawler, hashing, profile loader
+│   ├── collect/            # Stage 1 — crawler, discovery + ranking, per-portal strategies, headless browser, hashing
 │   ├── extract/            # Stage 2 — HTML / PDF text / OCR
 │   ├── structure/          # Stage 3 — article/section/paragraph parser
 │   ├── classify/           # Stage 4 — retrieval + constrained LLM verifier

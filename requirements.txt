@@ -12,3 +12,10 @@ pymupdf>=1.24
 rapidfuzz>=3.6
 rank-bm25>=0.2.2
 numpy>=1.26
+
+# Optional extras (install via pip install -e ".[browser]" / ".[api]" / ".[embeddings]" ...):
+#   browser    : playwright>=1.44   (headless-browser fetch for SG SSO / AU SPA; then `playwright install chromium`)
+#   api        : fastapi, uvicorn   (audit UI)
+#   embeddings : sentence-transformers, torch (planned hybrid retrieval)
+#   ocr        : pytesseract, Pillow
+#   llm        : openai
