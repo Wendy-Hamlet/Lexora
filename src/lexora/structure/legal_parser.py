@@ -1,21 +1,26 @@
 """Reconstruct legal document structure into Clause objects.
 
-Slice 0 implements the Singapore Statutes Online style: numbered sections of
-the form ``26.—(1)`` or ``26.``, with optional subsections ``(2)``, ``(3)``
-on continuation lines. Each clause is a section-or-subsection unit; its
-CanonicalSpan points back into the global document text by char offset.
+Slice 0/1 implements the Singapore Statutes Online style: numbered sections of
+the form ``26.—(1)`` or ``26.``, with optional subsections ``(2)``, ``(3)`` on
+continuation lines. Each clause is a section-or-subsection unit; its
+CanonicalSpan points back into the global document text by char offset, and
+carries either a page number (PDF) or a DOM anchor (HTML) for the citation's
+location reference.
+
+The parser is source-agnostic: `parse_structure` works on PDF pages and
+`parse_structure_html` on HTML blocks; both delegate to the same core, since
+the PDF page separator and the HTML block separator are identical ("\\n\\n").
 
 Civil-law packs (Article N. / 第N条) and ambiguity flagging are reserved for
-later slices; this Slice 0 parser is good enough to drive a working end-to-end
-demo on the SG PDPA. Anything that does not match a section opener is folded
-into the running clause body, so prelude/recital text is preserved without
-losing alignment with downstream offsets.
+later slices.
 """
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
+from dataclasses import dataclass
 
+from lexora.extract.html_extractor import BLOCK_SEPARATOR, HtmlBlock
 from lexora.extract.pdf_text_extractor import PAGE_SEPARATOR, PdfPage
 from lexora.models.clause import CanonicalSpan, Clause
 
@@ -32,35 +37,53 @@ SECTION_OPENER = re.compile(
     re.VERBOSE,
 )
 
-SUBSECTION_OPENER = re.compile(r"^\s*\((?P<sub>\d+[A-Z]?)\)\s+")
+# locate(offset) -> (page_number | None, dom_anchor | None)
+Locator = Callable[[int], "tuple[int | None, str | None]"]
 
 
-def _page_for_offset(pages: Sequence[PdfPage], offset: int) -> int | None:
-    """Return the 1-indexed page number that contains the given global offset."""
-    for page in pages:
-        if page.char_start <= offset < page.char_end or (
-            page.char_start <= offset and offset == page.char_end and page is pages[-1]
-        ):
-            return page.page_number
-    return None
+@dataclass
+class _Segment:
+    char_start: int
+    char_end: int
+    page: int | None
+    anchor: str | None
 
 
-def parse_structure(
-    document_id: str,
-    pages: Iterable[PdfPage],
-) -> list[Clause]:
-    """Parse PDF pages into a flat list of Clause objects.
+def _make_locator(segments: Sequence[_Segment]) -> Locator:
+    def locate(offset: int) -> tuple[int | None, str | None]:
+        for seg in segments:
+            if seg.char_start <= offset < seg.char_end or (
+                offset == seg.char_end and seg is segments[-1]
+            ):
+                return seg.page, seg.anchor
+        return None, None
 
-    Each clause's span text and char offsets reference the *global* document
-    text (pages joined by `PAGE_SEPARATOR`), so cite-stage validation can
-    confirm the quote byte-for-byte (after NFKC + whitespace normalization)
-    against the same global string.
-    """
+    return locate
+
+
+def parse_structure(document_id: str, pages: Iterable[PdfPage]) -> list[Clause]:
+    """Parse PDF pages into a flat list of Clause objects."""
     pages = list(pages)
     if not pages:
         return []
     global_text = PAGE_SEPARATOR.join(p.text for p in pages)
+    segments = [_Segment(p.char_start, p.char_end, p.page_number, None) for p in pages]
+    return _parse(document_id, global_text, _make_locator(segments))
 
+
+def parse_structure_html(document_id: str, blocks: Iterable[HtmlBlock]) -> list[Clause]:
+    """Parse HTML blocks into a flat list of Clause objects (DOM-anchored)."""
+    blocks = list(blocks)
+    if not blocks:
+        return []
+    global_text = BLOCK_SEPARATOR.join(b.text for b in blocks)
+    segments = [_Segment(b.char_start, b.char_end, None, b.dom_anchor) for b in blocks]
+    return _parse(document_id, global_text, _make_locator(segments))
+
+
+def _parse(document_id: str, global_text: str, locate: Locator) -> list[Clause]:
+    """Core: detect section/subsection boundaries in the global text and emit
+    Clauses whose spans reference that same global text by char offset."""
     boundaries: list[tuple[int, str, str | None]] = []  # (offset, section, subsection)
     for match in SECTION_OPENER.finditer(global_text):
         sec = match.group("sec")
@@ -78,13 +101,13 @@ def parse_structure(
         end = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(global_text)
         body = global_text[start:end].rstrip()
         true_end = start + len(body)
-        page = _page_for_offset(pages, start)
 
         if sub is None:
             sub_chunks = _split_subsections(body, start, sec)
             if sub_chunks:
                 for chunk_sec, chunk_sub, chunk_start, chunk_end in sub_chunks:
                     seq += 1
+                    page, anchor = locate(chunk_start)
                     clauses.append(
                         _make_clause(
                             document_id=document_id,
@@ -93,13 +116,15 @@ def parse_structure(
                             char_start=chunk_start,
                             char_end=chunk_end,
                             text=global_text[chunk_start:chunk_end],
-                            page=_page_for_offset(pages, chunk_start),
+                            page=page,
+                            dom_anchor=anchor,
                             seq=seq,
                         )
                     )
                 continue
 
         seq += 1
+        page, anchor = locate(start)
         clauses.append(
             _make_clause(
                 document_id=document_id,
@@ -109,6 +134,7 @@ def parse_structure(
                 char_end=true_end,
                 text=global_text[start:true_end],
                 page=page,
+                dom_anchor=anchor,
                 seq=seq,
             )
         )
@@ -131,13 +157,9 @@ def _split_subsections(
         return []
     first_pos = positions[0][0]
     if first_pos > 0:
-        chunks.append((section, None, body_start, body_start + first_pos - 0))
-        # Trim trailing whitespace from the head chunk if it would be empty after strip.
         head_text = body[:first_pos].rstrip()
-        if not head_text.strip():
-            chunks.pop()
-        else:
-            chunks[-1] = (section, None, body_start, body_start + len(head_text))
+        if head_text.strip():
+            chunks.append((section, None, body_start, body_start + len(head_text)))
     for i, (pos, sub) in enumerate(positions):
         end = positions[i + 1][0] if i + 1 < len(positions) else len(body)
         slice_text = body[pos:end].rstrip()
@@ -154,6 +176,7 @@ def _make_clause(
     char_end: int,
     text: str,
     page: int | None,
+    dom_anchor: str | None,
     seq: int,
 ) -> Clause:
     if subsection is not None:
@@ -171,6 +194,7 @@ def _make_clause(
         span_id=span_id,
         document_id=document_id,
         page_number=page,
+        dom_anchor=dom_anchor,
         char_start=char_start,
         char_end=char_end,
         text=text,
@@ -186,4 +210,4 @@ def _make_clause(
     )
 
 
-__all__ = ["parse_structure"]
+__all__ = ["parse_structure", "parse_structure_html"]

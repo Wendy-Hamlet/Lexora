@@ -24,6 +24,29 @@ class PdfPage:
     has_text_layer: bool
 
 
+def _pages_from_doc(doc: fitz.Document) -> list[PdfPage]:
+    pages: list[PdfPage] = []
+    cursor = 0
+    for idx, page in enumerate(doc, start=1):
+        text = page.get_text("text") or ""
+        text = text.rstrip("\f")
+        has_text = bool(text.strip())
+        page_text = text if has_text else ""
+        char_start = cursor
+        char_end = cursor + len(page_text)
+        pages.append(
+            PdfPage(
+                page_number=idx,
+                text=page_text,
+                char_start=char_start,
+                char_end=char_end,
+                has_text_layer=has_text,
+            )
+        )
+        cursor = char_end + len(PAGE_SEPARATOR)
+    return pages
+
+
 def extract_pdf_text(pdf_path: Path) -> list[PdfPage]:
     """Extract text-layer PDF pages with running global char offsets.
 
@@ -33,28 +56,14 @@ def extract_pdf_text(pdf_path: Path) -> list[PdfPage]:
     them — but the page slot is preserved so later OCR fills don't shift
     char offsets of subsequent pages).
     """
-    pdf_path = Path(pdf_path)
-    pages: list[PdfPage] = []
-    cursor = 0
-    with fitz.open(pdf_path) as doc:
-        for idx, page in enumerate(doc, start=1):
-            text = page.get_text("text") or ""
-            text = text.rstrip("\f")
-            has_text = bool(text.strip())
-            page_text = text if has_text else ""
-            char_start = cursor
-            char_end = cursor + len(page_text)
-            pages.append(
-                PdfPage(
-                    page_number=idx,
-                    text=page_text,
-                    char_start=char_start,
-                    char_end=char_end,
-                    has_text_layer=has_text,
-                )
-            )
-            cursor = char_end + len(PAGE_SEPARATOR)
-    return pages
+    with fitz.open(Path(pdf_path)) as doc:
+        return _pages_from_doc(doc)
+
+
+def extract_pdf_bytes(data: bytes) -> list[PdfPage]:
+    """Same as `extract_pdf_text` but from in-memory bytes (e.g. a live fetch)."""
+    with fitz.open(stream=data, filetype="pdf") as doc:
+        return _pages_from_doc(doc)
 
 
 def assemble_global_text(pages: list[PdfPage]) -> str:
@@ -63,4 +72,10 @@ def assemble_global_text(pages: list[PdfPage]) -> str:
     return PAGE_SEPARATOR.join(p.text for p in pages)
 
 
-__all__ = ["PdfPage", "PAGE_SEPARATOR", "extract_pdf_text", "assemble_global_text"]
+__all__ = [
+    "PdfPage",
+    "PAGE_SEPARATOR",
+    "extract_pdf_text",
+    "extract_pdf_bytes",
+    "assemble_global_text",
+]
