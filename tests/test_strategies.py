@@ -178,6 +178,45 @@ def test_my_api_handles_non_200():
     assert results == []
 
 
+def test_my_api_retries_on_dropped_tls(monkeypatch):
+    # MY's Fess proxy intermittently drops the TLS connection; the first GET
+    # raises a transport error and the retry succeeds (P-5 robustness).
+    monkeypatch.setattr("time.sleep", lambda *_: None)  # no real backoff wait
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("SSL handshake dropped")
+        return httpx.Response(200, json=MY_JSON)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    results = my_legislation_api(
+        MY_PORTAL, query="personal data protection", limit=5, client=client,
+        known_instruments=["Personal Data Protection Act 2010"],
+    )
+    client.close()
+    assert calls["n"] == 2          # retried once after the dropped TLS
+    assert any("act=709" in r.url for r in results)
+
+
+def test_my_api_gives_up_gracefully_after_retries(monkeypatch):
+    # If every attempt drops, _get_with_retry exhausts and my_legislation_api
+    # returns [] (so discover() falls back) rather than crashing the run.
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        raise httpx.ConnectError("down")
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    results = my_legislation_api(MY_PORTAL, query="x", client=client)
+    client.close()
+    assert calls["n"] == 3          # initial + 2 retries
+    assert results == []
+
+
 def _disc(url, **kw):
     return DiscoveryResult(url=url, title="x", source_type=SourceType.primary,
                            score=1.0, via="api", is_pdf_link=False, **kw)

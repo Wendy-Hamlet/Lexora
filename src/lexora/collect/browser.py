@@ -16,6 +16,8 @@ is not installed.
 from __future__ import annotations
 
 import contextlib
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 DEFAULT_UA = (
@@ -80,7 +82,7 @@ class BrowserSession:
         self._ctx = self._browser.new_context(user_agent=self._ua)
         return self
 
-    def render(
+    def _render_once(
         self,
         url: str,
         *,
@@ -104,6 +106,44 @@ class BrowserSession:
         finally:
             page.close()
         return RenderedResult(status=status, final_url=final_url, html=html)
+
+    def render(
+        self,
+        url: str,
+        *,
+        wait_until: str = "networkidle",
+        settle_ms: int = 1500,
+        wait_selector: str | None = None,
+        timeout: float | None = None,
+        retries: int = 0,
+        backoff: float = 2.0,
+        is_valid: Callable[[str], bool] | None = None,
+    ) -> RenderedResult:
+        """Render ``url``, optionally retrying with exponential backoff when the
+        result is not yet usable.
+
+        Anti-bot portals (SG SSO) answer a burst of headless navigations with the
+        default browse *shell* — a valid 200 page that simply carries no search
+        results — instead of the query's hits. A single render then silently maps
+        nothing. When ``is_valid`` is supplied it is called on the rendered HTML;
+        a falsy verdict triggers up to ``retries`` re-renders spaced by
+        ``backoff * attempt`` seconds (letting the rate-limit window clear). The
+        last result is returned regardless once retries are exhausted, so a
+        genuinely empty result set still degrades gracefully rather than raising.
+        """
+        result = self._render_once(
+            url, wait_until=wait_until, settle_ms=settle_ms,
+            wait_selector=wait_selector, timeout=timeout,
+        )
+        for attempt in range(1, retries + 1):
+            if is_valid is None or is_valid(result.html):
+                break
+            time.sleep(backoff * attempt)
+            result = self._render_once(
+                url, wait_until=wait_until, settle_ms=settle_ms,
+                wait_selector=wait_selector, timeout=timeout,
+            )
+        return result
 
     def __exit__(self, *exc) -> None:
         try:

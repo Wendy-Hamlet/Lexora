@@ -46,6 +46,28 @@ def _odata_escape(value: str) -> str:
     return value.replace("'", "''")
 
 
+def _get_with_retry(
+    client: httpx.Client, url: str, *, retries: int = 2, backoff: float = 1.0
+) -> httpx.Response:
+    """GET ``url`` retrying on transport errors with exponential backoff.
+
+    MY's Fess proxy (lom.agc.gov.my) intermittently drops the TLS connection
+    mid-handshake/read, and the AU OData catalogue paging (~48 sequential GETs)
+    is similarly exposed to a transient blip. ``httpx.TransportError`` covers the
+    connect/read/SSL family; only it is retried (an HTTP 4xx/5xx is a real
+    response and returned as-is). The final error propagates after the last
+    attempt, where the caller turns it into a graceful empty result."""
+    last: Exception | None = None
+    for attempt in range(retries + 1):
+        try:
+            return client.get(url)
+        except httpx.TransportError as exc:
+            last = exc
+            if attempt < retries:
+                time.sleep(backoff * (attempt + 1))
+    raise last or httpx.TransportError(f"failed to fetch {url}")
+
+
 def _first_href(snippet: str | None) -> str | None:
     """Extract the first href URL from an HTML anchor snippet (MY download cell)."""
     if not snippet:
@@ -120,7 +142,7 @@ def au_legislation_api(
         headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
     )
     try:
-        resp = client.get(url)
+        resp = _get_with_retry(client, url)
         if resp.status_code != 200:
             return []
         values = resp.json().get("value", [])
@@ -204,7 +226,7 @@ def au_act_catalogue(
                 f"{_AU_API}?%24filter={flt}&%24top={_AU_PAGE}&%24skip={page * _AU_PAGE}"
                 f"&%24select=id,name,isPrincipal"
             )
-            resp = client.get(url)
+            resp = _get_with_retry(client, url)
             if resp.status_code != 200:
                 break
             values = resp.json().get("value", [])
@@ -377,7 +399,7 @@ def my_legislation_api(
         headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
     )
     try:
-        resp = client.get(url)
+        resp = _get_with_retry(client, url)
         if resp.status_code != 200:
             return []
         docs = resp.json().get("response", {}).get("docs", [])

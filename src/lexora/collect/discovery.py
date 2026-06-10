@@ -293,6 +293,28 @@ def harvest_candidates(
     return results[:limit]
 
 
+# A real SG SSO results/landing page links to specific instrument pages
+# (`/Act/PDPA2012`, `/Act/...`); the browse *shell* that the portal serves when it
+# rate-limits a burst of headless navigations carries only browse nav
+# (`/Browse/`, `/Acts-Supp/`, `/Act-Rev/`) and no `/Act/<slug>` link. `/Act/` is
+# anchored to a slug char so `/Acts-Supp/` and `/Act-Rev/` don't match.
+_SG_INSTRUMENT_LINK = re.compile(r'href="[^"]*/Act/[A-Za-z0-9]', re.I)
+
+
+def sg_results_present(html: str | bytes) -> bool:
+    """True if rendered SG SSO HTML carries at least one instrument link.
+
+    Used as the ``is_valid`` predicate for SG SSO renders: a bare shell (the
+    rate-limited / anti-bot fallback) has no `/Act/<slug>` link, so a falsy
+    verdict here triggers a backoff re-render. Honest limitation: a genuinely
+    empty result set also looks "absent", so retries are capped and the last
+    render is accepted regardless — this only buys back the transient rate-limit
+    case, it is not a correctness guarantee.
+    """
+    text = html.decode("utf-8", "ignore") if isinstance(html, bytes) else html
+    return bool(_SG_INSTRUMENT_LINK.search(text))
+
+
 def _search_url(portal: PortalSpec, query: str | None) -> str:
     """Build the page URL to harvest: a templated search URL when the portal
     provides one, otherwise the portal landing page."""
@@ -311,13 +333,17 @@ def _fetch_page(
     timeout: float,
     user_agent: str,
     browser_session=None,
+    is_valid=None,
+    render_retries: int = 0,
 ) -> tuple[str | bytes, str]:
     """Fetch a page's HTML, escalating to a headless browser on anti-bot 403/429
     (or when ``force_browser``). Returns ``(html, via)`` where via is http|browser.
 
     ``browser_session`` (a :class:`browser.BrowserSession`) renders through one
     persistent Chromium instead of relaunching per call — used by
-    :func:`discover_for_indicators` so a burst of SG SSO queries stays stable."""
+    :func:`discover_for_indicators` so a burst of SG SSO queries stays stable.
+    ``is_valid``/``render_retries`` are forwarded to the session render so an
+    anti-bot empty shell is re-rendered with backoff (see :func:`sg_results_present`)."""
     use_browser = force_browser
     html: str | bytes = ""
     if not use_browser:
@@ -339,7 +365,9 @@ def _fetch_page(
         # Render with the browser's own realistic UA — forwarding the polite HTTP
         # bot UA here just re-triggers the anti-bot 403 we are escalating past.
         if browser_session is not None:
-            html = browser_session.render(url, timeout=timeout).html
+            html = browser_session.render(
+                url, timeout=timeout, retries=render_retries, is_valid=is_valid
+            ).html
         else:
             from lexora.collect.browser import render
 
@@ -410,6 +438,8 @@ def discover(
     known_instruments: list[str] | None = None,
     known_instrument_ids: dict[str, str] | None = None,
     browser_session=None,
+    is_valid=None,
+    render_retries: int = 0,
 ) -> list[DiscoveryResult]:
     """Discover candidate instrument URLs on a portal for a query.
 
@@ -440,6 +470,7 @@ def discover(
     html, via = _fetch_page(
         page_url, force_browser=use_browser, client=client,
         timeout=timeout, user_agent=user_agent, browser_session=browser_session,
+        is_valid=is_valid, render_retries=render_retries,
     )
 
     if not html:
@@ -613,6 +644,15 @@ def discover_for_indicators(
     # for the whole sweep so a burst of queries doesn't relaunch the browser each
     # time (slow, and trips anti-bot rate limits into serving the homepage).
     needs_browser = force_browser or portal.fetch_method is FetchMethod.playwright
+    # SG SSO rate-limits a burst of headless navigations by serving the empty
+    # browse shell; validate each render and re-render with backoff when no
+    # instrument link is present (see `sg_results_present`). Other browser portals
+    # keep the no-retry default.
+    is_valid = None
+    render_retries = 0
+    if "sso.agc.gov.sg" in urlparse(str(portal.url)).netloc.lower():
+        is_valid = sg_results_present
+        render_retries = 2
     session_cm = None
     if needs_browser:
         # Use the browser's own realistic Chrome UA, NOT the polite HTTP bot UA —
@@ -635,6 +675,7 @@ def discover_for_indicators(
                 min_score=min_score, timeout=timeout, user_agent=user_agent,
                 force_browser=force_browser, known_instruments=known_instruments,
                 known_instrument_ids=known_instrument_ids, browser_session=session,
+                is_valid=is_valid, render_retries=render_retries,
             ):
                 key = _identity_key(r)
                 _merge_into(agg, r, key)
@@ -730,4 +771,5 @@ __all__ = [
     "discover_for_indicators",
     "discover_secondary",
     "resolve_fulltext",
+    "sg_results_present",
 ]
