@@ -101,7 +101,8 @@ def _best_match(name: str, hay: list[str]) -> int:
     return max((int(fuzz.token_set_ratio(nl, h.lower())) for h in hay), default=0)
 
 
-def _eval_one(iso: str, gold: list[str], *, budget: int, dry_run: bool) -> dict:
+def _eval_one(iso: str, gold: list[str], *, budget: int, dry_run: bool,
+              use_semantic: bool = True) -> dict:
     profile = load_profile(REPO / "configs" / "jurisdictions" / f"{iso}.yaml")
     indicators = load_indicators(INDICATORS)
     portal = profile.portals[0]
@@ -115,9 +116,10 @@ def _eval_one(iso: str, gold: list[str], *, budget: int, dry_run: bool) -> dict:
                 force_browser=portal.fetch_method is FetchMethod.playwright,
                 known_instruments=profile.known_instruments,
                 known_instrument_ids=profile.known_instrument_ids,
+                use_semantic=use_semantic,
             )
             discovered = [{"title": h.title, "url": h.url, "tag": h.discovery_tag,
-                           "score": round(h.score, 2)} for h in hits]
+                           "score": round(h.score, 2), "hits": h.indicator_hits} for h in hits]
         except Exception as exc:  # network/portal failure — report, don't crash
             error = f"{type(exc).__name__}: {exc}"
 
@@ -145,6 +147,8 @@ def main() -> None:
     ap.add_argument("-j", "--jurisdiction", default="all", help="sg|au|my|all")
     ap.add_argument("--budget", type=int, default=15)
     ap.add_argument("--dry-run", action="store_true", help="list gold only, no network")
+    ap.add_argument("--no-semantic", action="store_true",
+                    help="disable the dense crosswalk/re-rank (keyword-only baseline)")
     args = ap.parse_args()
 
     if not args.dry_run and not os.environ.get("LEXORA_LIVE"):
@@ -156,7 +160,8 @@ def main() -> None:
     report = []
     for iso in isos:
         country = ISO_TO_COUNTRY.get(iso, iso)
-        report.append(_eval_one(iso, gold.get(country, []), budget=args.budget, dry_run=args.dry_run))
+        report.append(_eval_one(iso, gold.get(country, []), budget=args.budget,
+                                dry_run=args.dry_run, use_semantic=not args.no_semantic))
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")

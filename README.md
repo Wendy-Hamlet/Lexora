@@ -51,7 +51,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the full design and
 - [x] **Format-general structure parser** — dotted (SG/MY) + spaced (AU) numbering, auto-detected
 - [x] **End-to-end autonomous mapping** (`lexora map -j <iso>`) producing verbatim citations for SG / AU / MY
 - [x] **Anti-overfitting discovery eval** — multi-query (name vs indicator phrasing); NAME 6/6, INDICATOR 5/5 (all rank #1)
-- [ ] Hybrid retrieval (BM25 + multilingual embeddings) — next priority for mapping accuracy
+- [x] **Dense/semantic layer** (optional, fastembed) — AU concept→title crosswalk (gives the name-only AU portal its first NEW discovery), SG/MY candidate re-rank, clause-level BM25+dense RRF fusion
 - [ ] LLM verifier (open-weights, served) on top of the verbatim validator
 - [ ] OCR pipeline + confidence triage
 - [ ] Review UI (side-by-side audit)
@@ -73,6 +73,10 @@ lexora --help
 # Optional: headless-browser fetch (needed for Singapore SSO, which 403s plain HTTP)
 pip install -e ".[browser]"
 playwright install chromium
+
+# Optional: dense/semantic layer (AU concept→title crosswalk, candidate re-rank,
+# clause BM25+dense fusion). fastembed downloads a small ONNX model on first use.
+pip install -e ".[embeddings]"
 ```
 
 ## Usage
