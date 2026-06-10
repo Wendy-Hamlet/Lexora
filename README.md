@@ -52,6 +52,7 @@ See [`docs/architecture.md`](docs/architecture.md) for the full design and
 - [x] **End-to-end autonomous mapping** (`lexora map -j <iso>`) producing verbatim citations for SG / AU / MY
 - [x] **Anti-overfitting discovery eval** — multi-query (name vs indicator phrasing); NAME 6/6, INDICATOR 5/5 (all rank #1)
 - [x] **Dense/semantic layer** (optional, fastembed) — AU concept→title crosswalk (gives the name-only AU portal its first NEW discovery), SG/MY candidate re-rank, clause-level BM25+dense RRF fusion
+- [x] **Regulator-portal connectors** — secondary-source guidance corpus (Singapore PDPC advisory guidelines / guides) beyond the statute portals, as NEW evidence
 - [ ] LLM verifier (open-weights, served) on top of the verbatim validator
 - [ ] OCR pipeline + confidence triage
 - [ ] Review UI (side-by-side audit)

@@ -35,7 +35,7 @@ from rapidfuzz import fuzz
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from lexora.collect.discovery import discover_for_indicators  # noqa: E402
+from lexora.collect.discovery import discover_for_indicators, discover_secondary  # noqa: E402
 from lexora.collect.profile_loader import load_profile  # noqa: E402
 from lexora.indicators import load_indicators  # noqa: E402
 from lexora.models.source import FetchMethod  # noqa: E402
@@ -118,6 +118,9 @@ def _eval_one(iso: str, gold: list[str], *, budget: int, dry_run: bool,
                 known_instrument_ids=profile.known_instrument_ids,
                 use_semantic=use_semantic,
             )
+            # Secondary portals (regulator sites) add subsidiary instruments —
+            # guidance / codes / notices — that never appear on the statute portal.
+            hits = hits + discover_secondary(profile, indicators, timeout=60.0)
             discovered = [{"title": h.title, "url": h.url, "tag": h.discovery_tag,
                            "score": round(h.score, 2), "hits": h.indicator_hits} for h in hits]
         except Exception as exc:  # network/portal failure — report, don't crash

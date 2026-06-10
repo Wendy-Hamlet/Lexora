@@ -82,16 +82,26 @@ def discover(
     """
     from lexora.collect.discovery import discover as run_discovery
     from lexora.collect.profile_loader import load_profile
+    from lexora.collect.strategies import connector_for
 
     profile = load_profile(config_dir / f"{jurisdiction.lower()}.yaml")
     console.print(f"[bold]Discovery — {profile.jurisdiction} ({profile.iso_code})[/bold]")
 
     for portal in profile.portals:
-        results = run_discovery(
-            portal, query=query, limit=limit, force_browser=browser,
-            known_instruments=profile.known_instruments,
-            known_instrument_ids=profile.known_instrument_ids,
-        )
+        # Regulator portals (PDPC, …) expose a guidance corpus, not a search box:
+        # use the registered connector to harvest it rather than the generic search.
+        connector = connector_for(portal)
+        if connector is not None:
+            results = connector(
+                portal, [], limit=limit, known_instruments=profile.known_instruments,
+                known_instrument_ids=profile.known_instrument_ids,
+            )
+        else:
+            results = run_discovery(
+                portal, query=query, limit=limit, force_browser=browser,
+                known_instruments=profile.known_instruments,
+                known_instrument_ids=profile.known_instrument_ids,
+            )
         table = Table(title=f"{portal.name}  ·  {portal.source_type.value}", show_lines=False)
         table.add_column("score", justify="right")
         table.add_column("via")

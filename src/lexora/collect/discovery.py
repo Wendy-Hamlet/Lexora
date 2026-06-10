@@ -661,10 +661,57 @@ def discover_for_indicators(
     return (known + rest)[:budget]
 
 
+def discover_secondary(
+    profile,
+    indicators: list,
+    *,
+    timeout: float = 45.0,
+    limit_per_portal: int = 40,
+) -> list[DiscoveryResult]:
+    """Harvest guidance/codes/notices from a profile's *secondary* portals.
+
+    The primary portal (``portals[0]``) is the statute portal handled by
+    :func:`discover_for_indicators`. Regulator portals (PDPC, IMDA, OAIC, …) carry
+    the subsidiary-instrument gold rows that never appear on the statute portal;
+    each has a registered connector (:func:`strategies.connector_for`). A single
+    headless-browser session is shared across all browser-rendered connectors.
+    """
+    from lexora.collect.strategies import connector_for
+
+    secondary = [p for p in profile.portals[1:] if connector_for(p) is not None]
+    if not secondary:
+        return []
+
+    # Guidance connectors render JS hub pages, so share one browser session.
+    from lexora.collect.browser import DEFAULT_UA as BROWSER_UA
+    from lexora.collect.browser import BrowserSession, is_available
+
+    session_cm = BrowserSession(user_agent=BROWSER_UA, timeout=timeout) if is_available() else None
+
+    session = session_cm.__enter__() if session_cm is not None else None
+    results: list[DiscoveryResult] = []
+    try:
+        for portal in secondary:
+            conn = connector_for(portal)
+            try:
+                results.extend(conn(
+                    portal, indicators, browser_session=session, limit=limit_per_portal,
+                    timeout=timeout, known_instruments=profile.known_instruments,
+                    known_instrument_ids=profile.known_instrument_ids,
+                ))
+            except Exception:
+                continue
+    finally:
+        if session_cm is not None:
+            session_cm.__exit__(None, None, None)
+    return results
+
+
 __all__ = [
     "DiscoveryResult",
     "harvest_candidates",
     "discover",
     "discover_for_indicators",
+    "discover_secondary",
     "resolve_fulltext",
 ]

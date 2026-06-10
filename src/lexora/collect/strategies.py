@@ -19,9 +19,10 @@ import os
 import re
 import time
 from collections.abc import Callable
-from urllib.parse import quote, urlencode, urlparse
+from urllib.parse import quote, urlencode, urljoin, urlparse
 
 import httpx
+from bs4 import BeautifulSoup
 
 from lexora.collect.discovery import (
     TAG_KNOWN,
@@ -29,7 +30,7 @@ from lexora.collect.discovery import (
     DiscoveryResult,
     _fuzzy_known,
 )
-from lexora.models.source import PortalSpec
+from lexora.models.source import PortalSpec, SourceType
 
 Strategy = Callable[..., list[DiscoveryResult]]
 
@@ -439,11 +440,119 @@ def my_legislation_api(
     return results[:limit]
 
 
+# --- Regulator-portal connectors (secondary sources: guidance / codes / notices) ---
+# Unlike the query-driven STRATEGIES above (which search a statute portal for one
+# query), a connector harvests a regulator portal's *guidance corpus* once: these
+# documents (advisory guidelines, codes of practice, licence conditions) are the
+# subsidiary-instrument gold rows that never appear on the statute portals, and
+# discovering them is pure NEW-evidence. A connector takes the full indicator list
+# (not a single query) and returns secondary DiscoveryResults.
+
+PortalConnector = Callable[..., list[DiscoveryResult]]
+
+# PDPC publishes guidance as JS-rendered hub pages that list per-document detail
+# pages; the detail-page titles carry the instrument name (+ a date / category
+# prefix we strip). These two hubs are the canonical lists.
+_PDPC_HUBS = (
+    "https://www.pdpc.gov.sg/organisations/regulations-decisions/regulatory-guidance",
+    "https://www.pdpc.gov.sg/organisations/resources/guidance-by-topic",
+)
+_PDPC_DETAIL = re.compile(r"/(?:regulatory-guidance|guidance-by-topic|resources)/[a-z0-9]", re.I)
+# Leading "<Category> <DD Mon YYYY>" noise on a harvested guidance title.
+_PDPC_TITLE_PREFIX = re.compile(
+    r"^(?:Advisory Guidelines|Practical Guidance|Publications?|Templates?|"
+    r"Training Courses|Tools?|Guides?)?\s*\d{1,2}\s+[A-Za-z]{3,}\s+\d{4}\s+",
+)
+
+
+def _clean_guidance_title(text: str) -> str:
+    """Strip the leading category + date prefix a PDPC hub prepends to a title."""
+    cleaned = _PDPC_TITLE_PREFIX.sub("", " ".join(text.split())).strip()
+    return cleaned or " ".join(text.split())
+
+
+def pdpc_guidance(
+    portal: PortalSpec,
+    indicators: list,
+    *,
+    browser_session=None,
+    limit: int = 40,
+    timeout: float = 45.0,
+    known_instruments: list[str] | None = None,
+    known_instrument_ids: dict[str, str] | None = None,
+) -> list[DiscoveryResult]:
+    """Harvest the PDPC (Singapore) guidance corpus from its hub pages.
+
+    Renders each hub with a headless browser (the list is JS-built), harvests the
+    per-guideline detail links and their titles, strips the category/date prefix,
+    and returns them as *secondary* candidates. Almost all are NEW (guidance is not
+    in the statute known-list); a title that fuzzy-matches a known instrument is
+    tagged KNOWN. ``indicator_hits`` is left empty — these are discovery-only
+    context, and per-indicator mapping of secondary sources is a later step.
+    """
+    from lexora.collect.browser import is_available
+
+    if browser_session is None and not is_available():
+        return []
+    known = known_instruments or []
+
+    def _render(url: str) -> str:
+        if browser_session is not None:
+            return browser_session.render(url, timeout=timeout).html
+        from lexora.collect.browser import render
+
+        return render(url, timeout=timeout).html
+
+    agg: dict[str, DiscoveryResult] = {}
+    for hub in _PDPC_HUBS:
+        try:
+            html = _render(hub)
+        except Exception:
+            continue
+        soup = BeautifulSoup(html, "lxml")
+        for a in soup.find_all("a", href=True):
+            href = a["href"].strip()
+            # Detail pages are clean slugs; a query string marks a category facet
+            # ("?type=Training+Courses") or the hub itself, not a document.
+            if "?" in href or not _PDPC_DETAIL.search(href):
+                continue
+            url = urljoin(hub, href)
+            if url.rstrip("/") in (h.rstrip("/") for h in _PDPC_HUBS):
+                continue  # the hub linking to itself / sibling hub
+            title = _clean_guidance_title(" ".join(a.get_text(" ", strip=True).split()))
+            if len(title) < 8:
+                continue
+            fuzzy, matched = _fuzzy_known(title, known) if known else (0.0, None)
+            tag = TAG_KNOWN if fuzzy >= 0.80 else TAG_NEW
+            cur = agg.get(url)
+            if cur is None or len(title) > len(cur.title):
+                agg[url] = DiscoveryResult(
+                    url=url, title=title, source_type=SourceType.secondary,
+                    score=1.0, via="browser", is_pdf_link=False,
+                    discovery_tag=tag, matched_instrument=(matched if tag == TAG_KNOWN else None),
+                )
+    return list(agg.values())[:limit]
+
+
 # host substring -> strategy
 STRATEGIES: dict[str, Strategy] = {
     "legislation.gov.au": au_legislation_api,
     "lom.agc.gov.my": my_legislation_api,
 }
+
+# host substring -> regulator-portal guidance connector
+PORTAL_CONNECTORS: dict[str, PortalConnector] = {
+    "pdpc.gov.sg": pdpc_guidance,
+}
+
+
+def connector_for(portal: PortalSpec) -> PortalConnector | None:
+    """Return the registered guidance connector for a portal's host, or None."""
+    host = urlparse(str(portal.url)).netloc.lower()
+    for needle, conn in PORTAL_CONNECTORS.items():
+        if needle in host:
+            return conn
+    return None
 
 # host substring -> concept (semantic) crosswalk, used by name-only portals to
 # discover statutes that share no tokens with the indicator's concept phrasing.
@@ -526,6 +635,9 @@ __all__ = [
     "my_legislation_api",
     "au_act_catalogue",
     "au_semantic_crosswalk",
+    "pdpc_guidance",
+    "PORTAL_CONNECTORS",
+    "connector_for",
     "sg_resolve_fulltext",
     "au_resolve_fulltext",
     "STRATEGIES",
