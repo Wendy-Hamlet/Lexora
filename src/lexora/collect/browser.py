@@ -15,6 +15,7 @@ is not installed.
 """
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 
 DEFAULT_UA = (
@@ -46,6 +47,73 @@ def is_available() -> bool:
         return False
 
 
+class BrowserSession:
+    """A reusable headless-Chromium session: launch once, render many URLs.
+
+    Relaunching Chromium per query (the one-shot :func:`render`) is slow and, on
+    rate-limited anti-bot portals like SG SSO, makes a burst of fresh launches
+    return the homepage / an empty shell instead of search results. Rendering many
+    URLs through one persistent context (shared cookies, sequential navigations)
+    is both faster and far more stable. Use as a context manager::
+
+        with BrowserSession() as s:
+            html = s.render(url).html
+    """
+
+    def __init__(self, *, user_agent: str = DEFAULT_UA, timeout: float = 30.0):
+        self._ua = user_agent
+        self._timeout = timeout
+        self._pw = None
+        self._browser = None
+        self._ctx = None
+
+    def __enter__(self) -> BrowserSession:
+        try:
+            from playwright.sync_api import sync_playwright
+        except Exception as exc:  # pragma: no cover - only without playwright
+            raise RuntimeError(
+                "Playwright is not installed; run `pip install playwright` and "
+                "`playwright install chromium`."
+            ) from exc
+        self._pw = sync_playwright().start()
+        self._browser = self._pw.chromium.launch(headless=True)
+        self._ctx = self._browser.new_context(user_agent=self._ua)
+        return self
+
+    def render(
+        self,
+        url: str,
+        *,
+        wait_until: str = "networkidle",
+        settle_ms: int = 1500,
+        wait_selector: str | None = None,
+        timeout: float | None = None,
+    ) -> RenderedResult:
+        timeout_ms = int((timeout or self._timeout) * 1000)
+        page = self._ctx.new_page()
+        try:
+            response = page.goto(url, wait_until=wait_until, timeout=timeout_ms)
+            if wait_selector:
+                # results may be XHR-driven; wait for them, but don't fail hard
+                with contextlib.suppress(Exception):
+                    page.wait_for_selector(wait_selector, timeout=timeout_ms)
+            page.wait_for_timeout(settle_ms)
+            html = page.content()
+            status = response.status if response is not None else 0
+            final_url = page.url
+        finally:
+            page.close()
+        return RenderedResult(status=status, final_url=final_url, html=html)
+
+    def __exit__(self, *exc) -> None:
+        try:
+            if self._browser is not None:
+                self._browser.close()
+        finally:
+            if self._pw is not None:
+                self._pw.stop()
+
+
 def render(
     url: str,
     *,
@@ -53,34 +121,19 @@ def render(
     user_agent: str = DEFAULT_UA,
     wait_until: str = "networkidle",
     settle_ms: int = 1500,
+    wait_selector: str | None = None,
 ) -> RenderedResult:
     """Render ``url`` in headless Chromium and return the final DOM as HTML.
 
-    Raises ``RuntimeError`` if Playwright is not installed — callers that want
-    graceful degradation should gate on :func:`is_available` first.
+    One-shot convenience wrapper around :class:`BrowserSession` (launches and
+    closes a browser per call). For many URLs, hold a :class:`BrowserSession`
+    open instead. Raises ``RuntimeError`` if Playwright is not installed — callers
+    that want graceful degradation should gate on :func:`is_available` first.
     """
-    try:
-        from playwright.sync_api import sync_playwright
-    except Exception as exc:  # pragma: no cover - exercised only without playwright
-        raise RuntimeError(
-            "Playwright is not installed; run `pip install playwright` and "
-            "`playwright install chromium`."
-        ) from exc
-
-    timeout_ms = int(timeout * 1000)
-    with sync_playwright() as p:
-        browser = p.chromium.launch(headless=True)
-        try:
-            context = browser.new_context(user_agent=user_agent)
-            page = context.new_page()
-            response = page.goto(url, wait_until=wait_until, timeout=timeout_ms)
-            page.wait_for_timeout(settle_ms)  # let late XHR-driven content settle
-            html = page.content()
-            status = response.status if response is not None else 0
-            final_url = page.url
-        finally:
-            browser.close()
-    return RenderedResult(status=status, final_url=final_url, html=html)
+    with BrowserSession(user_agent=user_agent, timeout=timeout) as session:
+        return session.render(
+            url, wait_until=wait_until, settle_ms=settle_ms, wait_selector=wait_selector
+        )
 
 
-__all__ = ["RenderedResult", "is_available", "render", "DEFAULT_UA"]
+__all__ = ["RenderedResult", "BrowserSession", "is_available", "render", "DEFAULT_UA"]

@@ -41,6 +41,12 @@ _CHROME_MARKERS = (
     "sitemap", "privacy-policy", "terms", "feedback", "subscribe", "rss",
     "facebook.com", "twitter.com", "x.com", "linkedin.com", "youtube.com",
     "instagram.com", "javascript:", "mailto:", "tel:",
+    # Portal navigation / empty-results-page chrome (esp. SG SSO): a search that
+    # matches nothing renders the default browse shell, whose links are these —
+    # not legal instruments. Dropping them stops an empty query polluting results.
+    "/browse/", "/help/", "/search/advanced", "/search/content",
+    "frequently-accessed", "acts-supp", "act-rev", "/sso-guide",
+    "my collections", "revised editions", "acts supplement",
 )
 _RESULT_CONTAINER = re.compile(r"result|item|card|search|title|listing|row", re.I)
 _YEAR = re.compile(r"\b(19|20)\d{2}\b")
@@ -287,9 +293,14 @@ def _fetch_page(
     client: httpx.Client | None,
     timeout: float,
     user_agent: str,
+    browser_session=None,
 ) -> tuple[str | bytes, str]:
     """Fetch a page's HTML, escalating to a headless browser on anti-bot 403/429
-    (or when ``force_browser``). Returns ``(html, via)`` where via is http|browser."""
+    (or when ``force_browser``). Returns ``(html, via)`` where via is http|browser.
+
+    ``browser_session`` (a :class:`browser.BrowserSession`) renders through one
+    persistent Chromium instead of relaunching per call — used by
+    :func:`discover_for_indicators` so a burst of SG SSO queries stays stable."""
     use_browser = force_browser
     html: str | bytes = ""
     if not use_browser:
@@ -310,9 +321,12 @@ def _fetch_page(
     if use_browser:
         # Render with the browser's own realistic UA — forwarding the polite HTTP
         # bot UA here just re-triggers the anti-bot 403 we are escalating past.
-        from lexora.collect.browser import render
+        if browser_session is not None:
+            html = browser_session.render(url, timeout=timeout).html
+        else:
+            from lexora.collect.browser import render
 
-        html = render(url, timeout=timeout).html
+            html = render(url, timeout=timeout).html
         return html, "browser"
     return html, "http"
 
@@ -378,6 +392,7 @@ def discover(
     force_browser: bool = False,
     known_instruments: list[str] | None = None,
     known_instrument_ids: dict[str, str] | None = None,
+    browser_session=None,
 ) -> list[DiscoveryResult]:
     """Discover candidate instrument URLs on a portal for a query.
 
@@ -407,7 +422,7 @@ def discover(
     use_browser = force_browser or portal.fetch_method is FetchMethod.playwright
     html, via = _fetch_page(
         page_url, force_browser=use_browser, client=client,
-        timeout=timeout, user_agent=user_agent,
+        timeout=timeout, user_agent=user_agent, browser_session=browser_session,
     )
 
     if not html:
@@ -496,17 +511,36 @@ def discover_for_indicators(
         for name in known_instruments or []:
             phrase_indicators.setdefault(name, set())
 
+    # Browser portals (SG SSO) render every query; hold ONE Chromium session open
+    # for the whole sweep so a burst of queries doesn't relaunch the browser each
+    # time (slow, and trips anti-bot rate limits into serving the homepage).
+    needs_browser = force_browser or portal.fetch_method is FetchMethod.playwright
+    session_cm = None
+    if needs_browser:
+        # Use the browser's own realistic Chrome UA, NOT the polite HTTP bot UA —
+        # anti-bot portals (SG SSO) serve 403/an empty shell to "Lexora/0.1".
+        from lexora.collect.browser import DEFAULT_UA as BROWSER_UA
+        from lexora.collect.browser import BrowserSession, is_available
+
+        if is_available():
+            session_cm = BrowserSession(user_agent=BROWSER_UA, timeout=timeout)
+
     agg: dict[str, DiscoveryResult] = {}
     indicators_by_key: dict[str, set[str]] = {}
-    for phrase, ind_ids in phrase_indicators.items():
-        for r in discover(
-            portal, query=phrase, client=client, limit=per_indicator_limit,
-            min_score=min_score, timeout=timeout, user_agent=user_agent,
-            force_browser=force_browser, known_instruments=known_instruments,
-            known_instrument_ids=known_instrument_ids,
-        ):
-            _merge_into(agg, r)
-            indicators_by_key.setdefault(_canonical_key(r.url), set()).update(ind_ids)
+    session = session_cm.__enter__() if session_cm is not None else None
+    try:
+        for phrase, ind_ids in phrase_indicators.items():
+            for r in discover(
+                portal, query=phrase, client=client, limit=per_indicator_limit,
+                min_score=min_score, timeout=timeout, user_agent=user_agent,
+                force_browser=force_browser, known_instruments=known_instruments,
+                known_instrument_ids=known_instrument_ids, browser_session=session,
+            ):
+                _merge_into(agg, r)
+                indicators_by_key.setdefault(_canonical_key(r.url), set()).update(ind_ids)
+    finally:
+        if session_cm is not None:
+            session_cm.__exit__(None, None, None)
 
     for key, res in agg.items():
         res.indicator_hits = sorted(indicators_by_key.get(key, set()))
