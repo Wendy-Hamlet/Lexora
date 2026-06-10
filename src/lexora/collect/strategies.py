@@ -14,7 +14,10 @@ back to generic harvesting when the strategy yields nothing.
 """
 from __future__ import annotations
 
+import json
+import os
 import re
+import time
 from collections.abc import Callable
 from urllib.parse import quote, urlencode, urlparse
 
@@ -32,6 +35,7 @@ Strategy = Callable[..., list[DiscoveryResult]]
 
 _AU_API = "https://api.prod.legislation.gov.au/v1/titles"
 _AU_DOC = "https://www.legislation.gov.au/{id}/{point}"
+_AU_PAGE = 100  # OData max $top (200+ -> HTTP 400)
 
 _MY_API = "https://lom.agc.gov.my/fess-proxy.php"
 
@@ -127,6 +131,13 @@ def au_legislation_api(
 
     results: list[DiscoveryResult] = []
     for v in values:
+        # Drop subsidiary instruments (Determinations / Notices / Guidelines, which
+        # come back as `LegislativeInstrument` / `Gazette`): a name query for
+        # "Privacy Act 1988" otherwise returns 20+ of its determinations, all
+        # non-statute and mostly not-in-force, which crowd real statutes out of the
+        # budget. The statute targets (incl. amendment Acts) are all collection 'Act'.
+        if v.get("collection") != "Act":
+            continue
         name = v.get("name", "")
         q_sim = _fuzzy_known(name, [query])[0] if query else 0.0
         fuzzy, matched = _fuzzy_known(name, known) if known else (0.0, None)
@@ -151,6 +162,145 @@ def au_legislation_api(
         )
     results.sort(key=lambda r: r.score, reverse=True)
     return results[:limit]
+
+
+def au_act_catalogue(
+    *,
+    client: httpx.Client | None = None,
+    timeout: float = 30.0,
+    cache_path: str | None = None,
+    ttl_hours: float = 24.0,
+    max_pages: int = 60,
+) -> list[dict]:
+    """Fetch the in-force AU Act catalogue (``[{id, name, isPrincipal}]``).
+
+    The OData ``$search`` is a no-op, so concept queries can't be sent to the
+    server (see :func:`au_legislation_api`). The semantic crosswalk instead pulls
+    the whole in-force Act list once and matches it locally. ``$top`` caps at 100,
+    so this pages with ``$skip`` (~48 requests for the ~4.7k in-force Acts) and
+    caches the result to disk for ``ttl_hours`` to keep repeat runs cheap.
+    """
+    cache_path = cache_path or os.path.join("outputs", "cache", "au_act_catalogue.json")
+    if os.path.exists(cache_path) and (time.time() - os.path.getmtime(cache_path)) < ttl_hours * 3600:
+        try:
+            with open(cache_path, encoding="utf-8") as fh:
+                cached = json.load(fh)
+            if cached:
+                return cached
+        except Exception:
+            pass
+
+    flt = quote("collection eq 'Act' and isInForce eq true", safe="(),")
+    owns = client is None
+    client = client or httpx.Client(
+        follow_redirects=True, timeout=timeout,
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+    )
+    catalogue: list[dict] = []
+    try:
+        for page in range(max_pages):
+            url = (
+                f"{_AU_API}?%24filter={flt}&%24top={_AU_PAGE}&%24skip={page * _AU_PAGE}"
+                f"&%24select=id,name,isPrincipal"
+            )
+            resp = client.get(url)
+            if resp.status_code != 200:
+                break
+            values = resp.json().get("value", [])
+            if not values:
+                break
+            catalogue.extend(
+                {"id": v["id"], "name": v.get("name", ""), "isPrincipal": bool(v.get("isPrincipal"))}
+                for v in values if v.get("id") and v.get("name")
+            )
+            if len(values) < _AU_PAGE:
+                break
+    except Exception:
+        return catalogue
+    finally:
+        if owns:
+            client.close()
+
+    if catalogue:
+        try:
+            os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+            with open(cache_path, "w", encoding="utf-8") as fh:
+                json.dump(catalogue, fh, ensure_ascii=False)
+        except Exception:
+            pass
+    return catalogue
+
+
+def au_semantic_crosswalk(
+    portal: PortalSpec,
+    indicators: list,
+    *,
+    embedder,
+    top_k: int = 6,
+    min_sim: float = 0.50,
+    timeout: float = 30.0,
+    client: httpx.Client | None = None,
+    known_instruments: list[str] | None = None,
+    known_instrument_ids: dict[str, str] | None = None,
+    catalogue: list[dict] | None = None,
+) -> list[DiscoveryResult]:
+    """Bridge RDTII concepts to AU statute titles by dense similarity.
+
+    AU's name-only portal can never surface a statute that isn't already in the
+    known list (a concept query shares no tokens with the law name). This closes
+    that gap: embed every in-force Act title once, embed each indicator's concept
+    text, and surface the ``top_k`` titles above ``min_sim`` as candidates,
+    attributed to the indicator whose concept found them. Hits that fuzzy-match a
+    known instrument are tagged KNOWN; the rest are NEW — which is how AU gets any
+    NEW discovery at all.
+    """
+    from lexora.semantic.embedder import cosine_topk
+
+    catalogue = catalogue if catalogue is not None else au_act_catalogue(
+        client=client, timeout=timeout
+    )
+    if not catalogue or not indicators:
+        return []
+
+    titles = [c["name"] for c in catalogue]
+    title_vecs = embedder.encode(titles)
+    concept_texts = [
+        " ".join([ind.name, ind.description, *ind.query_phrases()]) for ind in indicators
+    ]
+    concept_vecs = embedder.encode(concept_texts)
+    known = known_instruments or []
+
+    agg: dict[str, DiscoveryResult] = {}
+    for ind, qvec in zip(indicators, concept_vecs, strict=True):
+        for doc_idx, sim in cosine_topk(qvec, title_vecs, top_k):
+            if sim < min_sim:
+                continue
+            entry = catalogue[doc_idx]
+            name = entry["name"]
+            fuzzy, matched = _fuzzy_known(name, known) if known else (0.0, None)
+            tag, matched_name = _resolve_tag(
+                fuzzy, matched, entry["id"], known, known_instrument_ids
+            )
+            tag = tag or TAG_NEW  # a concept-surfaced title we don't already know
+            url = _AU_DOC.format(id=entry["id"], point="latest")
+            cur = agg.get(entry["id"])
+            if cur is None:
+                agg[entry["id"]] = DiscoveryResult(
+                    url=url, title=name, source_type=portal.source_type,
+                    score=float(sim), via="api", is_pdf_link=False,
+                    discovery_tag=tag, matched_instrument=matched_name,
+                    indicator_hits=[ind.submission_id],
+                )
+            else:
+                cur.score = max(cur.score, float(sim))
+                if ind.submission_id not in cur.indicator_hits:
+                    cur.indicator_hits.append(ind.submission_id)
+                if tag == TAG_KNOWN:
+                    cur.discovery_tag = TAG_KNOWN
+                    cur.matched_instrument = cur.matched_instrument or matched_name
+    for res in agg.values():
+        res.indicator_hits.sort()
+    return sorted(agg.values(), key=lambda r: r.score, reverse=True)
 
 
 def _my_act_id(doc: dict, os_url: str, title: str) -> str:
@@ -295,11 +445,26 @@ STRATEGIES: dict[str, Strategy] = {
     "lom.agc.gov.my": my_legislation_api,
 }
 
+# host substring -> concept (semantic) crosswalk, used by name-only portals to
+# discover statutes that share no tokens with the indicator's concept phrasing.
+CONCEPT_STRATEGIES: dict[str, Callable[..., list[DiscoveryResult]]] = {
+    "legislation.gov.au": au_semantic_crosswalk,
+}
+
 
 def strategy_for(portal: PortalSpec) -> Strategy | None:
     """Return the registered strategy for a portal's host, or None."""
     host = urlparse(str(portal.url)).netloc.lower()
     for needle, strat in STRATEGIES.items():
+        if needle in host:
+            return strat
+    return None
+
+
+def concept_strategy_for(portal: PortalSpec) -> Callable[..., list[DiscoveryResult]] | None:
+    """Return the registered semantic-crosswalk strategy for a portal, or None."""
+    host = urlparse(str(portal.url)).netloc.lower()
+    for needle, strat in CONCEPT_STRATEGIES.items():
         if needle in host:
             return strat
     return None
@@ -359,10 +524,14 @@ __all__ = [
     "Strategy",
     "au_legislation_api",
     "my_legislation_api",
+    "au_act_catalogue",
+    "au_semantic_crosswalk",
     "sg_resolve_fulltext",
     "au_resolve_fulltext",
     "STRATEGIES",
+    "CONCEPT_STRATEGIES",
     "RESOLVERS",
     "strategy_for",
+    "concept_strategy_for",
     "resolver_for",
 ]

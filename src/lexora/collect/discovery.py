@@ -479,6 +479,65 @@ def _merge_into(agg: dict[str, DiscoveryResult], r: DiscoveryResult, key: str | 
     agg[key] = winner
 
 
+def _get_embedder(use_semantic: bool):
+    """Return a cached embedder if the optional dense backend is installed and
+    enabled, else None (callers degrade to keyword-only ranking)."""
+    if not use_semantic:
+        return None
+    from lexora.semantic import embedder as emb_mod
+
+    if not emb_mod.is_available():
+        return None
+    try:
+        return emb_mod.get_embedder()
+    except Exception:
+        return None
+
+
+def _semantic_rerank(
+    agg: dict[str, DiscoveryResult],
+    indicators_by_key: dict[str, set[str]],
+    indicators: list,
+    embedder,
+    *,
+    bonus: float = 0.2,
+) -> None:
+    """Add a concept-similarity *bonus* to each candidate's score in place.
+
+    Token-overlap / fuzzy scores saturate near 1.0 on a full-text portal (a long
+    Act title trivially contains the query words), so the budget cut can't tell a
+    record-keeping statute from a stray match. The cosine between a candidate's
+    title and the concept(s) that surfaced it adds a discriminating tie-breaker.
+
+    It is strictly *additive* (``score += bonus * cosine``), never a blend that
+    could pull a strong keyword hit down: on portals whose titles are filenames
+    (MY Fess, e.g. ``Act 730_ONLINE.pdf``) a title has near-zero cosine, and a
+    weighted average would wrongly demote a correctly-found statute out of budget.
+    Only-up means the dense signal can promote a clean-title sectoral law without
+    ever penalising a filename-titled one.
+    """
+    if embedder is None or not agg:
+        return
+    concept_by_id = {
+        ind.submission_id: " ".join([ind.name, ind.description, *ind.query_phrases()])
+        for ind in indicators
+    }
+    keys = list(agg.keys())
+    title_vecs = embedder.encode([agg[k].title or "" for k in keys])
+    concept_ids = list(concept_by_id)
+    concept_vecs = embedder.encode([concept_by_id[i] for i in concept_ids])
+    cidx = {cid: i for i, cid in enumerate(concept_ids)}
+
+    for row, key in enumerate(keys):
+        res = agg[key]
+        hit_ids = indicators_by_key.get(key) or set(concept_ids)
+        rows = [cidx[i] for i in hit_ids if i in cidx]
+        if not rows or title_vecs.size == 0:
+            continue
+        sim = float((concept_vecs[rows] @ title_vecs[row]).max())
+        res.score = min(1.0, res.score + bonus * max(sim, 0.0))
+
+
 def discover_for_indicators(
     portal: PortalSpec,
     indicators: list,
@@ -493,6 +552,7 @@ def discover_for_indicators(
     force_browser: bool = False,
     known_instruments: list[str] | None = None,
     known_instrument_ids: dict[str, str] | None = None,
+    use_semantic: bool = True,
 ) -> list[DiscoveryResult]:
     """Discover a *working set* of instruments for a list of indicators.
 
@@ -547,6 +607,8 @@ def discover_for_indicators(
         if is_available():
             session_cm = BrowserSession(user_agent=BROWSER_UA, timeout=timeout)
 
+    embedder = _get_embedder(use_semantic)
+
     agg: dict[str, DiscoveryResult] = {}
     indicators_by_key: dict[str, set[str]] = {}
     session = session_cm.__enter__() if session_cm is not None else None
@@ -565,8 +627,30 @@ def discover_for_indicators(
         if session_cm is not None:
             session_cm.__exit__(None, None, None)
 
+    # Name-only portals (AU) can't send a concept query to the server, so the
+    # phrase loop above only re-finds known names. The semantic crosswalk bridges
+    # concepts -> statute titles locally and is the only source of NEW AU hits.
+    if embedder is not None and not portal.full_text:
+        from lexora.collect.strategies import concept_strategy_for
+
+        crosswalk = concept_strategy_for(portal)
+        if crosswalk is not None:
+            for r in crosswalk(
+                portal, indicators, embedder=embedder, timeout=timeout, client=client,
+                known_instruments=known_instruments,
+                known_instrument_ids=known_instrument_ids,
+            ):
+                key = _identity_key(r)
+                _merge_into(agg, r, key)
+                indicators_by_key.setdefault(key, set()).update(r.indicator_hits)
+
     for key, res in agg.items():
         res.indicator_hits = sorted(indicators_by_key.get(key, set()))
+
+    # On full-text portals the keyword score saturates; a dense re-rank gives the
+    # budget cut a discriminating signal so the right sectoral law survives.
+    if embedder is not None and portal.full_text:
+        _semantic_rerank(agg, indicators_by_key, indicators, embedder)
 
     ranked = sorted(agg.values(), key=lambda r: (r.score, r.n_variants), reverse=True)
     # Keep KNOWN instruments ahead of the budget cut: a flagship/known law must
