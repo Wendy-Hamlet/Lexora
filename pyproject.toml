@@ -47,8 +47,11 @@ browser = [
     "playwright>=1.44",
 ]
 embeddings = [
-    "sentence-transformers>=2.5",
-    "torch>=2.2",
+    # Dense retrieval backend. fastembed runs a small BGE model via onnxruntime
+    # (no torch), so it stays light and CPU-friendly; the model downloads on first
+    # use. For a stronger model, set LEXORA_EMBED_MODEL and/or install the heavier
+    # sentence-transformers + torch stack instead.
+    "fastembed>=0.3",
 ]
 ocr = [
     "pytesseract>=0.3.10",
