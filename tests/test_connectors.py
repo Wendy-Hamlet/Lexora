@@ -9,8 +9,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from lexora.collect.strategies import (
+    _OAIC_INCLUDE,
     _clean_guidance_title,
+    _collect_guidance,
+    _my_is_code,
     connector_for,
+    my_pdp_guidance,
+    oaic_guidance,
     pdpc_guidance,
 )
 from lexora.models.source import (
@@ -89,6 +94,90 @@ def test_connector_for_matches_pdpc_host_only():
     assert connector_for(_pdpc_portal()) is pdpc_guidance
     other = PortalSpec(name="SSO", url="https://sso.agc.gov.sg/", source_type=SourceType.primary)
     assert connector_for(other) is None
+
+
+def test_connector_for_matches_my_and_au_hosts():
+    my = PortalSpec(name="JPDP", url="https://www.pdp.gov.my/", source_type=SourceType.secondary)
+    au = PortalSpec(name="OAIC", url="https://www.oaic.gov.au/", source_type=SourceType.secondary)
+    assert connector_for(my) is my_pdp_guidance
+    assert connector_for(au) is oaic_guidance
+
+
+# --- MY PDP codes of practice ---
+
+_MY_HTML = """
+<html><body>
+  <nav><a href="/ppdpv1/en/akta/">Akta</a><a href="/ppdpv1/en/akta/code-of-practice/">Code of Practice</a></nav>
+  <ul>
+    <li><a href="/ppdpv1/en/akta/personal-data-protection-code-of-practice-for-banking-sector-and-financial-institutions/">
+        Personal Data Protection Code of Practice For Banking Sector And Financial Institutions</a></li>
+    <li><a href="/ppdpv1/en/akta/personal-data-protection-code-of-practice-for-the-communications-sector/">
+        Personal Data Protection Code of Practice For the Communications Sector</a></li>
+    <li><a href="/ppdpv1/en/akta/akta-pdp-2010-my/">AKTA 709</a></li>
+  </ul>
+</body></html>
+"""
+
+
+def test_my_is_code_excludes_bare_hub():
+    assert _my_is_code("https://www.pdp.gov.my/ppdpv1/en/akta/personal-data-protection-code-of-practice-for-banking-sector-and-financial-institutions/")
+    assert not _my_is_code("https://www.pdp.gov.my/ppdpv1/en/akta/code-of-practice/")
+    assert not _my_is_code("https://www.pdp.gov.my/ppdpv1/en/akta/akta-pdp-2010-my/")
+
+
+def test_collect_guidance_harvests_my_codes_excludes_hub_and_act():
+    hub = "https://www.pdp.gov.my/ppdpv1/en/akta/code-of-practice/"
+    out = _collect_guidance(
+        _MY_HTML, hub, include=_my_is_code, known=[], hubs=(hub,),
+    )
+    titles = {r.title for r in out.values()}
+    assert any("Banking Sector" in t for t in titles)
+    assert any("Communications Sector" in t for t in titles)
+    assert all("AKTA 709" not in t for t in titles)  # the Act, not a code
+    assert all(r.source_type is SourceType.secondary for r in out.values())
+
+
+# --- AU OAIC guidance ---
+
+_OAIC_HTML = """
+<html><body>
+  <a href="/privacy">Privacy</a>
+  <a href="/freedom-of-information/foi-guidance">FOI guidance</a>
+  <ul>
+    <li><a href="https://www.oaic.gov.au/privacy/privacy-guidance-for-organisations-and-government-agencies/privacy-impact-assessments">
+        Privacy impact assessments</a></li>
+    <li><a href="https://www.oaic.gov.au/privacy/australian-privacy-principles/australian-privacy-principles-guidelines/chapter-8-app-8-cross-border-disclosure-of-personal-information">
+        Chapter 8: APP 8 Cross-border disclosure of personal information</a></li>
+    <li><a href="https://www.oaic.gov.au/privacy/privacy-guidance-for-organisations-and-government-agencies">Government agencies</a></li>
+  </ul>
+</body></html>
+"""
+
+
+def test_collect_guidance_harvests_oaic_pia_and_app_skips_nav():
+    out = _collect_guidance(
+        _OAIC_HTML, "https://www.oaic.gov.au/privacy/x",
+        include=lambda u: bool(_OAIC_INCLUDE.search(u)), known=[],
+    )
+    titles = {r.title for r in out.values()}
+    assert "Privacy impact assessments" in titles
+    assert any("APP 8 Cross-border" in t for t in titles)
+    # cross-section FOI link and the "Government agencies" nav label are excluded
+    assert all("FOI" not in t and t.lower() != "government agencies" for t in titles)
+
+
+def test_oaic_guidance_returns_empty_offline(monkeypatch):
+    # No network in the offline suite: the connector must degrade to [].
+    import lexora.collect.strategies as strat
+
+    class _Boom:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def get(self, *a, **k): raise RuntimeError("no network")
+
+    monkeypatch.setattr(strat.httpx, "Client", lambda *a, **k: _Boom())
+    portal = PortalSpec(name="OAIC", url="https://www.oaic.gov.au/", source_type=SourceType.secondary)
+    assert oaic_guidance(portal, []) == []
 
 
 def test_discover_secondary_returns_empty_without_connector_portals(monkeypatch):

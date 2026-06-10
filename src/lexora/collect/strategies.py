@@ -450,6 +450,59 @@ def my_legislation_api(
 
 PortalConnector = Callable[..., list[DiscoveryResult]]
 
+# Anchor texts that are navigation, not documents.
+_GUIDANCE_SKIP = {
+    "", "skip to content", "skip to main content", "next", "previous",
+    "back to top", "read more", "home", "organisations", "individuals",
+    "government agencies", "health service providers", "more guidance",
+}
+
+
+def _collect_guidance(
+    html: str,
+    base_url: str,
+    *,
+    include: Callable[[str], bool],
+    known: list[str],
+    via: str = "http",
+    clean_title: Callable[[str], str] | None = None,
+    hubs: tuple[str, ...] = (),
+    out: dict[str, DiscoveryResult] | None = None,
+) -> dict[str, DiscoveryResult]:
+    """Harvest guidance/document links from a regulator hub page into ``out``.
+
+    Shared by every connector: pick anchors whose URL ``include(url)`` accepts
+    (and that aren't a hub or a ``?`` facet link), clean the title, dedup by URL
+    keeping the longest title, and tag KNOWN only when the title fuzzy-matches a
+    known instrument (guidance is otherwise NEW). All results are *secondary*.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    hubset = {h.rstrip("/") for h in hubs}
+    out = out if out is not None else {}
+    for a in soup.find_all("a", href=True):
+        href = a["href"].split("#")[0].strip()
+        if not href or "?" in href:
+            continue
+        url = urljoin(base_url, href)
+        if url.rstrip("/") in hubset or not include(url):
+            continue
+        raw = " ".join(a.get_text(" ", strip=True).split())
+        title = clean_title(raw) if clean_title else raw
+        if len(title) < 8 or title.lower() in _GUIDANCE_SKIP:
+            continue
+        fuzzy, matched = _fuzzy_known(title, known) if known else (0.0, None)
+        tag = TAG_KNOWN if fuzzy >= 0.80 else TAG_NEW
+        cur = out.get(url)
+        if cur is None or len(title) > len(cur.title):
+            out[url] = DiscoveryResult(
+                url=url, title=title, source_type=SourceType.secondary,
+                score=1.0, via=via, is_pdf_link=url.lower().endswith(".pdf"),
+                discovery_tag=tag, matched_instrument=(matched if tag == TAG_KNOWN else None),
+            )
+    return out
+
+
+# --- SG PDPC (browser-rendered) ---
 # PDPC publishes guidance as JS-rendered hub pages that list per-document detail
 # pages; the detail-page titles carry the instrument name (+ a date / category
 # prefix we strip). These two hubs are the canonical lists.
@@ -509,28 +562,100 @@ def pdpc_guidance(
             html = _render(hub)
         except Exception:
             continue
-        soup = BeautifulSoup(html, "lxml")
-        for a in soup.find_all("a", href=True):
-            href = a["href"].strip()
-            # Detail pages are clean slugs; a query string marks a category facet
-            # ("?type=Training+Courses") or the hub itself, not a document.
-            if "?" in href or not _PDPC_DETAIL.search(href):
+        _collect_guidance(
+            html, hub, include=lambda u: bool(_PDPC_DETAIL.search(u)), known=known,
+            via="browser", clean_title=_clean_guidance_title, hubs=_PDPC_HUBS, out=agg,
+        )
+    return list(agg.values())[:limit]
+
+
+# --- MY PDP / JPDP (server-rendered HTTP) ---
+# pdp.gov.my serves static HTML. The "Code of Practice" list is exposed in the
+# sidebar of each code page (not the bare hub), so we seed with the hub *and* a
+# known code page and harvest the sibling `code-of-practice` links from both.
+_MY_PDP_SEEDS = (
+    "https://www.pdp.gov.my/ppdpv1/en/akta/code-of-practice/",
+    "https://www.pdp.gov.my/ppdpv1/en/akta/"
+    "personal-data-protection-code-of-practice-for-banking-sector-and-financial-institutions/",
+)
+
+
+def _my_is_code(url: str) -> bool:
+    """A sector code-of-practice page (not the bare `/code-of-practice/` hub)."""
+    u = url.lower().rstrip("/")
+    return "code-of-practice" in u and not u.endswith("code-of-practice")
+
+
+def my_pdp_guidance(
+    portal: PortalSpec,
+    indicators: list,
+    *,
+    browser_session=None,
+    limit: int = 40,
+    timeout: float = 45.0,
+    known_instruments: list[str] | None = None,
+    known_instrument_ids: dict[str, str] | None = None,
+) -> list[DiscoveryResult]:
+    """Harvest the Malaysian PDP sectoral Codes of Practice (banking, communications,
+    healthcare, utilities). Server-rendered, so this uses plain HTTP."""
+    known = known_instruments or []
+    agg: dict[str, DiscoveryResult] = {}
+    with httpx.Client(
+        follow_redirects=True, timeout=timeout,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0 Safari/537.36"},
+    ) as client:
+        for seed in _MY_PDP_SEEDS:
+            try:
+                html = client.get(seed).text
+            except Exception:
                 continue
-            url = urljoin(hub, href)
-            if url.rstrip("/") in (h.rstrip("/") for h in _PDPC_HUBS):
-                continue  # the hub linking to itself / sibling hub
-            title = _clean_guidance_title(" ".join(a.get_text(" ", strip=True).split()))
-            if len(title) < 8:
+            # Exclude only the bare `/code-of-practice/` listing hub — the banking
+            # seed is itself a real code page (a gold target) and must stay.
+            _collect_guidance(
+                html, seed, include=_my_is_code, known=known,
+                hubs=(_MY_PDP_SEEDS[0],), out=agg,
+            )
+    return list(agg.values())[:limit]
+
+
+# --- AU OAIC (server-rendered HTTP) ---
+_OAIC_HUBS = (
+    "https://www.oaic.gov.au/privacy/privacy-guidance-for-organisations-and-government-agencies",
+    "https://www.oaic.gov.au/privacy/australian-privacy-principles/australian-privacy-principles-guidelines",
+)
+_OAIC_INCLUDE = re.compile(
+    r"oaic\.gov\.au/privacy/.*(privacy-impact|guidance|guidelines|data-breach|handling-personal)",
+    re.I,
+)
+
+
+def oaic_guidance(
+    portal: PortalSpec,
+    indicators: list,
+    *,
+    browser_session=None,
+    limit: int = 40,
+    timeout: float = 45.0,
+    known_instruments: list[str] | None = None,
+    known_instrument_ids: dict[str, str] | None = None,
+) -> list[DiscoveryResult]:
+    """Harvest OAIC (Australia) privacy guidance — APP guidelines, Privacy Impact
+    Assessment guidance, data-breach guidance. Server-rendered, so plain HTTP."""
+    known = known_instruments or []
+    agg: dict[str, DiscoveryResult] = {}
+    with httpx.Client(
+        follow_redirects=True, timeout=timeout,
+        headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/124.0 Safari/537.36"},
+    ) as client:
+        for hub in _OAIC_HUBS:
+            try:
+                html = client.get(hub).text
+            except Exception:
                 continue
-            fuzzy, matched = _fuzzy_known(title, known) if known else (0.0, None)
-            tag = TAG_KNOWN if fuzzy >= 0.80 else TAG_NEW
-            cur = agg.get(url)
-            if cur is None or len(title) > len(cur.title):
-                agg[url] = DiscoveryResult(
-                    url=url, title=title, source_type=SourceType.secondary,
-                    score=1.0, via="browser", is_pdf_link=False,
-                    discovery_tag=tag, matched_instrument=(matched if tag == TAG_KNOWN else None),
-                )
+            _collect_guidance(
+                html, hub, include=lambda u: bool(_OAIC_INCLUDE.search(u)), known=known,
+                hubs=_OAIC_HUBS, out=agg,
+            )
     return list(agg.values())[:limit]
 
 
@@ -543,6 +668,8 @@ STRATEGIES: dict[str, Strategy] = {
 # host substring -> regulator-portal guidance connector
 PORTAL_CONNECTORS: dict[str, PortalConnector] = {
     "pdpc.gov.sg": pdpc_guidance,
+    "pdp.gov.my": my_pdp_guidance,
+    "oaic.gov.au": oaic_guidance,
 }
 
 
@@ -636,6 +763,8 @@ __all__ = [
     "au_act_catalogue",
     "au_semantic_crosswalk",
     "pdpc_guidance",
+    "my_pdp_guidance",
+    "oaic_guidance",
     "PORTAL_CONNECTORS",
     "connector_for",
     "sg_resolve_fulltext",
