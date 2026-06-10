@@ -148,7 +148,7 @@ def _eval_one(iso: str, gold: list[str], *, budget: int, dry_run: bool,
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("-j", "--jurisdiction", default="all", help="sg|au|my|all")
-    ap.add_argument("--budget", type=int, default=15)
+    ap.add_argument("--budget", type=int, default=20)
     ap.add_argument("--dry-run", action="store_true", help="list gold only, no network")
     ap.add_argument("--no-semantic", action="store_true",
                     help="disable the dense crosswalk/re-rank (keyword-only baseline)")

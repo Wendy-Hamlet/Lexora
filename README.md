@@ -53,7 +53,9 @@ See [`docs/architecture.md`](docs/architecture.md) for the full design and
 - [x] **Anti-overfitting discovery eval** — multi-query (name vs indicator phrasing); NAME 6/6, INDICATOR 5/5 (all rank #1)
 - [x] **Dense/semantic layer** (optional, fastembed) — AU concept→title crosswalk (gives the name-only AU portal its first NEW discovery), SG/MY candidate re-rank, clause-level BM25+dense RRF fusion
 - [x] **Regulator-portal connectors** — secondary-source guidance corpus beyond the statute portals (SG PDPC advisory guidelines, MY PDP sectoral codes of practice, AU OAIC APP guidelines + PIA), as NEW evidence
-- [ ] LLM verifier (open-weights, served) on top of the verbatim validator
+- [x] **Statutory-seed discovery + identity fix** — domain-qualified concept phrases reach sectoral content-signal statutes (Companies / Income Tax / Employment Acts) whose titles carry no signal; KNOWN/NEW identity now matches the instrument name only, so an Act that merely *cites* the PDPA is no longer mis-tagged KNOWN
+- [x] **Constrained LLM verifier** (open-weights, served) on top of the verbatim validator — a *tightening-only* gate: of the BM25-passing clauses it picks at most one that genuinely supports the indicator or abstains (cutting wrong-indicator mappings), routes "uncertain" to human review, and returns clause IDs only (never quote text). Optional + off by default (`lexora map --verify`, any OpenAI-compatible endpoint); degrades to BM25 + verbatim when no server is configured
+- [x] **Mapping-quality eval + retrieval tuning** (`scripts/eval_mapping.py`) — section-level gold (`indicator → correct section`) for the flagship statutes of all three economies (dump-verified); reports hit@1 / hit@3 with a BM25-vs-fusion **A/B**. The eval drove two evidenced fixes to clause retrieval: drop non-operative boilerplate sections, and **anchor rank-1 to BM25** (dense was demoting BM25's correct top hit with vocabulary-dense Schedule/definition clauses). Result across SG/AU/MY: **hit@1 1/7 → 2/7 and hit@3 3/7** — the new fusion Pareto-dominates both plain RRF and BM25-only
 - [ ] OCR pipeline + confidence triage
 - [ ] Review UI (side-by-side audit)
 
@@ -78,6 +80,11 @@ playwright install chromium
 # Optional: dense/semantic layer (AU concept→title crosswalk, candidate re-rank,
 # clause BM25+dense fusion). fastembed downloads a small ONNX model on first use.
 pip install -e ".[embeddings]"
+
+# Optional: constrained LLM verifier (tightening gate over verbatim). Works with
+# any OpenAI-compatible server (vLLM / Ollama / OpenAI); set LEXORA_LLM_BASE_URL,
+# LEXORA_LLM_MODEL, LEXORA_LLM_API_KEY. Off unless `lexora map --verify` is passed.
+pip install -e ".[llm]"
 ```
 
 ## Usage
@@ -94,6 +101,7 @@ lexora discover -j sg
 lexora map -j my            # Malaysia  (Fess/Solr full-text)
 lexora map -j sg            # Singapore (SSO via headless browser)
 lexora map -j au            # Australia (OData API)
+lexora map -j sg --verify   # + LLM verifier: tighten mappings, flag uncertain
 # → writes outputs/map.csv (official submission schema) + outputs/map.jsonld
 
 # Manual fallbacks

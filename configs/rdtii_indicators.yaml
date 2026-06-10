@@ -70,9 +70,9 @@ pillars:
           - "retain within"
           - "kept within"
         discovery_queries:
-          - "data must be stored within the country"
-          - "local storage of records requirement"
-          - "copy of personal data retained domestically"
+          - "data stored within the country"
+          - "local storage requirement"
+          - "records kept within the country"
 
       - submission_id: "P6-I3"
         rdtii_id: "6.3"
@@ -160,10 +160,13 @@ pillars:
           - "computer misuse"
           - "cybercrime"
           - "cyber security agency"
+        # "unauthorised access to computer material" is the operative offence
+        # wording shared by the Computer Misuse / Computer Crimes Acts, which a
+        # vague "cybercrime offences" phrase misses under all-words ranking.
         discovery_queries:
-          - "cybersecurity obligations for critical information infrastructure"
-          - "computer misuse and cybercrime offences"
-          - "duties of cybersecurity service providers"
+          - "critical information infrastructure"
+          - "unauthorised access to computer material"
+          - "computer misuse offences"
 
       - submission_id: "P7-I3"
         rdtii_id: "7.3"
@@ -180,10 +183,17 @@ pillars:
           - "minimum period"
           - "period of retention"
           - "maintain ... records"
+        # Tight statutory n-grams reach the sectoral retention duties hidden in
+        # Acts whose TITLE says nothing about retention. A domain qualifier
+        # ("income tax records") pulls the specific statute to the top of an
+        # all-words engine where a bare concept phrase ("books of account") only
+        # drowns it among the dozens of Acts that mention the term. Verified live:
+        # "keep records for a period" -> Employment Act 1968; "income tax records"
+        # -> Income Tax Act 1947 (rank 0); "retention of records" -> Telecom Act.
         discovery_queries:
-          - "keep records for a period of at least"
-          - "minimum data retention period"
-          - "records shall be retained for not less than"
+          - "keep records for a period"
+          - "income tax records"
+          - "retention of records"
 
       - submission_id: "P7-I4"
         rdtii_id: "7.4"
@@ -222,8 +232,11 @@ pillars:
           - "without a warrant"
           - "production order"
           - "government access"
+        # "search and seizure" is the doorway to the Criminal Procedure Code and
+        # Security Offences Act — the government-access statutes whose titles give
+        # no hint of a data-access power. Kept first three for the all-words cap.
         discovery_queries:
-          - "access to computer data for investigation"
+          - "access to computer data"
+          - "search and seizure"
           - "interception of communications"
           - "production order requiring disclosure of data"
-          - "lawful government access to personal data"

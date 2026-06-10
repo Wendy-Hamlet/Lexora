@@ -98,19 +98,25 @@ def cosine_topk(
 
 
 def reciprocal_rank_fusion(
-    rankings: list[list[str]], *, k: int = 60
+    rankings: list[list[str]], *, k: int = 60, weights: list[float] | None = None
 ) -> dict[str, float]:
     """Reciprocal-rank fusion of several ranked id lists into one score map.
 
-    RRF score of an id = sum over each ranking of ``1 / (k + rank)`` (rank from
-    1). It fuses heterogeneous scorers (BM25's unbounded scores and cosine's
-    [-1,1]) without normalizing either — only the within-list rank matters, which
-    is exactly what we want when BM25 scores saturate and can't discriminate.
+    RRF score of an id = sum over each ranking of ``weight / (k + rank)`` (rank
+    from 1, ``weight`` defaulting to 1). It fuses heterogeneous scorers (BM25's
+    unbounded scores and cosine's [-1,1]) without normalizing either — only the
+    within-list rank matters, which is exactly what we want when BM25 scores
+    saturate and can't discriminate. ``weights`` (one per ranking) lets a caller
+    trust the precise channel more than the recall channel: a higher BM25 weight
+    keeps a confident BM25 top-1 from being demoted by a noisy dense match while
+    still letting dense pull a BM25-missed clause into the lower ranks.
     """
+    if weights is None:
+        weights = [1.0] * len(rankings)
     scores: dict[str, float] = {}
-    for ranking in rankings:
+    for ranking, weight in zip(rankings, weights, strict=True):
         for rank, doc_id in enumerate(ranking, start=1):
-            scores[doc_id] = scores.get(doc_id, 0.0) + 1.0 / (k + rank)
+            scores[doc_id] = scores.get(doc_id, 0.0) + weight / (k + rank)
     return scores
 
 

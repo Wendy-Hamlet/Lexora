@@ -167,3 +167,84 @@ def test_fusion_surfaces_dense_only_clause():
     hits = retrieve_candidates(ind, _profile(), index, top_k=2, embedder=FakeEmbedder())
     assert hits[0].clause_id == "c2"
     assert hits[0].source == "fused"
+
+
+def test_boilerplate_section_is_dropped_from_candidates():
+    # An "Interpretation" front-matter clause that is vocabulary-dense for the
+    # indicator must not be returned: it is non-operative and otherwise floats to
+    # the top of the dense channel for every indicator (P-4 finding).
+    from lexora.classify.retrieval import _is_boilerplate, build_index, retrieve_candidates
+
+    boilerplate = _clause(
+        "c1", '2. Interpretation In this Act, "personal data", "transfer", '
+        '"organisation" and "consent" have the meanings given below')
+    operative = _clause(
+        "c2", "26. An organisation must not transfer personal data to a country "
+        "outside Singapore except with comparable protection")
+    assert _is_boilerplate(boilerplate) and not _is_boilerplate(operative)
+
+    index = build_index([boilerplate, operative])
+    ind = RDTIIIndicator(
+        rdtii_id="6.4", submission_id="P6-I4", pillar=6, name="transfer",
+        description="transfer of personal data to a country outside with consent",
+        keywords=["transfer", "personal", "data", "consent", "organisation"],
+    )
+    hits = retrieve_candidates(ind, _profile(), index, top_k=2, embedder=FakeEmbedder())
+    ids = [h.clause_id for h in hits]
+    assert "c1" not in ids and "c2" in ids
+    # with the filter off, the boilerplate clause is eligible again
+    kept = retrieve_candidates(ind, _profile(), index, top_k=2, embedder=FakeEmbedder(),
+                               drop_boilerplate=False)
+    assert "c1" in [h.clause_id for h in kept]
+
+
+class DictEmbedder:
+    """Embedder with hand-assigned 2-D vectors per text, so the dense ranking is
+    fully controlled and decoupled from BM25 (a bag-of-words fake can't diverge
+    from BM25 on purpose; this can)."""
+
+    def __init__(self, vecs: dict[str, list[float]]):
+        self._vecs = vecs
+
+    def encode(self, texts: list[str]) -> np.ndarray:
+        if not texts:
+            return np.zeros((0, 0), dtype=np.float32)
+        out = np.zeros((len(texts), 2), dtype=np.float32)
+        for r, t in enumerate(texts):
+            out[r] = self._vecs.get(t.strip(), [0.0, 0.0])
+        norms = np.linalg.norm(out, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        return out / norms
+
+
+def test_bm25_anchored_rank1_protects_precision_against_dense_demotion():
+    # BM25 ranks cA (the on-point clause) first; the dense channel disagrees and
+    # ranks a vocabulary decoy (cC) first. Plain RRF lets the decoy take rank 1;
+    # the bm25-anchored default pins BM25's top hit back at rank 1 (the P-4 fix).
+    from lexora.classify.retrieval import build_index, retrieve_candidates
+
+    cA = _clause("26", "transfer personal data outside the country to a place")
+    cB = _clause("99", "general miscellaneous matters about forms")
+    cC = _clause("8", "personal data may be collected after consent is given")
+    index = build_index([cA, cB, cC])
+    ind = RDTIIIndicator(
+        rdtii_id="6.4", submission_id="P6-I4", pillar=6, name="transfer",
+        description="transfer of personal data outside the country", keywords=["transfer"],
+    )
+    concept = "transfer of personal data outside the country transfer"
+    emb = DictEmbedder({
+        concept: [1.0, 0.0],
+        cA.span.text: [0.0, 1.0],   # dense thinks cA is unrelated
+        cC.span.text: [1.0, 0.0],   # dense ranks the decoy top
+        cB.span.text: [0.7, 0.7],
+    })
+
+    bm25 = retrieve_candidates(ind, _profile(), index, top_k=1, use_semantic=False)
+    assert bm25[0].clause_id == cA.clause_id  # BM25's precise pick
+
+    plain = retrieve_candidates(ind, _profile(), index, top_k=1, embedder=emb,
+                                anchor_bm25_top1=False)
+    anchored = retrieve_candidates(ind, _profile(), index, top_k=1, embedder=emb,
+                                   anchor_bm25_top1=True)
+    assert plain[0].clause_id == cC.clause_id      # dense demotes the right clause
+    assert anchored[0].clause_id == cA.clause_id   # anchoring restores it

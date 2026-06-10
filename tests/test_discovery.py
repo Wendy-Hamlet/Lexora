@@ -186,6 +186,28 @@ def test_new_tag_for_unlisted_instrument():
     assert results[0].matched_instrument is None
 
 
+def test_cross_reference_in_snippet_does_not_spoof_known():
+    # SG SSO result cards append "<Act name> Current version as at <date>
+    # <provision snippet>". When that snippet quotes ANOTHER statute (here the
+    # PDPA), the body text must not make this Act read as KNOWN — identity is the
+    # name slot only. Regression: token_set_ratio on the full snippet returned
+    # 1.0 against the quoted name, flooding the budget with false-KNOWN hits.
+    html = (
+        '<li><a href="/Act/FSMA2022">Financial Services and Markets Act 2022 '
+        "Current version as at 10 Jun 2026 28M Application of sections 21 and 22 "
+        "of Personal Data Protection Act 2012</a></li>"
+    )
+    results = harvest_candidates(
+        html, base_url="https://sso.agc.gov.sg/", query="protection of personal data",
+        source_type=SourceType.primary,
+        known_instruments=["Personal Data Protection Act 2012", "Cybersecurity Act 2018"],
+    )
+    top = results[0]
+    assert "FSMA2022" in top.url
+    assert top.discovery_tag != "KNOWN"  # it is NOT the PDPA, only cites it
+    assert top.matched_instrument is None
+
+
 def test_context_recovers_title_outside_anchor():
     # AU-style result card: title in a heading, anchor text is just "View".
     html = (

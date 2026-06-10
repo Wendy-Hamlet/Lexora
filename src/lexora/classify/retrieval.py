@@ -22,9 +22,29 @@ from lexora.models.source import SourceProfile
 
 _TOKEN = re.compile(r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*", re.UNICODE)
 
+# Front-matter sections (short title, interpretation, objects, …) are vocabulary
+# hubs: they restate the whole Act's defined terms and aims, so a dense query
+# matches them for almost ANY indicator and they crowd the real operative
+# provision out of the top ranks (measured: fusion was pulling SG s.1/s.2 and MY
+# s.4 to rank 1, demoting the correct section). They are never the operative
+# clause, so they are dropped from candidacy. See scripts/eval_mapping.py.
+_BOILERPLATE_HEAD = re.compile(
+    r"^(?:short title|citation|commencement|interpretation|definitions?|"
+    r"objects?|purpose)\b",
+    re.I,
+)
+_LEAD_SECTION = re.compile(r"^\s*\d+[A-Z]?\s*[.—\-]*\s*")
+
 
 def _tokenize(text: str) -> list[str]:
     return [t.lower() for t in _TOKEN.findall(text)]
+
+
+def _is_boilerplate(clause: Clause) -> bool:
+    """True for non-operative front matter (short title / interpretation / objects
+    / purpose / commencement), detected from the section heading."""
+    head = _LEAD_SECTION.sub("", clause.span.text.lstrip())[:48]
+    return bool(_BOILERPLATE_HEAD.match(head))
 
 
 @dataclass
@@ -157,6 +177,10 @@ def retrieve_candidates(
     use_semantic: bool = True,
     embedder=None,
     pool_k: int = 20,
+    drop_boilerplate: bool = True,
+    bm25_weight: float = 1.0,
+    dense_weight: float = 1.0,
+    anchor_bm25_top1: bool = True,
 ) -> list[RetrievalHit]:
     """Return clause candidates for a single indicator.
 
@@ -165,13 +189,19 @@ def retrieve_candidates(
     ``top_k`` are returned. Each hit keeps its raw BM25 score, so the caller's
     normalized confidence gate behaves identically with or without the dense
     channel — fusion changes *which* clauses rank first, not the score scale.
+
+    ``drop_boilerplate`` removes non-operative front matter (short title /
+    interpretation / objects …) from both channels; these are vocabulary hubs
+    that the dense channel otherwise floats to the top for every indicator.
     """
     terms = _expand_query(indicator, profile, language)
     scores = index.bm25_scores(terms)
     if scores is None:
         return []
+    skip = {i for i, c in enumerate(index.clauses) if drop_boilerplate and _is_boilerplate(c)}
     score_by_id = {c.clause_id: float(scores[i]) for i, c in enumerate(index.clauses)}
-    bm25_order = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+    bm25_order = [i for i in sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
+                  if i not in skip]
 
     emb = embedder if embedder is not None else _maybe_embedder(use_semantic)
     if emb is None:
@@ -180,7 +210,8 @@ def retrieve_candidates(
             for i in bm25_order[:top_k]
         ]
 
-    dense_idx = index.dense_ranking(_concept_text(indicator, profile, language), emb, pool_k)
+    dense_idx = [i for i in index.dense_ranking(
+        _concept_text(indicator, profile, language), emb, pool_k) if i not in skip]
     if not dense_idx:
         return [
             RetrievalHit(index.clauses[i].clause_id, float(scores[i]), "bm25")
@@ -191,8 +222,17 @@ def retrieve_candidates(
 
     bm25_ids = [index.clauses[i].clause_id for i in bm25_order[:pool_k]]
     dense_ids = [index.clauses[i].clause_id for i in dense_idx]
-    fused = reciprocal_rank_fusion([bm25_ids, dense_ids])
-    ordered = sorted(fused, key=lambda cid: fused[cid], reverse=True)[:top_k]
+    fused = reciprocal_rank_fusion([bm25_ids, dense_ids], weights=[bm25_weight, dense_weight])
+    ordered = sorted(fused, key=lambda cid: fused[cid], reverse=True)
+    if anchor_bm25_top1 and bm25_ids:
+        # BM25 owns rank 1 (precision): the mapping eval showed plain RRF lets a
+        # vocabulary-dense but off-point clause (a Schedule paragraph, a definition)
+        # demote BM25's correct top hit, costing hit@1 — while dense still earns
+        # its keep by enriching the tail (recovering a section BM25 missed, hit@3).
+        # So pin BM25's top clause first, then fill the rest by fused rank.
+        top = bm25_ids[0]
+        ordered = [top] + [cid for cid in ordered if cid != top]
+    ordered = ordered[:top_k]
     return [RetrievalHit(cid, score_by_id[cid], "fused") for cid in ordered]
 
 

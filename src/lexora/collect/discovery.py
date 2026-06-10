@@ -147,6 +147,21 @@ def _context_text(a) -> str:
     return ""
 
 
+# Portal boilerplate that follows the instrument NAME in a result title (esp. SG
+# SSO: "<Act name> Current version as at <date> <provision-number> <snippet>…").
+# The snippet often quotes OTHER statutes (an Act whose text cross-references the
+# PDPA), so KNOWN/NEW identity must be matched against the name slot only — not
+# the body — or `token_set_ratio` reads the cross-reference as a self-match.
+_TITLE_BOILERPLATE = re.compile(r"\s+(?:Current version\b|Repealed\b|Reprint\b).*", re.I)
+
+
+def _name_part(title: str) -> str:
+    """The instrument-name slot of a result title, stripped of portal boilerplate
+    and capped so a trailing provision snippet can't spoof a KNOWN match."""
+    cut = _TITLE_BOILERPLATE.split(title, maxsplit=1)[0]
+    return cut[:90].strip() or title[:90]
+
+
 def _fuzzy_known(text: str, known: list[str]) -> tuple[float, str | None]:
     """Best fuzzy match of `text` against the known instrument names, in [0,1]."""
     best, name = 0.0, None
@@ -173,7 +188,8 @@ def _score_link(
     haystack = _tokens(anchor_text) | _tokens(context_text) | _tokens(urlparse(href).path)
     q_overlap = (len(query_tokens & haystack) / len(query_tokens)) if query_tokens else 0.0
 
-    fuzzy, matched = _fuzzy_known(title or context_text, known) if known else (0.0, None)
+    # Identity (KNOWN/NEW) matches the NAME slot only; relevance may use the body.
+    fuzzy, matched = _fuzzy_known(_name_part(title or context_text), known) if known else (0.0, None)
     relevance = max(q_overlap, fuzzy)
 
     title_l = (title or "").lower()
@@ -545,7 +561,7 @@ def discover_for_indicators(
     client: httpx.Client | None = None,
     per_indicator_limit: int = 8,
     max_queries_per_indicator: int = 3,
-    budget: int = 15,
+    budget: int = 20,
     min_score: float = 0.1,
     timeout: float = 30.0,
     user_agent: str = DEFAULT_UA,

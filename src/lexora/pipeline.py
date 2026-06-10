@@ -83,6 +83,7 @@ def run_demo_pipeline(
     dest_dir: Path | None = None,
     top_k: int = 1,
     min_score: float = 0.1,
+    verifier=None,
 ) -> DemoArtifacts:
     """Run extract→structure→retrieve→cite for one local PDF."""
     dest_dir = dest_dir or (Path("data") / "raw" / profile.iso_code.lower())
@@ -98,7 +99,8 @@ def run_demo_pipeline(
     pages = extract_pdf_text(pdf_path)
     clauses = parse_structure(document.document_id, pages)
     citations = _citations_from_clauses(
-        clauses, document, profile, indicators, legal_form, top_k, min_score
+        clauses, document, profile, indicators, legal_form, top_k, min_score,
+        verifier=verifier,
     )
     return DemoArtifacts(document=document, clauses=clauses, citations=citations, pages=pages)
 
@@ -116,6 +118,7 @@ def run_pipeline_from_url(
     top_k: int = 1,
     min_score: float = 0.1,
     discovery_tag: DiscoveryTag = DiscoveryTag.known,
+    verifier=None,
     **fetch_kwargs,
 ) -> DemoArtifacts:
     """Live fetch a URL and run the full pipeline, routing PDF vs HTML.
@@ -149,7 +152,8 @@ def run_pipeline_from_url(
             clauses = parse_structure_html(document.document_id, blocks)
 
     citations = _citations_from_clauses(
-        clauses, document, profile, indicators, legal_form, top_k, min_score, discovery_tag
+        clauses, document, profile, indicators, legal_form, top_k, min_score, discovery_tag,
+        verifier=verifier,
     )
     return DemoArtifacts(
         document=document, clauses=clauses, citations=citations, pages=pages, blocks=blocks
@@ -219,11 +223,12 @@ def run_pipeline_map(
     query: str | None = None,
     per_indicator_limit: int = 8,
     max_queries_per_indicator: int = 3,
-    budget: int = 15,
+    budget: int = 20,
     dest_dir: Path | None = None,
     top_k: int = 1,
     min_score: float = 0.35,
     timeout: float = 60.0,
+    verifier=None,
 ) -> MapResult:
     """Autonomous MULTI-instrument map (P0).
 
@@ -271,7 +276,7 @@ def run_pipeline_map(
             url=target, profile=profile, indicators=ind_subset, portal_name=portal.name,
             source_type=portal.source_type, dest_dir=dest_dir, top_k=top_k,
             min_score=min_score, discovery_tag=tag, browser_fallback=force_browser,
-            timeout=timeout, user_agent=BROWSER_UA, title=hit.title,
+            timeout=timeout, user_agent=BROWSER_UA, title=hit.title, verifier=verifier,
         )
         documents.append(artifacts)
         for c in artifacts.citations:
@@ -312,21 +317,53 @@ def _citations_from_clauses(
     top_k: int,
     min_score: float,
     discovery_tag: DiscoveryTag = DiscoveryTag.known,
+    verifier=None,
 ) -> list[Citation]:
     """Shared core: per indicator, retrieve top-k clauses and materialize the
-    ones that pass the verbatim validator."""
+    ones that pass the verbatim validator.
+
+    When ``verifier`` is supplied (the optional LLM gate, P-3) it runs AFTER
+    retrieval and verbatim as a tightening step: of the BM25-passing candidates
+    it selects at most one clause that actually supports the indicator, or
+    abstains (dropping the citation). It can only narrow the keyword result — it
+    never adds a clause or relaxes a gate."""
     citations: list[Citation] = []
     if not clauses:
         return citations
     index: BM25Index = build_index(clauses)
     clause_by_id = {c.clause_id: c for c in clauses}
     for indicator in indicators:
-        for hit in retrieve_candidates(indicator, profile, index, top_k=top_k):
-            # Gate on the NORMALIZED score so `min_score` is a portable [0, 1]
-            # relevance floor (raw BM25 is unbounded and corpus-dependent — a
-            # fixed raw cutoff prunes nothing on a big document).
-            if _normalize_score(hit.score) < min_score:
+        # Gate on the NORMALIZED score so `min_score` is a portable [0, 1]
+        # relevance floor (raw BM25 is unbounded and corpus-dependent — a
+        # fixed raw cutoff prunes nothing on a big document).
+        passing = [
+            hit for hit in retrieve_candidates(indicator, profile, index, top_k=top_k)
+            if _normalize_score(hit.score) >= min_score
+        ]
+        if not passing:
+            continue
+
+        if verifier is not None:
+            # One LLM judgement per indicator over its candidate clauses; it may
+            # pick one (match/uncertain) or abstain. The score scale is unchanged
+            # — confidence stays BM25-derived; the verdict only gates inclusion
+            # and, for "uncertain", routes to human review.
+            candidates = [clause_by_id[h.clause_id] for h in passing]
+            claim = verifier.verify(indicator, candidates)
+            if claim is None:
                 continue
+            hit = next(h for h in passing if h.clause_id == claim.clause_id)
+            citation = _materialize(
+                indicator=indicator, clause=clause_by_id[claim.clause_id],
+                document=document, legal_form=legal_form, economy=profile.jurisdiction,
+                bm25_score=hit.score, discovery_tag=discovery_tag,
+                review_label=claim.label,
+            )
+            if citation is not None:
+                citations.append(citation)
+            continue
+
+        for hit in passing:
             citation = _materialize(
                 indicator=indicator,
                 clause=clause_by_id[hit.clause_id],
@@ -350,15 +387,21 @@ def _materialize(
     economy: str,
     bm25_score: float,
     discovery_tag: DiscoveryTag = DiscoveryTag.known,
+    review_label: ClaimLabel = ClaimLabel.match,
 ) -> Citation | None:
     """One-clause-one-indicator: synthesize a verifier-shaped claim and run it
-    through the same validator the real LLM verifier will use. The claim carries
-    the official submission code (e.g. "P6-I4") as its indicator_id."""
+    through the same validator. The claim carries the official submission code
+    (e.g. "P6-I4") as its indicator_id.
+
+    ``review_label`` is the LLM verifier's verdict (default ``match`` keeps the
+    pre-P-3 behaviour). An ``uncertain`` verdict still publishes the citation but
+    routes it to human review (``CONFLICT_REVIEW``) rather than ``VERIFIED`` — the
+    verbatim quote is sound, the *mapping* is what's in doubt."""
     claim = EvidenceClaim(
         indicator_id=indicator.submission_id,
         clause_id=clause.clause_id,
         quote_span_id=clause.span.span_id,
-        label=ClaimLabel.match,
+        label=review_label,
         confidence=_normalize_score(bm25_score),
     )
     status = validate_claim(
@@ -369,6 +412,10 @@ def _materialize(
     )
     if status is ReviewStatus.hallucinated_or_unsupported:
         return None
+    notes = ""
+    if status is ReviewStatus.verified and review_label is ClaimLabel.uncertain:
+        status = ReviewStatus.conflict_review
+        notes = "LLM verifier flagged the mapping as uncertain."
     return build_citation(
         claim=claim,
         span=clause.span,
@@ -378,6 +425,7 @@ def _materialize(
         economy=economy,
         discovery_tag=discovery_tag,
         review_status=status,
+        notes=notes,
     )
 
 
