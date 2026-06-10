@@ -116,63 +116,79 @@ def discover(
 @app.command()
 def map(  # noqa: A001 - CLI verb
     jurisdiction: str = typer.Option(..., "--jurisdiction", "-j", help="ISO code, e.g. my"),
-    query: Optional[str] = typer.Option(None, "--query", "-q", help="Override the portal search query"),
+    query: Optional[str] = typer.Option(None, "--query", "-q", help="(reserved) single-query override"),
     portal_index: int = typer.Option(0, "--portal-index", help="Which profile portal to use"),
     config_dir: Path = typer.Option(Path("configs/jurisdictions"), "--config-dir"),
     indicators_path: Path = typer.Option(Path("configs/rdtii_indicators.yaml"), "--indicators"),
     out: Path = typer.Option(Path("outputs") / "map.jsonld", "--out", "-o"),
     top_k: int = typer.Option(1, "--top-k"),
-    min_score: float = typer.Option(0.1, "--min-score"),
+    min_score: float = typer.Option(0.35, "--min-score", help="BM25 clause-relevance floor"),
+    budget: int = typer.Option(15, "--budget", help="Max instruments to map per jurisdiction"),
 ) -> None:
-    """Fully autonomous: discover the top instrument on a portal, resolve its full
-    text, and emit verbatim-validated citations as submission CSV + JSON-LD.
+    """Fully autonomous MULTI-instrument map: per indicator, discover the family of
+    instruments (flagship law + sectoral statutes), fetch each one's full text, and
+    emit verbatim-validated citations as submission CSV + JSON-LD.
 
-    No URL is handed in — Lexora searches the portal, picks the instrument, fetches
-    its full text (PDF when available) and maps it to the RDTII indicators."""
+    No URL is handed in — Lexora searches the portal with each indicator's concept
+    phrases, assembles a working set of instruments, and maps them all."""
     from lexora.collect.profile_loader import load_profile
     from lexora.export.csv_exporter import to_csv
     from lexora.export.jsonld_exporter import to_jsonld
     from lexora.indicators import load_indicators
-    from lexora.pipeline import run_pipeline_autodiscover
+    from lexora.pipeline import run_pipeline_map
 
     profile = load_profile(config_dir / f"{jurisdiction.lower()}.yaml")
     indicators = load_indicators(indicators_path)
     portal = profile.portals[portal_index]
-    console.print(f"[bold]Autonomous map — {profile.jurisdiction} ({profile.iso_code})[/bold]")
-    console.print(f"  portal: {portal.name} · query: {query or portal.search_query!r}")
+    console.print(f"[bold]Autonomous multi-map — {profile.jurisdiction} ({profile.iso_code})[/bold]")
+    console.print(f"  portal: {portal.name} · {len(indicators)} indicators · budget {budget}")
 
-    top, artifacts = run_pipeline_autodiscover(
+    result = run_pipeline_map(
         portal=portal, profile=profile, indicators=indicators,
-        query=query, top_k=top_k, min_score=min_score,
+        query=query, top_k=top_k, min_score=min_score, budget=budget,
     )
-    if top is None:
-        console.print("[red]No instrument discovered.[/red]")
+    if not result.discovered:
+        console.print("[red]No instruments discovered.[/red]")
         raise typer.Exit(1)
 
-    tag = top.discovery_tag or "-"
-    console.print(f"  [green]discovered[/green]: {top.title}  [{tag}]  → {top.url}")
-    d = artifacts.document
-    colour = "green" if 200 <= d.http_status < 300 else "red"
+    # Working set: which instruments did discovery assemble?
+    disc = Table(title=f"Working set — {len(result.discovered)} instrument(s)")
+    disc.add_column("score", justify="right")
+    disc.add_column("via")
+    disc.add_column("tag")
+    disc.add_column("title")
+    for r in result.discovered:
+        tag = r.discovery_tag or ""
+        tag_disp = f"[green]{tag}[/green]" if tag == "KNOWN" else (f"[yellow]{tag}[/yellow]" if tag else "")
+        title = (r.title[:54] + "…") if len(r.title) > 54 else r.title
+        disc.add_row(f"{r.score:.2f}", r.via, tag_disp, title)
+    console.print(disc)
+
+    ok_docs = sum(1 for d in result.documents if 200 <= d.document.http_status < 300)
     console.print(
-        f"  full text: HTTP [{colour}]{d.http_status}[/{colour}] · {d.content_type} · "
-        f"{len(artifacts.pages)} page(s) / {len(artifacts.blocks)} block(s) · "
-        f"{len(artifacts.clauses)} clause(s)"
+        f"  fetched {ok_docs}/{len(result.documents)} full texts · "
+        f"{len(result.citations)} citation(s) across instruments"
     )
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    n = to_jsonld(artifacts.citations, out)
+    n = to_jsonld(result.citations, out)
     csv_out = out.with_suffix(".csv")
-    to_csv(artifacts.citations, csv_out)
+    to_csv(result.citations, csv_out)
 
-    table = Table(title=f"Lexora map — {profile.jurisdiction}")
+    table = Table(title=f"Lexora map — {profile.jurisdiction}", show_lines=False)
     table.add_column("indicator")
+    table.add_column("instrument")
     table.add_column("clause")
+    table.add_column("tag")
     table.add_column("conf", justify="right")
-    table.add_column("quote (first 70 chars)")
-    for c in artifacts.citations:
+    table.add_column("quote (first 60 chars)")
+    for c in sorted(result.citations, key=lambda c: c.indicator_id):
         quote = c.quote.replace("\n", " ")
-        table.add_row(c.indicator_id, c.article_path, f"{c.confidence:.2f}",
-                      (quote[:67] + "...") if len(quote) > 70 else quote)
+        inst = (c.title[:28] + "…") if len(c.title) > 28 else c.title
+        table.add_row(
+            c.indicator_id, inst, c.article_path, c.discovery_tag.value,
+            f"{c.confidence:.2f}", (quote[:57] + "...") if len(quote) > 60 else quote,
+        )
     console.print(table)
     console.print(f"[green]Wrote {n} citation(s)[/green] to {csv_out} (submission CSV) and {out} (JSON-LD)")
 

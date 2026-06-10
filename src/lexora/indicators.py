@@ -26,6 +26,7 @@ def load_indicators(path: Path) -> list[RDTIIIndicator]:
                     scoring_criteria=str(ind.get("scoring_criteria", "") or "").strip(),
                     possible_scores=[float(s) for s in ind.get("possible_scores", []) or []],
                     keywords=list(ind.get("keywords", []) or []),
+                    discovery_queries=list(ind.get("discovery_queries", []) or []),
                 )
             )
     return indicators

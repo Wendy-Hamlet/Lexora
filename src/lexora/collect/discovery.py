@@ -21,7 +21,7 @@ AU (SPA) and SG (403 -> browser).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 import httpx
@@ -78,6 +78,11 @@ class DiscoveryResult:
     # portal exposes one — the entry point for two-stage discovery (stage 2 feeds
     # the proven PDF pipeline). None means "fetch `url` and locate it".
     fulltext_url: str | None = None
+    # Submission ids of the indicators whose concept query surfaced this
+    # instrument (set by `discover_for_indicators`). It ties an instrument back to
+    # the indicators it is relevant to, so the mapper only scores a sectoral law
+    # against the indicator that found it — not blindly against all of them.
+    indicator_hits: list[str] = field(default_factory=list)
 
 
 def _tokens(text: str) -> set[str]:
@@ -419,4 +424,106 @@ def discover(
     )
 
 
-__all__ = ["DiscoveryResult", "harvest_candidates", "discover", "resolve_fulltext"]
+def _merge_into(agg: dict[str, DiscoveryResult], r: DiscoveryResult) -> None:
+    """Fold a hit into the instrument-keyed accumulator, keeping the best-scoring
+    representative but never losing a KNOWN tag or a captured full-text URL."""
+    key = _canonical_key(r.url)
+    cur = agg.get(key)
+    if cur is None:
+        agg[key] = r
+        return
+    winner, loser = (r, cur) if r.score > cur.score else (cur, r)
+    # Preserve the stronger provenance signals across the merge.
+    if winner.discovery_tag != TAG_KNOWN and loser.discovery_tag == TAG_KNOWN:
+        winner.discovery_tag = TAG_KNOWN
+        winner.matched_instrument = winner.matched_instrument or loser.matched_instrument
+    winner.fulltext_url = winner.fulltext_url or loser.fulltext_url
+    winner.n_variants = max(winner.n_variants, loser.n_variants)
+    agg[key] = winner
+
+
+def discover_for_indicators(
+    portal: PortalSpec,
+    indicators: list,
+    *,
+    client: httpx.Client | None = None,
+    per_indicator_limit: int = 8,
+    max_queries_per_indicator: int = 3,
+    budget: int = 15,
+    min_score: float = 0.1,
+    timeout: float = 30.0,
+    user_agent: str = DEFAULT_UA,
+    force_browser: bool = False,
+    known_instruments: list[str] | None = None,
+    known_instrument_ids: dict[str, str] | None = None,
+) -> list[DiscoveryResult]:
+    """Discover a *working set* of instruments for a list of indicators.
+
+    For each indicator we run discovery on its concept phrases
+    (``indicator.query_phrases``), union all hits, collapse them to one entry per
+    instrument (``_canonical_key``), keep the best-scoring representative, and
+    return the top ``budget`` instruments. This is what lets one ``map`` run reach
+    the *family* of laws an indicator touches (flagship + sectoral statutes) on a
+    full-text portal, instead of only the single top hit. Per-indicator mapping
+    happens later — this stage only assembles candidates.
+
+    Each surviving instrument records, in ``indicator_hits``, the submission ids
+    of the indicators whose phrase surfaced it — so the mapper can score it only
+    against the indicators it is actually relevant to.
+
+    Note: browser-rendered portals (SG SSO) pay one page fetch per phrase, so
+    ``max_queries_per_indicator`` caps the phrase count, and a phrase shared by
+    several indicators is fetched once and attributed to all of them.
+    """
+    # Build the query -> attributed-indicators map. On a full-text portal we use
+    # each indicator's concept phrases (and credit the surfacing indicators). On a
+    # name-only portal (AU OData) concept phrases return nothing useful, so we
+    # query the jurisdiction's known instrument NAMES instead and leave
+    # attribution empty (the mapper then scores each against all indicators).
+    phrase_indicators: dict[str, set[str]] = {}
+    if portal.full_text:
+        for ind in indicators:
+            for phrase in ind.query_phrases(limit=max_queries_per_indicator):
+                phrase_indicators.setdefault(phrase, set()).add(ind.submission_id)
+        # Also query the known instrument NAMES directly. A full-text engine that
+        # ranks on ALL words (SG SSO PhraseType=AllWords) under-recalls long
+        # concept phrases, so the flagship/known laws can be missed entirely; a
+        # name query reliably surfaces and KNOWN-tags them (attributed to no
+        # single indicator -> scored against all, like the name-only path).
+        for name in known_instruments or []:
+            phrase_indicators.setdefault(name, set())
+    else:
+        for name in known_instruments or []:
+            phrase_indicators.setdefault(name, set())
+
+    agg: dict[str, DiscoveryResult] = {}
+    indicators_by_key: dict[str, set[str]] = {}
+    for phrase, ind_ids in phrase_indicators.items():
+        for r in discover(
+            portal, query=phrase, client=client, limit=per_indicator_limit,
+            min_score=min_score, timeout=timeout, user_agent=user_agent,
+            force_browser=force_browser, known_instruments=known_instruments,
+            known_instrument_ids=known_instrument_ids,
+        ):
+            _merge_into(agg, r)
+            indicators_by_key.setdefault(_canonical_key(r.url), set()).update(ind_ids)
+
+    for key, res in agg.items():
+        res.indicator_hits = sorted(indicators_by_key.get(key, set()))
+
+    ranked = sorted(agg.values(), key=lambda r: (r.score, r.n_variants), reverse=True)
+    # Keep KNOWN instruments ahead of the budget cut: a flagship/known law must
+    # not be squeezed out by a flood of lower-value NEW candidates (this is what
+    # dropped MY's Cyber Security / Computer Crimes Acts before).
+    known = [r for r in ranked if r.discovery_tag == TAG_KNOWN]
+    rest = [r for r in ranked if r.discovery_tag != TAG_KNOWN]
+    return (known + rest)[:budget]
+
+
+__all__ = [
+    "DiscoveryResult",
+    "harvest_candidates",
+    "discover",
+    "discover_for_indicators",
+    "resolve_fulltext",
+]

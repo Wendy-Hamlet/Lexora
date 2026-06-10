@@ -32,7 +32,13 @@ from lexora.classify.retrieval import BM25Index, build_index, retrieve_candidate
 from lexora.collect.crawler import fetch, ingest_local_file
 from lexora.extract.html_extractor import HtmlBlock, extract_html
 from lexora.extract.pdf_text_extractor import PdfPage, extract_pdf_bytes, extract_pdf_text
-from lexora.models.citation import Citation, ClaimLabel, EvidenceClaim, ReviewStatus
+from lexora.models.citation import (
+    Citation,
+    ClaimLabel,
+    DiscoveryTag,
+    EvidenceClaim,
+    ReviewStatus,
+)
 from lexora.models.clause import Clause
 from lexora.models.indicator import RDTIIIndicator
 from lexora.models.source import PortalSpec, RawDocument, SourceProfile, SourceType
@@ -52,6 +58,17 @@ class DemoArtifacts:
     citations: list[Citation]
     pages: list[PdfPage] = field(default_factory=list)
     blocks: list[HtmlBlock] = field(default_factory=list)
+
+
+@dataclass
+class MapResult:
+    """Output of a multi-instrument autonomous map: the working set of instruments
+    discovered for the indicators, the per-document artifacts, and the aggregated,
+    de-duplicated citations across all of them."""
+
+    discovered: list[DiscoveryResult]
+    documents: list[DemoArtifacts]
+    citations: list[Citation]
 
 
 def run_demo_pipeline(
@@ -98,6 +115,7 @@ def run_pipeline_from_url(
     dest_dir: Path | None = None,
     top_k: int = 1,
     min_score: float = 0.1,
+    discovery_tag: DiscoveryTag = DiscoveryTag.known,
     **fetch_kwargs,
 ) -> DemoArtifacts:
     """Live fetch a URL and run the full pipeline, routing PDF vs HTML.
@@ -131,7 +149,7 @@ def run_pipeline_from_url(
             clauses = parse_structure_html(document.document_id, blocks)
 
     citations = _citations_from_clauses(
-        clauses, document, profile, indicators, legal_form, top_k, min_score
+        clauses, document, profile, indicators, legal_form, top_k, min_score, discovery_tag
     )
     return DemoArtifacts(
         document=document, clauses=clauses, citations=citations, pages=pages, blocks=blocks
@@ -193,6 +211,78 @@ def run_pipeline_autodiscover(
     return top, artifacts
 
 
+def run_pipeline_map(
+    *,
+    portal: PortalSpec,
+    profile: SourceProfile,
+    indicators: list[RDTIIIndicator],
+    query: str | None = None,
+    per_indicator_limit: int = 8,
+    max_queries_per_indicator: int = 3,
+    budget: int = 15,
+    dest_dir: Path | None = None,
+    top_k: int = 1,
+    min_score: float = 0.35,
+    timeout: float = 60.0,
+) -> MapResult:
+    """Autonomous MULTI-instrument map (P0).
+
+    Instead of mapping only the single top hit, discover a working set of
+    instruments across all indicators' concept phrases (flagship law + sectoral
+    statutes the indicator touches), then fetch, parse and map EACH one. Citations
+    carry the per-instrument NEW/KNOWN tag and are de-duplicated by
+    (indicator, clause) across documents; one clause may map to several indicators
+    (non-mutually-exclusive), so we never dedup across indicators.
+
+    ``min_score`` is the BM25 clause-relevance floor — higher than the single-doc
+    default because budget×indicators candidate pairs would otherwise be noisy.
+    The link-relevance floor inside discovery is separate (its own default).
+    """
+    from lexora.collect.browser import DEFAULT_UA as BROWSER_UA
+    from lexora.collect.discovery import discover_for_indicators, resolve_fulltext
+    from lexora.models.source import FetchMethod
+
+    force_browser = portal.fetch_method is FetchMethod.playwright
+    dest_dir = dest_dir or (Path("data") / "raw" / profile.iso_code.lower())
+
+    hits = discover_for_indicators(
+        portal, indicators, per_indicator_limit=per_indicator_limit,
+        max_queries_per_indicator=max_queries_per_indicator, budget=budget,
+        timeout=timeout, force_browser=force_browser,
+        known_instruments=profile.known_instruments,
+        known_instrument_ids=profile.known_instrument_ids,
+    )
+
+    documents: list[DemoArtifacts] = []
+    citations: list[Citation] = []
+    seen: set[tuple[str, str]] = set()
+    for hit in hits:
+        fulltext = resolve_fulltext(hit, force_browser=force_browser, timeout=timeout)
+        target = fulltext or hit.url
+        tag = DiscoveryTag.new if hit.discovery_tag == "NEW" else DiscoveryTag.known
+        # Score the instrument only against the indicators whose query surfaced it
+        # (a retention-query hit is a candidate for 7.3, not for all nine). Fall
+        # back to all indicators when the surfacing link is unknown (e.g. a KNOWN
+        # flagship reached by name rather than a concept phrase).
+        wanted = set(hit.indicator_hits)
+        ind_subset = [i for i in indicators if i.submission_id in wanted] or indicators
+        artifacts = run_pipeline_from_url(
+            url=target, profile=profile, indicators=ind_subset, portal_name=portal.name,
+            source_type=portal.source_type, dest_dir=dest_dir, top_k=top_k,
+            min_score=min_score, discovery_tag=tag, browser_fallback=force_browser,
+            timeout=timeout, user_agent=BROWSER_UA, title=hit.title,
+        )
+        documents.append(artifacts)
+        for c in artifacts.citations:
+            key = (c.indicator_id, c.clause_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            citations.append(c)
+
+    return MapResult(discovered=hits, documents=documents, citations=citations)
+
+
 def _citations_from_clauses(
     clauses: list[Clause],
     document: RawDocument,
@@ -201,6 +291,7 @@ def _citations_from_clauses(
     legal_form: str,
     top_k: int,
     min_score: float,
+    discovery_tag: DiscoveryTag = DiscoveryTag.known,
 ) -> list[Citation]:
     """Shared core: per indicator, retrieve top-k clauses and materialize the
     ones that pass the verbatim validator."""
@@ -211,7 +302,10 @@ def _citations_from_clauses(
     clause_by_id = {c.clause_id: c for c in clauses}
     for indicator in indicators:
         for hit in retrieve_candidates(indicator, profile, index, top_k=top_k):
-            if hit.score < min_score:
+            # Gate on the NORMALIZED score so `min_score` is a portable [0, 1]
+            # relevance floor (raw BM25 is unbounded and corpus-dependent — a
+            # fixed raw cutoff prunes nothing on a big document).
+            if _normalize_score(hit.score) < min_score:
                 continue
             citation = _materialize(
                 indicator=indicator,
@@ -220,6 +314,7 @@ def _citations_from_clauses(
                 legal_form=legal_form,
                 economy=profile.jurisdiction,
                 bm25_score=hit.score,
+                discovery_tag=discovery_tag,
             )
             if citation is not None:
                 citations.append(citation)
@@ -234,6 +329,7 @@ def _materialize(
     legal_form: str,
     economy: str,
     bm25_score: float,
+    discovery_tag: DiscoveryTag = DiscoveryTag.known,
 ) -> Citation | None:
     """One-clause-one-indicator: synthesize a verifier-shaped claim and run it
     through the same validator the real LLM verifier will use. The claim carries
@@ -260,6 +356,7 @@ def _materialize(
         legal_form=legal_form,
         article_path=clause.structural_path,
         economy=economy,
+        discovery_tag=discovery_tag,
         review_status=status,
     )
 
@@ -273,7 +370,9 @@ def _normalize_score(score: float) -> float:
 
 __all__ = [
     "DemoArtifacts",
+    "MapResult",
     "run_demo_pipeline",
     "run_pipeline_from_url",
     "run_pipeline_autodiscover",
+    "run_pipeline_map",
 ]

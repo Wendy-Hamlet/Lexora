@@ -6,16 +6,24 @@ and is skipped unless a Chromium build is available.
 """
 from __future__ import annotations
 
+import os
+
 import httpx
 import pytest
 
 from lexora.collect.discovery import (
     DiscoveryResult,
     discover,
+    discover_for_indicators,
     harvest_candidates,
     resolve_fulltext,
 )
+from lexora.models.indicator import RDTIIIndicator
 from lexora.models.source import FetchMethod, PortalSpec, SourceType
+
+_LIVE = pytest.mark.skipif(
+    not os.environ.get("LEXORA_LIVE"), reason="set LEXORA_LIVE=1 for network tests"
+)
 
 # A results page mixing site chrome, a relevant Act (page + PDF) and noise.
 RESULTS_HTML = """
@@ -253,7 +261,110 @@ def test_resolve_fulltext_returns_none_when_no_pdf():
     assert out is None
 
 
+# ---- per-indicator multi-instrument discovery (P0) ----
+
+def _ind(rid: str, sid: str, phrases: list[str]) -> RDTIIIndicator:
+    return RDTIIIndicator(
+        rdtii_id=rid, submission_id=sid, pillar=int(float(rid)),
+        name=f"indicator {rid}", description="desc", discovery_queries=phrases,
+    )
+
+
+def test_query_phrases_prefers_discovery_queries_then_keywords_fallback():
+    a = _ind("6.1", "P6-I1", ["alpha", "beta", "gamma", "delta"])
+    assert a.query_phrases(limit=2) == ["alpha", "beta"]
+    # No curated phrases -> fall back to name + keywords.
+    b = RDTIIIndicator(rdtii_id="7.3", submission_id="P7-I3", pillar=7,
+                       name="Retention", description="d", keywords=["keep", "retain"])
+    assert b.query_phrases() == ["Retention", "keep", "retain"]
+
+
+_MULTI_ACT_HTML = """
+<ul>
+  <li><a href="/Act/AAA2010">Alpha Data Act 2010</a></li>
+  <li><a href="/Act/BBB2018">Beta Privacy Act 2018</a></li>
+  <li><a href="/Act/CCC2020">Gamma Retention Act 2020</a></li>
+</ul>
+"""
+
+
+def test_discover_for_indicators_unions_dedups_and_budgets():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, content=_MULTI_ACT_HTML.encode(),
+                              headers={"content-type": "text/html"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    portal = PortalSpec(
+        name="SSO", url="https://sso.example.gov/", source_type=SourceType.primary,
+        search_url_template="https://sso.example.gov/search?q={query}",
+    )
+    inds = [_ind("6.1", "P6-I1", ["alpha"]), _ind("7.3", "P7-I3", ["beta"])]
+    # min_score 0.3 keeps only the query-matched act per phrase, so attribution
+    # is unambiguous (alpha->Alpha Act, beta->Beta Act).
+    results = discover_for_indicators(portal, inds, client=client, budget=2, min_score=0.3)
+    client.close()
+    assert calls["n"] == 2                       # one fetch per distinct phrase
+    assert len(results) == 2                      # capped to budget
+    assert results[0].score >= results[1].score   # sorted by score
+    by_url = {r.url.rsplit("/", 1)[-1]: r for r in results}
+    # each instrument is credited to the indicator whose phrase surfaced it
+    assert by_url["AAA2010"].indicator_hits == ["P6-I1"]
+    assert by_url["BBB2018"].indicator_hits == ["P7-I3"]
+
+
+def test_discover_for_indicators_fetches_a_shared_phrase_once():
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, content=_MULTI_ACT_HTML.encode(),
+                              headers={"content-type": "text/html"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    portal = PortalSpec(
+        name="SSO", url="https://sso.example.gov/", source_type=SourceType.primary,
+        search_url_template="https://sso.example.gov/search?q={query}",
+    )
+    # Both indicators share the phrase "alpha" -> deduped to a single fetch.
+    inds = [_ind("6.1", "P6-I1", ["alpha"]), _ind("6.2", "P6-I2", ["alpha"])]
+    discover_for_indicators(portal, inds, client=client, budget=5)
+    client.close()
+    assert calls["n"] == 1
+
+
+def test_discover_for_indicators_name_driven_on_non_full_text_portal():
+    # A name-only portal (AU OData): concept phrases are ignored; discovery is
+    # driven by the jurisdiction's known instrument NAMES instead.
+    queries: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        queries.append(str(request.url))
+        return httpx.Response(200, content=_MULTI_ACT_HTML.encode(),
+                              headers={"content-type": "text/html"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    portal = PortalSpec(
+        name="FRL", url="https://e.gov/", source_type=SourceType.primary,
+        full_text=False, search_url_template="https://e.gov/search?q={query}",
+    )
+    inds = [_ind("6.1", "P6-I1", ["alpha concept phrase"])]
+    results = discover_for_indicators(
+        portal, inds, client=client, budget=5, min_score=0.3,
+        known_instruments=["Alpha Data Act 2010"],
+    )
+    client.close()
+    # queried by the known NAME, not the indicator's concept phrase
+    assert any("Alpha" in q for q in queries)
+    assert not any("concept" in q for q in queries)
+    # name-driven hits carry no per-indicator attribution (mapped against all)
+    assert results and all(r.indicator_hits == [] for r in results)
+
+
 @pytest.mark.live
+@_LIVE
 def test_browser_renders_real_anti_bot_portal():
     from lexora.collect.browser import is_available, render
 

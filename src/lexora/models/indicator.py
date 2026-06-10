@@ -23,8 +23,24 @@ class RDTIIIndicator(BaseModel):
     scoring_criteria: str = ""
     possible_scores: list[float] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
+    # Concept phrases used to DISCOVER instruments for this indicator (full-text
+    # portal search), as opposed to `keywords` which score clauses within a
+    # document. A few natural-language phrases that surface the operative rule
+    # across the flagship law AND sectoral statutes (e.g. 7.3 "keep records for
+    # at least" reaches the Income Tax / Employment Acts, not just the PDPA).
+    discovery_queries: list[str] = Field(default_factory=list)
 
     @property
     def id(self) -> str:
         """Canonical id, used for internal lookups (retrieval, keyword packs)."""
         return self.rdtii_id
+
+    def query_phrases(self, limit: int | None = None) -> list[str]:
+        """Phrases to drive per-indicator discovery search.
+
+        Prefers the curated `discovery_queries`; falls back to the indicator
+        name plus its keywords so an indicator with no curated phrases still
+        discovers something. `limit` caps the count (browser-rendered portals
+        such as SG SSO pay one page fetch per phrase)."""
+        phrases = list(self.discovery_queries) or [self.name, *self.keywords]
+        return phrases[:limit] if limit else phrases

@@ -38,6 +38,7 @@ portals:
     url: "https://www.legislation.gov.au/"
     source_type: "primary"
     fetch_method: "api"   # backed by the OData API (au_legislation_api strategy)
+    full_text: false      # OData matches law NAMES only -> name-driven discovery
     search_query: "privacy act"
     search_url_template: "https://www.legislation.gov.au/search/text/{query}"
     notes: "Authoritative consolidated Commonwealth Acts. Discovered via api.prod.legislation.gov.au OData (the SPA's harvested links are a browse-all list); search_url_template kept as a browser fallback."

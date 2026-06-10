@@ -45,6 +45,12 @@ class PortalSpec(BaseModel):
     # `{query}` is URL-encoded before substitution. When absent, discovery
     # harvests candidate links from the portal landing page instead.
     search_url_template: str | None = None
+    # Whether the portal supports FULL-TEXT search. True (SG SSO, MY Fess) means
+    # indicator concept phrases reach sectoral statutes by their text. False (AU
+    # OData, which only matches law NAMES) means concept phrases are useless — the
+    # multi-instrument discoverer falls back to name-driven lookup of the
+    # jurisdiction's known instruments instead of scraping the SPA browse list.
+    full_text: bool = True
     notes: str | None = None
 
 
