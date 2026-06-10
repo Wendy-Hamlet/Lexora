@@ -26,6 +26,7 @@ import argparse
 import csv
 import json
 import os
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -65,6 +66,34 @@ def _load_gold() -> dict[str, list[str]]:
     return {c: sorted(v) for c, v in by_country.items()}
 
 
+def _act_ids(text: str) -> set[str]:
+    """Malaysian Act identifiers from a name/URL/filename, e.g. '(Act 854)',
+    'act=854', 'Act 709.pdf', 'A1727'. 4-digit years (19xx/20xx) are excluded so
+    'Personal Data Protection Act 2010' doesn't read 2010 as an Act number."""
+    ids = set()
+    for m in re.findall(r"(?:act[=\s]*)([a-z]?\d{1,4})", text.lower()):
+        digits = m.lstrip("abcdefghijklmnopqrstuvwxyz")
+        if not m[0].isalpha() and re.fullmatch(r"(?:19|20)\d{2}", digits):
+            continue  # a year, not an Act number
+        ids.add(m)
+    return ids
+
+
+def _is_covered(gold_name: str, discovered: list[dict]) -> bool:
+    """A gold instrument is covered if any discovered hit matches it by fuzzy name
+    OR by shared Act identifier (filename titles like 'Act 854.pdf' defeat name
+    fuzz but carry the Act number)."""
+    gold_l = gold_name.lower()
+    gold_ids = _act_ids(gold_name)
+    for d in discovered:
+        hay = f"{d['title']} {d['url']}"
+        if int(fuzz.token_set_ratio(gold_l, hay.lower())) >= _MATCH_THRESHOLD:
+            return True
+        if gold_ids and (gold_ids & _act_ids(hay)):
+            return True
+    return False
+
+
 def _best_match(name: str, hay: list[str]) -> int:
     # Case-insensitive: discovered titles are often UPPERCASE / filenames while
     # the gold names are mixed-case.
@@ -92,10 +121,9 @@ def _eval_one(iso: str, gold: list[str], *, budget: int, dry_run: bool) -> dict:
         except Exception as exc:  # network/portal failure — report, don't crash
             error = f"{type(exc).__name__}: {exc}"
 
-    hay = [d["title"] for d in discovered] + [d["url"] for d in discovered]
     covered, missed = [], []
     for inst in gold:
-        (covered if _best_match(inst, hay) >= _MATCH_THRESHOLD else missed).append(inst)
+        (covered if _is_covered(inst, discovered) else missed).append(inst)
 
     statute_gold = [g for g in gold if not _is_agreement(g)]
     statute_covered = [g for g in covered if not _is_agreement(g)]

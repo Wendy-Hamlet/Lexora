@@ -50,6 +50,7 @@ _CHROME_MARKERS = (
 )
 _RESULT_CONTAINER = re.compile(r"result|item|card|search|title|listing|row", re.I)
 _YEAR = re.compile(r"\b(19|20)\d{2}\b")
+_YEARISH_FULL = re.compile(r"(?:19|20)\d{2}")  # a bare 4-digit year (for fullmatch)
 _TOKEN = re.compile(r"[a-z0-9]+", re.IGNORECASE)
 
 # Fuzzy title-vs-known-name thresholds for the Discovery Tag.
@@ -439,10 +440,31 @@ def discover(
     )
 
 
-def _merge_into(agg: dict[str, DiscoveryResult], r: DiscoveryResult) -> None:
+# An Act number in a URL/title/filename: "act=709", "Act 709", "ACT 854.pdf",
+# "Act A1727". Used to collapse the many PDF variants one Act surfaces under
+# (e.g. "Act 709 ori.pdf", "ACT 709-REPRINT 2023.pdf", "act-detail.php?act=709").
+_ACT_NO = re.compile(r"act[=_\s-]*([a-z]?\d{1,4})\b", re.I)
+
+
+def _identity_key(r: DiscoveryResult) -> str:
+    """Instrument identity for cross-query dedup. Prefer a portal-native Act
+    number (collapses an Act's many full-text PDF variants onto one entry so they
+    don't each consume a budget slot); fall back to the URL canonical key. A
+    4-digit year (e.g. 'Act 2010') is not an Act number and is ignored."""
+    text = f"{r.url} {r.title}".lower()
+    host = urlparse(r.url).netloc.lower()
+    for m in _ACT_NO.findall(text):
+        digits = m.lstrip("abcdefghijklmnopqrstuvwxyz")
+        if not m[0].isalpha() and _YEARISH_FULL.fullmatch(digits):
+            continue
+        return f"{host}:act:{m}"
+    return _canonical_key(r.url)
+
+
+def _merge_into(agg: dict[str, DiscoveryResult], r: DiscoveryResult, key: str | None = None) -> None:
     """Fold a hit into the instrument-keyed accumulator, keeping the best-scoring
     representative but never losing a KNOWN tag or a captured full-text URL."""
-    key = _canonical_key(r.url)
+    key = key or _canonical_key(r.url)
     cur = agg.get(key)
     if cur is None:
         agg[key] = r
@@ -536,8 +558,9 @@ def discover_for_indicators(
                 force_browser=force_browser, known_instruments=known_instruments,
                 known_instrument_ids=known_instrument_ids, browser_session=session,
             ):
-                _merge_into(agg, r)
-                indicators_by_key.setdefault(_canonical_key(r.url), set()).update(ind_ids)
+                key = _identity_key(r)
+                _merge_into(agg, r, key)
+                indicators_by_key.setdefault(key, set()).update(ind_ids)
     finally:
         if session_cm is not None:
             session_cm.__exit__(None, None, None)
