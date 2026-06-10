@@ -92,6 +92,30 @@ def test_run_pipeline_map_aggregates_dedups_and_propagates_tags(monkeypatch):
     assert by_ind["P7-I3"] is DiscoveryTag.new
 
 
+def test_attribute_by_name_maps_to_relevant_indicators_only():
+    from lexora.models.indicator import RDTIIIndicator
+    from lexora.pipeline import _attribute_by_name
+
+    inds = [
+        RDTIIIndicator(rdtii_id="7.2", submission_id="P7-I2", pillar=7,
+                       name="cyber", description="d"),
+        RDTIIIndicator(rdtii_id="7.3", submission_id="P7-I3", pillar=7,
+                       name="retention", description="d"),
+    ]
+    profile = SourceProfile(
+        jurisdiction="Australia", iso_code="AU", primary_language="en",
+        legal_system=LegalSystem.common,
+        keywords_by_indicator={
+            "7.2": {"en": ["Security of Critical Infrastructure Act"]},
+            "7.3": {"en": ["Telecommunications (Interception and Access) Act"]},
+        },
+    )
+    hit = _hit("https://www.legislation.gov.au/C2004A02124/latest", "KNOWN", 0.9)
+    hit.title = "Telecommunications (Interception and Access) Act 1979"
+    # attributed to 7.3 (its name hint) only — not 7.2
+    assert _attribute_by_name(hit, profile, inds) == {"P7-I3"}
+
+
 def test_run_pipeline_map_empty_when_no_instruments(monkeypatch):
     import lexora.collect.discovery as disc
     import lexora.pipeline as pipe

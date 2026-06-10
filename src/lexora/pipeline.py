@@ -261,10 +261,11 @@ def run_pipeline_map(
         target = fulltext or hit.url
         tag = DiscoveryTag.new if hit.discovery_tag == "NEW" else DiscoveryTag.known
         # Score the instrument only against the indicators whose query surfaced it
-        # (a retention-query hit is a candidate for 7.3, not for all nine). Fall
-        # back to all indicators when the surfacing link is unknown (e.g. a KNOWN
-        # flagship reached by name rather than a concept phrase).
-        wanted = set(hit.indicator_hits)
+        # (a retention-query hit is a candidate for 7.3, not for all nine). For a
+        # name-driven hit (AU OData has no full-text, so no surfacing indicator),
+        # attribute via the profile's indicator->instrument-name hints; only fall
+        # back to all indicators when nothing pins it down.
+        wanted = set(hit.indicator_hits) or _attribute_by_name(hit, profile, indicators)
         ind_subset = [i for i in indicators if i.submission_id in wanted] or indicators
         artifacts = run_pipeline_from_url(
             url=target, profile=profile, indicators=ind_subset, portal_name=portal.name,
@@ -281,6 +282,25 @@ def run_pipeline_map(
             citations.append(c)
 
     return MapResult(discovered=hits, documents=documents, citations=citations)
+
+
+def _attribute_by_name(hit, profile: SourceProfile, indicators: list[RDTIIIndicator]) -> set[str]:
+    """Indicators a name-driven hit maps to, via the profile's per-indicator
+    instrument-name hints (``keywords_by_indicator``). A keyword that strongly
+    fuzzy-matches the instrument title is an instrument-name hint (e.g. AU
+    "Telecommunications (Interception and Access) Act" hints 7.3 + 7.5), so an AU
+    Act maps only to its relevant indicators instead of all nine. Returns an empty
+    set when nothing matches (caller then falls back to all indicators)."""
+    from rapidfuzz import fuzz
+
+    title_l = hit.title.lower()
+    wanted: set[str] = set()
+    for ind in indicators:
+        for kw in profile.keywords_by_indicator.get(ind.id, {}).get(profile.primary_language, []):
+            if fuzz.token_set_ratio(kw.lower(), title_l) >= 80:
+                wanted.add(ind.submission_id)
+                break
+    return wanted
 
 
 def _citations_from_clauses(
