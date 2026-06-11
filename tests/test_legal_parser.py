@@ -50,3 +50,113 @@ def test_parse_structure_html_spaced_emits_verbatim_clauses():
     # spans are verbatim slices of the source text
     for c in clauses:
         assert text[c.span.char_start:c.span.char_end] == c.span.text
+
+
+# --- Schedule-aware parsing (AU Privacy Act 1988 shape) ----------------------
+
+# A consolidated-Act fragment: a TOC pointer to Schedule 1, a spaced main body
+# whose sections re-appear by number inside the schedules, an APP-bearing
+# Schedule 1, and a plain Schedule 2.
+_AU_DOC = (
+    "Contents\n\n"
+    "Schedule 1 — Australian Privacy Principles .......... 55\n\n"
+    "1  Short title\n\n"
+    "6  Interpretation\n\n"
+    "8  Commonwealth records\n\n"
+    "Schedule 1—Australian Privacy Principles\n\n"
+    "Australian Privacy Principle 6—use or disclosure of personal information\n\n"
+    "6.1  An APP entity that holds personal information may use it.\n\n"
+    "Australian Privacy Principle 8—cross-border disclosure of personal information\n\n"
+    "8.1  Before an APP entity discloses personal information to an overseas recipient,"
+    " the entity must take reasonable steps.\n\n"
+    "8.2  Subclause 8.1 does not apply in the listed circumstances.\n\n"
+    "Schedule 2—Other matters\n\n"
+    "1  Definitions for this Schedule\n\n"
+    "2  Application of this Schedule\n"
+)
+
+
+def _parsed_au():
+    block = HtmlBlock(dom_anchor="#d", text=_AU_DOC, char_start=0, char_end=len(_AU_DOC))
+    clauses = parse_structure_html("doc", [block])
+    return clauses, {c.clause_id: c for c in clauses}
+
+
+def test_schedule_clause_ids_do_not_collide():
+    clauses, by_id = _parsed_au()
+    ids = [c.clause_id for c in clauses]
+    assert len(ids) == len(set(ids))  # the silent-clobber bug is gone
+    # main body s1 and Schedule-2 s1 are now distinct addressable clauses
+    assert "doc::s1" in by_id
+    assert "doc::sch2-s1" in by_id
+
+
+def test_main_body_ids_stay_unprefixed_for_back_compat():
+    _, by_id = _parsed_au()
+    # the TOC "Schedule 1 ..." pointer line must NOT open a part: the body that
+    # follows it keeps its plain section ids.
+    for cid in ("doc::s1", "doc::s6", "doc::s8"):
+        assert cid in by_id
+    assert by_id["doc::s8"].structural_path == "Section 8"
+
+
+def test_app8_is_addressable_inside_schedule_1():
+    _, by_id = _parsed_au()
+    # APP 8 (AU indicator 6.4 = cross-border disclosure) is now a citable clause,
+    # distinct from main-body section 8.
+    assert "doc::sch1-app8" in by_id
+    app8 = by_id["doc::sch1-app8"]
+    assert app8.structural_path == "Schedule 1 > Australian Privacy Principle 8"
+    assert app8.section_number == "8"
+    assert "cross-border disclosure" in app8.span.text
+    # its sub-items collapse to namespaced sub-clauses
+    assert by_id["doc::sch1-app8-1"].structural_path == (
+        "Schedule 1 > Australian Privacy Principle 8.1"
+    )
+    assert by_id["doc::sch1-app8-1"].paragraph_number == "1"
+
+
+def test_all_schedule_spans_are_verbatim():
+    clauses, _ = _parsed_au()
+    for c in clauses:
+        assert _AU_DOC[c.span.char_start:c.span.char_end] == c.span.text
+
+
+def test_no_schedule_means_unchanged_flat_namespace():
+    text = "1  Short title\n\n13  Interference with privacy"
+    block = HtmlBlock(dom_anchor="#s", text=text, char_start=0, char_end=len(text))
+    by_id = {c.clause_id: c for c in parse_structure_html("doc", [block])}
+    assert set(by_id) == {"doc::s1", "doc::s13"}  # no parts -> pre-Schedule behaviour
+
+
+def test_multiletter_section_suffix_detected():
+    # AU inserts amending sections as 6A / 6AA / 6AB; a single-letter cap folded
+    # 6AA's body into section 6 (so its "(1)" reappeared as a second s6-1).
+    text = "6  Interpretation\n\n6AA  Responsible person\n\n6AB  Permitted purpose"
+    assert _secs(text) == ["6", "6AA", "6AB"]
+
+
+def test_two_space_running_header_does_not_open_a_schedule():
+    # A consolidated Act repeats a page header "Schedule 1  Australian Privacy
+    # Principles" (two spaces, no dash) on every page; only the dashed divisional
+    # heading is a real part boundary, so the body section keeps its plain id.
+    text = (
+        "Schedule 1  Australian Privacy Principles\n\n"
+        "1  Short title\n\n"
+        "Schedule 1  Australian Privacy Principles\n\n"
+        "6  Interpretation"
+    )
+    block = HtmlBlock(dom_anchor="#s", text=text, char_start=0, char_end=len(text))
+    by_id = {c.clause_id: c for c in parse_structure_html("doc", [block])}
+    assert set(by_id) == {"doc::s1", "doc::s6"}  # no sch1- prefix appeared
+
+
+def test_repeated_marker_gets_unique_suffix():
+    # A section whose body restarts a "(1)" list (nested numbering) would mint two
+    # s5-1 ids; the uniqueness net keeps both, suffixing the later one.
+    text = "5  Definitions\n\n(1) first sense of the term\n\n(1) second sense of the term"
+    block = HtmlBlock(dom_anchor="#s", text=text, char_start=0, char_end=len(text))
+    ids = [c.clause_id for c in parse_structure_html("doc", [block])]
+    assert ids.count("doc::s5-1") == 1
+    assert "doc::s5-1~2" in ids
+    assert len(ids) == len(set(ids))  # invariant: ids are unique per document

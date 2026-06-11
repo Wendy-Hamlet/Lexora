@@ -13,6 +13,21 @@ which previously mis-parsed AU Acts). Each clause is a section-or-subsection
 unit; its CanonicalSpan points back into the global document text by char offset
 and carries a page number (PDF) or DOM anchor (HTML).
 
+**Schedule-aware.** A consolidated Act re-starts numbering inside each Schedule,
+so a flat namespace makes Schedule 1 ``s1`` collide with the main body's ``s1``
+(same ``clause_id`` -> one silently clobbers the other). The parser therefore
+splits the text into the main body plus one part per ``Schedule N`` header and
+namespaces every Schedule clause (``::sch1-s1``, "Schedule 1 > Section 1"). The
+main body keeps its original un-prefixed ids, so existing citations are stable.
+
+Australia's Privacy Principles live *inside* Schedule 1 of the Privacy Act 1988
+and are numbered ``Australian Privacy Principle 8`` with ``8.1``/``8.2`` items —
+not as sections — so they were previously unaddressable. An APP-bearing schedule
+is parsed in its own style: each principle becomes a citable clause
+(``::sch1-app8``, "Schedule 1 > Australian Privacy Principle 8") and its items
+become sub-clauses, making indicators that target a specific APP (e.g. AU 6.4 =
+APP 8 cross-border disclosure) verbatim-citable.
+
 The parser is source-agnostic: `parse_structure` works on PDF pages and
 `parse_structure_html` on HTML blocks; both delegate to the same core, since the
 PDF page separator and the HTML block separator are identical ("\\n\\n").
@@ -31,9 +46,11 @@ from lexora.extract.pdf_text_extractor import PAGE_SEPARATOR, PdfPage
 from lexora.models.clause import CanonicalSpan, Clause
 
 # Dotted style (SG/MY): "26.", "26.—(1)", "129. (1)".
+# The section number takes a multi-letter suffix (AU inserts amending sections as
+# 6A, 6AA, 6AB, …); allowing only one letter folded 6AA's body into section 6.
 _DOTTED = re.compile(
     r"""
-    (?P<sec>\d+[A-Z]?)        # section number, e.g. 26 or 26A
+    (?P<sec>\d+[A-Z]{0,3})    # section number, e.g. 26, 26A, 6AA
     \.                        # literal dot
     (?:                       # optional subsection in the same line
         (?:—|--|-)?\s*   # em dash / double dash / hyphen / nothing
@@ -44,12 +61,33 @@ _DOTTED = re.compile(
     re.VERBOSE,
 )
 
-# Spaced style (AU): "13  Short title", "2A  Objects of this Act" (no dot).
-_SPACED = re.compile(r"(?P<sec>\d+[A-Z]?)\s{2,}(?=\S)")
+# Spaced style (AU): "13  Short title", "2A  Objects", "6AA  ..." (no dot).
+_SPACED = re.compile(r"(?P<sec>\d+[A-Z]{0,3})\s{2,}(?=\S)")
 
 # Section numbers that are really 4-digit years are almost always false positives
 # (a year in a citation, a TOC dotted-leader line, a commencement date).
 _YEARISH = re.compile(r"(?:19|20)\d{2}")
+
+# Schedule heading: line-start "Schedule 1—Title". The dash (em/en/hyphen) after
+# the number is the load-bearing signal: a consolidated Act repeats a *running*
+# page header ("Schedule 1  Australian Privacy Principles", two spaces, no dash)
+# on every page and lists schedules in a dotted TOC ("Schedule 2.......347") — the
+# dash matches only the genuine divisional heading.
+_SCHEDULE = re.compile(r"Schedule\s+(?P<num>\d+[A-Z]?)\s*[—–-]", re.I)
+
+# Australian Privacy Principle heading inside a schedule:
+# "Australian Privacy Principle 8—cross-border disclosure of personal information".
+# The dash likewise separates the real heading from prose cross-references
+# ("Australian Privacy Principle 8 sets out ...") and running page headers.
+_APP = re.compile(r"Australian\s+Privacy\s+Principle\s+(?P<num>\d+)\s*[—–-]", re.I)
+
+# An APP item line: "8.1 ...", "8.2  ..." (the dotted N.M numbering APPs use).
+_APP_ITEM = re.compile(r"\n[ \t]*(?P<app>\d+)\.(?P<item>\d+)\s+(?=\S)")
+
+# A table-of-contents entry: a title trailed by a dotted leader and/or page no.,
+# e.g. "Schedule 1—Australian Privacy Principles .......... 55". Such a line is a
+# pointer, not the real heading, so it must not open a Schedule part.
+_TOC_TAIL = re.compile(r"(?:\.{2,}\s*\d*|\s{2,}\d+)\s*$")
 
 # Back-compat alias (the dotted opener was the original public name).
 SECTION_OPENER = _DOTTED
@@ -64,6 +102,27 @@ class _Segment:
     char_end: int
     page: int | None
     anchor: str | None
+
+
+@dataclass
+class _Part:
+    """A top-level division of the document: the main body, or one Schedule."""
+
+    schedule: str | None  # None == main body
+    start: int            # global offset where this part begins
+    end: int
+
+
+@dataclass
+class _Spec:
+    """A resolved clause location (global offsets), pre-id-assignment."""
+
+    section: str | None
+    subsection: str | None
+    app: str | None
+    item: str | None
+    char_start: int
+    char_end: int
 
 
 def _make_locator(segments: Sequence[_Segment]) -> Locator:
@@ -98,6 +157,55 @@ def parse_structure_html(document_id: str, blocks: Iterable[HtmlBlock]) -> list[
     return _parse(document_id, global_text, _make_locator(segments))
 
 
+def _line_start(text: str, pos: int) -> bool:
+    return pos == 0 or text[pos - 1] in {"\n", "\f"}
+
+
+def _line_at(text: str, pos: int) -> str:
+    end = text.find("\n", pos)
+    return text[pos:] if end == -1 else text[pos:end]
+
+
+def _dedupe_keep_last(headers: Iterable[tuple[int, str]]) -> list[tuple[int, str]]:
+    """Collapse repeated headings for the same number to a single occurrence — the
+    last one. A consolidated Act lists each Schedule/Principle once in a front
+    contents block and again as the real heading further down, so the last
+    occurrence is the body; this drops the contents/overview duplicates without
+    modelling the TOC. Result is sorted by position."""
+    last: dict[str, int] = {}
+    for pos, num in headers:
+        last[num] = pos
+    return sorted((pos, num) for num, pos in last.items())
+
+
+def _split_parts(global_text: str) -> list[_Part]:
+    """Divide the document into the main body and one part per Schedule.
+
+    Only line-start ``Schedule N`` headers count, and table-of-contents pointers
+    (a header line trailed by a dotted leader / page number) are rejected. When a
+    schedule number appears more than once (a TOC entry *and* the real heading),
+    the last occurrence wins — the body always follows its TOC line — which drops
+    TOC entries without needing to model the TOC explicitly.
+    """
+    candidates = [
+        (m.start(), m.group("num"))
+        for m in _SCHEDULE.finditer(global_text)
+        if _line_start(global_text, m.start())
+        and not _TOC_TAIL.search(_line_at(global_text, m.start()))
+    ]
+    headers = _dedupe_keep_last(candidates)
+    if not headers:
+        return [_Part(None, 0, len(global_text))]
+
+    parts: list[_Part] = []
+    if headers[0][0] > 0:
+        parts.append(_Part(None, 0, headers[0][0]))
+    for i, (start, num) in enumerate(headers):
+        end = headers[i + 1][0] if i + 1 < len(headers) else len(global_text)
+        parts.append(_Part(num, start, end))
+    return parts
+
+
 def _detect_boundaries(global_text: str) -> list[tuple[int, str, str | None]]:
     """Find section/subsection boundaries, auto-selecting the numbering style.
 
@@ -111,7 +219,7 @@ def _detect_boundaries(global_text: str) -> list[tuple[int, str, str | None]]:
         has_sub = "sub" in opener.groupindex
         found: list[tuple[int, str, str | None]] = []
         for match in opener.finditer(global_text):
-            if match.start() > 0 and global_text[match.start() - 1] not in {"\n", "\f"}:
+            if not _line_start(global_text, match.start()):
                 continue
             sec = match.group("sec")
             if _YEARISH.fullmatch(sec):
@@ -122,122 +230,216 @@ def _detect_boundaries(global_text: str) -> list[tuple[int, str, str | None]]:
     return best
 
 
-def _parse(document_id: str, global_text: str, locate: Locator) -> list[Clause]:
-    """Core: detect section/subsection boundaries in the global text and emit
-    Clauses whose spans reference that same global text by char offset."""
-    boundaries = _detect_boundaries(global_text)
-    if not boundaries:
-        return []
+def _dedupe_boundaries(
+    boundaries: list[tuple[int, str, str | None]],
+) -> list[tuple[int, str, str | None]]:
+    """Collapse a section that appears twice — once in the front contents list and
+    again as the real provision — to its last (body) occurrence. Keyed by
+    (section, inline-subsection) so distinct inline subsections like ``26.—(1)``
+    and ``26.—(2)`` are preserved while a duplicated plain ``26`` heading is not."""
+    last: dict[tuple[str, str | None], tuple[int, str, str | None]] = {}
+    for pos, sec, sub in boundaries:
+        last[(sec, sub)] = (pos, sec, sub)
+    return sorted(last.values())
 
-    clauses: list[Clause] = []
-    seq = 0
+
+def _section_specs(part_text: str, offset: int) -> list[_Spec]:
+    """Resolve section/subsection clauses within a part (offsets globalised)."""
+    boundaries = _dedupe_boundaries(_detect_boundaries(part_text))
+    specs: list[_Spec] = []
     for i, (start, sec, sub) in enumerate(boundaries):
-        end = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(global_text)
-        body = global_text[start:end].rstrip()
+        end = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(part_text)
+        body = part_text[start:end].rstrip()
         true_end = start + len(body)
-
         if sub is None:
-            sub_chunks = _split_subsections(body, start, sec)
-            if sub_chunks:
-                for chunk_sec, chunk_sub, chunk_start, chunk_end in sub_chunks:
-                    seq += 1
-                    page, anchor = locate(chunk_start)
-                    clauses.append(
-                        _make_clause(
-                            document_id=document_id,
-                            section=chunk_sec,
-                            subsection=chunk_sub,
-                            char_start=chunk_start,
-                            char_end=chunk_end,
-                            text=global_text[chunk_start:chunk_end],
-                            page=page,
-                            dom_anchor=anchor,
-                            seq=seq,
-                        )
-                    )
+            chunks = _split_markers(body, start, sec, _SUBSECTION)
+            if chunks:
+                for csec, csub, cstart, cend in chunks:
+                    specs.append(_Spec(csec, csub, None, None, offset + cstart, offset + cend))
                 continue
+        specs.append(_Spec(sec, sub, None, None, offset + start, offset + true_end))
+    return specs
 
-        seq += 1
-        page, anchor = locate(start)
-        clauses.append(
-            _make_clause(
-                document_id=document_id,
-                section=sec,
-                subsection=sub,
-                char_start=start,
-                char_end=true_end,
-                text=global_text[start:true_end],
-                page=page,
-                dom_anchor=anchor,
-                seq=seq,
+
+def _app_specs(part_text: str, offset: int) -> list[_Spec]:
+    """Resolve Australian Privacy Principle clauses within a schedule part."""
+    headers = _dedupe_keep_last(
+        (m.start(), m.group("num"))
+        for m in _APP.finditer(part_text)
+        if _line_start(part_text, m.start())
+    )
+    if not headers:
+        return _section_specs(part_text, offset)
+    specs: list[_Spec] = []
+    for i, (start, app) in enumerate(headers):
+        end = headers[i + 1][0] if i + 1 < len(headers) else len(part_text)
+        body = part_text[start:end].rstrip()
+        true_end = start + len(body)
+        items = _split_app_items(body, start, app)
+        if items:
+            for capp, citem, cstart, cend in items:
+                specs.append(_Spec(None, None, capp, citem, offset + cstart, offset + cend))
+        else:
+            specs.append(_Spec(None, None, app, None, offset + start, offset + true_end))
+    return specs
+
+
+def _parse(document_id: str, global_text: str, locate: Locator) -> list[Clause]:
+    """Core: split into parts, detect boundaries per part, and emit Clauses whose
+    spans reference the global text by char offset (ids namespaced by Schedule)."""
+    clauses: list[Clause] = []
+    for part in _split_parts(global_text):
+        part_text = global_text[part.start:part.end]
+        if part.schedule is not None and _APP.search(part_text):
+            specs = _app_specs(part_text, part.start)
+        else:
+            specs = _section_specs(part_text, part.start)
+        for spec in specs:
+            page, anchor = locate(spec.char_start)
+            clauses.append(
+                _make_clause(
+                    document_id=document_id,
+                    schedule=part.schedule,
+                    spec=spec,
+                    text=global_text[spec.char_start:spec.char_end],
+                    page=page,
+                    dom_anchor=anchor,
+                )
             )
-        )
+    return _ensure_unique_ids(clauses)
 
+
+def _ensure_unique_ids(clauses: list[Clause]) -> list[Clause]:
+    """Guarantee clause_id is unique within a document. Dedup-by-last removes the
+    bulk TOC/contents duplicates, but a single section can still carry the same
+    marker twice (e.g. a definitions section that restarts a nested ``(1)`` list).
+    Both chunks are real text, so rather than drop one we disambiguate the later
+    id with a ``~N`` suffix — the pipeline keys clauses by id, so a collision
+    would otherwise silently clobber a citable span."""
+    seen: set[str] = set()
+    for c in clauses:
+        if c.clause_id not in seen:
+            seen.add(c.clause_id)
+            continue
+        n = 2
+        while f"{c.clause_id}~{n}" in seen:
+            n += 1
+        c.clause_id = f"{c.clause_id}~{n}"
+        c.span.span_id = f"{c.span.span_id}~{n}"
+        seen.add(c.clause_id)
     return clauses
 
 
-def _split_subsections(
+# Line-start "(N) ..." subsection markers (SG/MY/AU bodies).
+_SUBSECTION = re.compile(r"\n[ \t]*\((?P<key>\d+[A-Z]?)\)\s+")
+
+
+def _split_markers(
     body: str,
     body_start: int,
     section: str,
+    pattern: re.Pattern[str],
 ) -> list[tuple[str, str | None, int, int]]:
-    """If `body` contains line-start `(N) ...` subsection markers, split into
-    one chunk per subsection. Otherwise return []."""
-    chunks: list[tuple[str, str | None, int, int]] = []
-    positions: list[tuple[int, str | None]] = []
-    for line_match in re.finditer(r"\n[ \t]*\((?P<sub>\d+[A-Z]?)\)\s+", body):
-        positions.append((line_match.start() + 1, line_match.group("sub")))
+    """If `body` carries line-start marker lines (e.g. ``(2)`` subsections), split
+    into one chunk per marker, with a leading head chunk for the pre-marker text.
+    Otherwise return [].  Offsets are relative to `body_start`."""
+    positions = [(m.start() + 1, m.group("key")) for m in pattern.finditer(body)]
     if not positions:
         return []
+    chunks: list[tuple[str, str | None, int, int]] = []
     first_pos = positions[0][0]
-    if first_pos > 0:
-        head_text = body[:first_pos].rstrip()
-        if head_text.strip():
-            chunks.append((section, None, body_start, body_start + len(head_text)))
-    for i, (pos, sub) in enumerate(positions):
+    head_text = body[:first_pos].rstrip()
+    if head_text.strip():
+        chunks.append((section, None, body_start, body_start + len(head_text)))
+    for i, (pos, key) in enumerate(positions):
         end = positions[i + 1][0] if i + 1 < len(positions) else len(body)
         slice_text = body[pos:end].rstrip()
-        chunks.append((section, sub, body_start + pos, body_start + pos + len(slice_text)))
+        chunks.append((section, key, body_start + pos, body_start + pos + len(slice_text)))
     return chunks
+
+
+def _split_app_items(
+    body: str,
+    body_start: int,
+    app: str,
+) -> list[tuple[str, str | None, int, int]]:
+    """Split an Australian Privacy Principle body into ``N.M`` item sub-clauses
+    (head chunk for the principle's preamble). Offsets relative to `body_start`."""
+    positions = [
+        (m.start() + 1, m.group("app"), m.group("item")) for m in _APP_ITEM.finditer(body)
+    ]
+    if not positions:
+        return []
+    chunks: list[tuple[str, str | None, int, int]] = []
+    first_pos = positions[0][0]
+    head_text = body[:first_pos].rstrip()
+    if head_text.strip():
+        chunks.append((app, None, body_start, body_start + len(head_text)))
+    for i, (pos, app_no, item) in enumerate(positions):
+        end = positions[i + 1][0] if i + 1 < len(positions) else len(body)
+        slice_text = body[pos:end].rstrip()
+        chunks.append((app_no, item, body_start + pos, body_start + pos + len(slice_text)))
+    return chunks
+
+
+def _ids_and_path(
+    document_id: str, schedule: str | None, spec: _Spec
+) -> tuple[str, str, str, str | None, str, str | None]:
+    """Build (structural_path, clause_id, span_id, section_number, paragraph_number,
+    article_number) for a spec, namespaced by Schedule when present."""
+    sch_path = f"Schedule {schedule} > " if schedule is not None else ""
+    sch_id = f"sch{schedule}-" if schedule is not None else ""
+
+    if spec.app is not None:
+        if spec.item is not None:
+            path = f"{sch_path}Australian Privacy Principle {spec.app}.{spec.item}"
+            suffix = f"app{spec.app}-{spec.item}"
+            return (path, f"{document_id}::{sch_id}{suffix}",
+                    f"{document_id}::span::{sch_id}{suffix}", spec.app, spec.item, None)
+        path = f"{sch_path}Australian Privacy Principle {spec.app}"
+        suffix = f"app{spec.app}"
+        return (path, f"{document_id}::{sch_id}{suffix}",
+                f"{document_id}::span::{sch_id}{suffix}", spec.app, None, None)
+
+    sec = spec.section
+    if spec.subsection is not None:
+        path = f"{sch_path}Section {sec}({spec.subsection})"
+        suffix = f"s{sec}-{spec.subsection}"
+        return (path, f"{document_id}::{sch_id}{suffix}",
+                f"{document_id}::span::{sch_id}{suffix}", sec, spec.subsection, None)
+    path = f"{sch_path}Section {sec}"
+    suffix = f"s{sec}"
+    return (path, f"{document_id}::{sch_id}{suffix}",
+            f"{document_id}::span::{sch_id}{suffix}", sec, None, None)
 
 
 def _make_clause(
     *,
     document_id: str,
-    section: str,
-    subsection: str | None,
-    char_start: int,
-    char_end: int,
+    schedule: str | None,
+    spec: _Spec,
     text: str,
     page: int | None,
     dom_anchor: str | None,
-    seq: int,
 ) -> Clause:
-    if subsection is not None:
-        structural_path = f"Section {section}({subsection})"
-        clause_id = f"{document_id}::s{section}-{subsection}"
-        span_id = f"{document_id}::span::s{section}-{subsection}"
-        paragraph_number = subsection
-    else:
-        structural_path = f"Section {section}"
-        clause_id = f"{document_id}::s{section}"
-        span_id = f"{document_id}::span::s{section}"
-        paragraph_number = None
-
+    path, clause_id, span_id, section_number, paragraph_number, article_number = _ids_and_path(
+        document_id, schedule, spec
+    )
     span = CanonicalSpan(
         span_id=span_id,
         document_id=document_id,
         page_number=page,
         dom_anchor=dom_anchor,
-        char_start=char_start,
-        char_end=char_end,
+        char_start=spec.char_start,
+        char_end=spec.char_end,
         text=text,
     )
     return Clause(
         clause_id=clause_id,
         document_id=document_id,
-        structural_path=structural_path,
-        section_number=section,
+        structural_path=path,
+        article_number=article_number,
+        section_number=section_number,
         paragraph_number=paragraph_number,
         span=span,
         is_citable=True,
