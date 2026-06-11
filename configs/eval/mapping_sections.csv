@@ -2,7 +2,7 @@ iso,document,indicator,gold_sections,note
 SG,Personal Data Protection Act 2012,P6-I4,26,Transfer of personal data outside Singapore (conditional cross-border flow)
 SG,Personal Data Protection Act 2012,P7-I1,13;24,Consent required (s.13) + Protection of personal data (s.24) — core obligations of the comprehensive framework
 SG,Personal Data Protection Act 2012,P7-I4,11,Compliance with Act — designation of DPO (s.11(3))
-AU,Privacy Act 1988,P6-I4,16C,Acts and practices of overseas recipients of personal information (main-body cross-border accountability; APP 8 itself sits in Schedule 1 and is not section-addressable)
+AU,Privacy Act 1988,P6-I4,APP8,Cross-border disclosure of personal information — Australian Privacy Principle 8 (now addressable inside Schedule 1 via the Schedule-aware parser; previously approximated by main-body s.16C)
 AU,Privacy Act 1988,P7-I1,14;15,Australian Privacy Principles (s.14) + APP entities must comply (s.15) — the framework anchor
 MY,Personal Data Protection Act 2010,P6-I4,129,Transfer of personal data to places outside Malaysia
 MY,Personal Data Protection Act 2010,P7-I1,5;6,Personal Data Protection Principles (s.5) + General Principle (s.6)

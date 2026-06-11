@@ -14,7 +14,9 @@ claim that the dense channel reorders the pool toward the on-point section.
 The gold (`configs/eval/mapping_sections.csv`) is a small hand-labelled set of
 ``indicator -> correct section number`` for the flagship statutes (SG PDPA, AU
 Privacy Act). Section numbers are matched at the top level (s.26 covers 26(1)),
-so subsection splitting does not affect a hit.
+so subsection splitting does not affect a hit. Australian Privacy Principles
+share numbers with the main body (APP 8 vs s.8), so they are keyed ``APP8`` —
+write the gold for an APP-targeting indicator as ``APP8`` (see ``_clause_key``).
 
 Document source, in priority order:
     --pdf PATH   local PDF (deterministic; works on the cached data/raw store)
@@ -50,6 +52,16 @@ MAX_K = 3
 
 
 # --- pure, offline-testable core -------------------------------------------
+
+def _clause_key(clause: Clause) -> str:
+    """The token a retrieved clause is matched against in the gold. An Australian
+    Privacy Principle shares its number with a main-body section (APP 8 vs s.8),
+    so it is keyed ``APP8`` to stay distinct; every other clause keys on its
+    section number."""
+    if "Australian Privacy Principle" in clause.structural_path:
+        return f"APP{clause.section_number}"
+    return clause.section_number or "?"
+
 
 def load_gold(path: Path = GOLD) -> dict[str, dict[str, dict[str, set[str]]]]:
     """iso (lower) -> {document name -> {submission_id -> set of section numbers}}.
@@ -110,7 +122,7 @@ def evaluate(
             indicator, profile, index, top_k=MAX_K,
             use_semantic=use_semantic, embedder=embedder, **retrieval_kwargs,
         )
-        retrieved = [clause_by_id[h.clause_id].section_number or "?" for h in hits]
+        retrieved = [_clause_key(clause_by_id[h.clause_id]) for h in hits]
         hit1 = bool(retrieved[:1]) and retrieved[0] in gold_sections
         hit3 = any(sec in gold_sections for sec in retrieved[:3])
         rows.append({
@@ -146,9 +158,11 @@ def _clauses_from_url(url: str, profile: SourceProfile, indicators, *, browser: 
     from lexora.collect.browser import DEFAULT_UA as UA
     from lexora.pipeline import run_pipeline_from_url
 
+    # Always send a real UA (a None header crashes httpx); --browser only decides
+    # whether to escalate to Chromium when the plain fetch is blocked.
     art = run_pipeline_from_url(
         url=url, profile=profile, indicators=indicators, portal_name="live-fetch",
-        browser_fallback=browser, user_agent=UA if browser else None,
+        browser_fallback=browser, user_agent=UA,
     )
     return art.clauses
 

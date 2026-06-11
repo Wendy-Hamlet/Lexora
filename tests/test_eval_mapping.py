@@ -52,6 +52,20 @@ def _clause(section: str, text: str) -> Clause:
     )
 
 
+def _app_clause(app: str, item: str | None, text: str) -> Clause:
+    """An Australian Privacy Principle clause as the Schedule-aware parser emits it
+    (structural_path carries 'Australian Privacy Principle N', section_number=N)."""
+    suffix = f"-{item}" if item else ""
+    cid = f"doc::sch1-app{app}{suffix}"
+    path = f"Schedule 1 > Australian Privacy Principle {app}" + (f".{item}" if item else "")
+    return Clause(
+        clause_id=cid, document_id="doc", structural_path=path,
+        section_number=app, paragraph_number=item,
+        span=CanonicalSpan(span_id=cid + ".s", document_id="doc", char_start=0,
+                           char_end=len(text), text=text),
+    )
+
+
 def _profile() -> SourceProfile:
     return SourceProfile(
         jurisdiction="Singapore", iso_code="SG", primary_language="en",
@@ -80,6 +94,43 @@ def test_load_gold_parses_sections_document_aware(tmp_path):
     assert gold["sg"]["PDPA 2012"]["P6-I4"] == {"26"}
     assert gold["sg"]["PDPA 2012"]["P7-I1"] == {"13", "24"}
     assert gold["my"]["PDPA 2010"]["P6-I4"] == {"129"}
+
+
+def test_clause_key_distinguishes_app_from_main_body_section():
+    # APP 8 (Schedule 1) and main-body s.8 both carry section_number "8"; only the
+    # APP clause keys to "APP8".
+    assert em._clause_key(_app_clause("8", None, "cross-border disclosure")) == "APP8"
+    assert em._clause_key(_app_clause("8", "1", "before disclosing overseas")) == "APP8"
+    assert em._clause_key(_clause("8", "this Act binds the Crown")) == "8"
+
+
+def test_evaluate_matches_app_gold_not_the_namesake_section():
+    # Gold "APP8" must be satisfied by the cross-border principle, never by the
+    # unrelated main-body section 8 that shares the number. (>=3 clauses so BM25's
+    # IDF is non-degenerate, as in the other eval tests.)
+    indicators = [_ind("P6-I4", "cross-border disclosure of personal information to an "
+                       "overseas recipient outside the country",
+                       keywords=["overseas", "disclose", "cross"])]
+    gold = {"P6-I4": {"APP8"}}
+    decoy = _clause("99", "miscellaneous provisions about fees and forms")
+
+    hit = em.evaluate(
+        [_clause("8", "this Act binds the Crown in right of the Commonwealth"),
+         _app_clause("8", "1", "before an APP entity discloses personal information to an "
+                     "overseas recipient who is not in Australia it must take reasonable steps"),
+         decoy],
+        _profile(), indicators, gold, use_semantic=False,
+    )
+    assert hit[0]["hit1"] is True and "APP8" in hit[0]["retrieved"]
+
+    # Only the namesake main-body s.8 present -> no APP8 hit (no false positive).
+    miss = em.evaluate(
+        [_clause("8", "this Act binds the Crown in right of the Commonwealth and the States"),
+         _clause("14", "the Australian Privacy Principles are set out in Schedule 1"),
+         decoy],
+        _profile(), indicators, gold, use_semantic=False,
+    )
+    assert miss[0]["hit1"] is False and miss[0]["hit3"] is False
 
 
 def test_select_gold_resolves_by_substring_and_singleton():
