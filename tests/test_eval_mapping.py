@@ -133,6 +133,28 @@ def test_evaluate_matches_app_gold_not_the_namesake_section():
     assert miss[0]["hit1"] is False and miss[0]["hit3"] is False
 
 
+def test_section_targeted_synonyms_lift_app8_over_app7():
+    # The lever that won P6-I4 hit@1 live: APP 8's operative wording ("overseas
+    # recipient", "cross-border disclosure") — section-targeted synonyms in the AU
+    # profile — must put APP 8 at BM25 rank-1, above the vocabulary-near but
+    # unrelated APP 7 (direct marketing) that previously outranked it.
+    clauses = [
+        _app_clause("7", "1", "an APP entity must not use or disclose personal information "
+                    "for the purpose of direct marketing unless an exception applies"),
+        _app_clause("8", "1", "before an APP entity discloses personal information to an "
+                    "overseas recipient the entity must take reasonable steps to ensure the "
+                    "overseas recipient does not breach the principles"),
+        _clause("99", "miscellaneous provisions about fees and forms"),
+    ]
+    ind = _ind("P6-I4", "conditions on cross-border transfer of personal data",
+               keywords=["cross-border disclosure of personal information",
+                         "overseas recipient",
+                         "disclose personal information to an overseas recipient"])
+    rows = em.evaluate(clauses, _profile(), [ind], {"P6-I4": {"APP8"}}, use_semantic=False)
+    assert rows[0]["retrieved"][0] == "APP8"  # APP 8 wins rank-1, not APP 7
+    assert rows[0]["hit1"] is True
+
+
 def test_select_gold_resolves_by_substring_and_singleton():
     by_doc = {"Personal Data Protection Act 2012": {"P6-I4": {"26"}}}
     # singleton: no --doc needed

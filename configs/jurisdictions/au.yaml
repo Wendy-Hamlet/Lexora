@@ -20,10 +20,25 @@ keywords_by_indicator:
     en: ["held or processed outside national borders", "My Health Records Act", "must not be held"]
   "6.2":
     en: ["stored and processed within Australia", "local storage"]
+  # Section-targeted synonyms: the operative wording of APP 8 (cross-border
+  # disclosure) that the namesake-but-unrelated APP 7 (direct marketing) lacks —
+  # "overseas recipient" / "cross-border disclosure" pull APP 8 to BM25 rank-1.
   "6.4":
-    en: ["Australian Privacy Principle 8", "cross-border disclosure", "APP 8", "Privacy Act 1988"]
+    en:
+      - "cross-border disclosure of personal information"
+      - "overseas recipient"
+      - "disclose personal information to an overseas recipient"
+      - "before an APP entity discloses personal information"
+      - "Australian Privacy Principle 8"
+  # Section-targeted synonyms for the framework anchor s.14/15: the operative
+  # "must comply with the Australian Privacy Principles" (s.15) and "are set out"
+  # (s.14), distinct from the data-breach-notification sections that otherwise win.
   "7.1":
-    en: ["Privacy Act 1988", "Australian Privacy Principles", "personal information"]
+    en:
+      - "an APP entity must comply with the Australian Privacy Principles"
+      - "the Australian Privacy Principles are set out"
+      - "Australian Privacy Principles"
+      - "personal information"
   "7.2":
     en: ["Security of Critical Infrastructure Act", "cyber security", "critical infrastructure"]
   "7.3":
