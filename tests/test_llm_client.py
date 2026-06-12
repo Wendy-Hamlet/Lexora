@@ -47,6 +47,49 @@ class _FakeOpenAI:
         self.chat = _Chat(fallback_content)
 
 
+def test_json_mode_can_be_disabled_to_skip_the_dead_attempt(monkeypatch):
+    # Some endpoints return empty content for response_format=json_object (and burn
+    # latency). LEXORA_LLM_JSON_MODE=0 skips that attempt entirely.
+    monkeypatch.setenv("LEXORA_LLM_JSON_MODE", "0")
+    fake = _FakeOpenAI()
+    client = LlmClient()
+    client._client = fake
+
+    data = client.chat("Return json.", 'Return {"ok": true}.', json_schema={"type": "object"})
+
+    assert data == {"ok": True}
+    calls = fake.chat.completions.calls
+    assert all("response_format" not in c for c in calls)  # json mode never attempted
+
+
+class _Usage:
+    def __init__(self, p, c):
+        self.prompt_tokens = p
+        self.completion_tokens = c
+        self.total_tokens = p + c
+
+
+def test_token_accounting_sums_usage(monkeypatch):
+    monkeypatch.setenv("LEXORA_LLM_JSON_MODE", "0")
+    fake = _FakeOpenAI()
+
+    def _create(**kwargs):
+        fake.chat.completions.calls.append(kwargs)
+        resp = _Response('{"ok": true}')
+        resp.usage = _Usage(40, 10)
+        return resp
+
+    fake.chat.completions.create = _create
+    client = LlmClient()
+    client._client = fake
+
+    client.chat("Return json.", "Return json.", json_schema={"type": "object"})
+    assert client.calls == 1
+    assert client.prompt_tokens == 40
+    assert client.completion_tokens == 10
+    assert client.total_tokens == 50
+
+
 def test_chat_retries_without_json_mode_when_endpoint_returns_empty_content():
     fake = _FakeOpenAI()
     client = LlmClient()

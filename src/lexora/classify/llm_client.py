@@ -18,6 +18,7 @@ bare install and the offline test suite never require this package or a server.
 from __future__ import annotations
 
 import json
+import os
 import re
 from typing import Any
 
@@ -54,6 +55,28 @@ class LlmClient:
         self.max_retries = cfg.llm_max_retries
         self.timeout = timeout
         self._client = None
+        # Some endpoints accept response_format=json_object but return empty
+        # content (and burn latency) for it; the client then falls back to a
+        # plain completion. Set LEXORA_LLM_JSON_MODE=0 to skip the json-mode
+        # attempt entirely on such endpoints. Default preserves prior behaviour.
+        self.use_json_mode = os.environ.get("LEXORA_LLM_JSON_MODE", "1").lower() not in (
+            "0", "false", "no", "off",
+        )
+        # Token accounting (summed across attempts and retries) so a run can
+        # report cost. Reset by the caller between phases if desired.
+        self.calls = 0
+        self.prompt_tokens = 0
+        self.completion_tokens = 0
+        self.total_tokens = 0
+
+    def _account(self, resp) -> None:
+        usage = getattr(resp, "usage", None)
+        if usage is None:
+            return
+        self.calls += 1
+        self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+        self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+        self.total_tokens += getattr(usage, "total_tokens", 0) or 0
 
     def _ensure_client(self):
         if self._client is None:
@@ -81,9 +104,13 @@ class LlmClient:
             system = f"{system}\nRespond with a valid json object."
         if json_schema is not None and "json" not in user:
             user = f"{user}\nReturn valid json."
-        attempts = [json_schema is not None]
+        attempts: list[bool] = []
         if json_schema is not None:
+            if self.use_json_mode:
+                attempts.append(True)
             attempts.extend([False] * max(1, self.max_retries))
+        else:
+            attempts.append(False)
         content = ""
         parse_error: Exception | None = None
         for json_mode in attempts:
@@ -95,6 +122,7 @@ class LlmClient:
                     raise
                 parse_error = exc
                 continue
+            self._account(resp)
             content = resp.choices[0].message.content or ""
             if not content and json_schema is not None:
                 continue
