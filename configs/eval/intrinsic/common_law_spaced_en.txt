@@ -1,0 +1,25 @@
+Digital Economy Privacy Act 2023
+
+1  Short title
+
+This Act may be cited as the Digital Economy Privacy Act 2023.
+
+2  Objects of this Act
+
+The objects of this Act are to protect the privacy of individuals and to promote responsible cross-border flows of personal information in digital trade.
+
+13  Cross-border disclosure of personal information
+
+Before an entity discloses personal information about an individual to an overseas recipient, the entity must take such steps as are reasonable in the circumstances to ensure that the overseas recipient does not breach the privacy principles in relation to the information.
+
+19  Security of personal information
+
+An entity must take reasonable steps to protect the personal information it holds from misuse, interference and loss, and from unauthorised access, modification or disclosure.
+
+26  Notification of eligible data breaches
+
+If an entity has reasonable grounds to believe that an eligible data breach has happened, the entity must prepare a statement and give a copy to the Commissioner and to each affected individual as soon as practicable.
+
+26A  Government access to information
+
+An enforcement body may request access to personal information held by an entity only where authorised by a warrant or other lawful authority, and the entity must record each such disclosure.

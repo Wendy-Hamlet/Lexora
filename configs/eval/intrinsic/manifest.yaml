@@ -1,0 +1,41 @@
+# Gold-free intrinsic generalization probes (roadmap G-2).
+#
+# Each fixture is a small synthetic legal text. The harness (scripts/eval_intrinsic.py)
+# parses it and reports LAYER-ATTRIBUTING intrinsic metrics that need no human
+# labels, so a non-Latin "hard zero" surfaces as:
+#   * clause-yield = 0      -> the PARSER is blind to the numbering   (fix = G-1c)
+#   * token-rate   = 0      -> the ASCII TOKENIZER drops the script   (fix = G-1a)
+#   * coverage     = 0      -> downstream BM25 collapse (consequence of the above)
+# These run offline and deterministically, so they belong in CI and re-run after
+# each G-1 fix to watch the cliff close — before any country is hand-tuned.
+fixtures:
+  - id: common-law-dotted-en
+    path: common_law_dotted_en.txt
+    language: en
+    script: latin
+    style: dotted
+    note: SG/MY-style baseline — should pass every metric (control).
+  - id: common-law-spaced-en
+    path: common_law_spaced_en.txt
+    language: en
+    script: latin
+    style: spaced
+    note: AU-style baseline (control).
+  - id: civil-law-ascii-num-zh
+    path: civil_law_ascii_num_zh.txt
+    language: zh
+    script: han
+    style: dotted
+    note: ASCII "1." numbering + Chinese body — isolates the TOKENIZER cliff (G-1a).
+  - id: civil-law-native-num-zh
+    path: civil_law_native_num_zh.txt
+    language: zh
+    script: han
+    style: article-zh
+    note: native 第N条 numbering + Chinese body — isolates the PARSER cliff (G-1c).
+  - id: civil-law-native-num-th
+    path: civil_law_native_num_th.txt
+    language: th
+    script: thai
+    style: article-th
+    note: native มาตรา N numbering + Thai body — parser + tokenizer cliff.

@@ -1,0 +1,13 @@
+Personal Data and Digital Trade Act 2024
+
+1. This Act may be cited as the Personal Data and Digital Trade Act 2024 and comes into operation on a date that the Minister appoints by notification.
+
+2.—(1) In this Act, unless the context otherwise requires, "personal data" means data, whether true or not, about an individual who can be identified from that data or from that data and other information to which the organisation has access.
+
+13. An organisation must not transfer personal data to a country or territory outside the jurisdiction unless the organisation has taken appropriate steps to ensure that the recipient provides a standard of protection comparable to the protection under this Act, including by binding the overseas recipient through enforceable contractual clauses governing cross-border data flows.
+
+24. An organisation must protect personal data in its possession or under its control by making reasonable security arrangements to prevent unauthorised access, collection, use, disclosure, copying, modification, disposal or similar risks.
+
+26. Where a data breach has occurred, the organisation must assess whether the breach is notifiable and, if so, notify the Commission and each affected individual as soon as practicable, and in any case not later than three calendar days after making that assessment.
+
+26A. An organisation must not retain personal data for a period longer than is necessary to fulfil the purpose for which the data was collected, and must cease to retain the data once retention no longer serves any legal or business purpose.
