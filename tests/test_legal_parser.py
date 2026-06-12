@@ -7,20 +7,25 @@ auto-selection.
 from __future__ import annotations
 
 from lexora.extract.html_extractor import HtmlBlock
-from lexora.structure.legal_parser import _detect_boundaries, parse_structure_html
+from lexora.structure.legal_parser import (
+    _cn_to_int,
+    _detect_boundaries,
+    _normalize_numeral,
+    parse_structure_html,
+)
 
 
 def _secs(text: str) -> list[str]:
-    return [sec for _, sec, _ in _detect_boundaries(text)]
+    return [num for _, num, _, _ in _detect_boundaries(text)]
 
 
 def test_detect_dotted_style_sg_my():
     text = "1. Short title\n\n26.—(1) An organisation must not transfer personal data."
     boundaries = _detect_boundaries(text)
-    secs = [sec for _, sec, _ in boundaries]
+    secs = [num for _, num, _, _ in boundaries]
     assert "1" in secs and "26" in secs
     # the inline subsection of 26.—(1) is captured
-    assert ("26", "1") in [(sec, sub) for _, sec, sub in boundaries]
+    assert ("26", "1") in [(num, sub) for _, num, sub, _ in boundaries]
 
 
 def test_detect_spaced_style_au():
@@ -160,3 +165,64 @@ def test_repeated_marker_gets_unique_suffix():
     assert ids.count("doc::s5-1") == 1
     assert "doc::s5-1~2" in ids
     assert len(ids) == len(set(ids))  # invariant: ids are unique per document
+
+
+# --- G-1c multi-script civil-law articles ------------------------------------
+
+def test_chinese_numeral_parsing():
+    assert _cn_to_int("一") == 1
+    assert _cn_to_int("十") == 10
+    assert _cn_to_int("十三") == 13
+    assert _cn_to_int("二十四") == 24
+    assert _cn_to_int("二十六") == 26
+    assert _cn_to_int("一百零五") == 105
+
+
+def test_normalize_numeral_across_scripts():
+    assert _normalize_numeral("13") == "13"       # ascii
+    assert _normalize_numeral("１３") == "13"       # fullwidth
+    assert _normalize_numeral("๑๓") == "13"       # thai digits
+    assert _normalize_numeral("十三") == "13"       # chinese numerals
+    assert _normalize_numeral("条") == ""          # not a numeral
+
+
+def test_chinese_articles_are_addressable():
+    # 第N条 articles become citable clauses with ::aN ids and "Article N" paths;
+    # native Chinese numerals are folded to ASCII so the id is stable.
+    text = "第一条 本法的目的。\n\n第十三条 跨境提供个人信息的规定。\n\n第二十四条 安全措施。"
+    block = HtmlBlock(dom_anchor="#d", text=text, char_start=0, char_end=len(text))
+    clauses = parse_structure_html("doc", [block])
+    by_id = {c.clause_id: c for c in clauses}
+    assert "doc::a1" in by_id
+    assert "doc::a13" in by_id
+    assert "doc::a24" in by_id
+    art13 = by_id["doc::a13"]
+    assert art13.structural_path == "Article 13"
+    assert art13.article_number == "13"
+    # verbatim contract: the stored span slices back to the source text.
+    assert text[art13.span.char_start : art13.span.char_end] == art13.span.text
+
+
+def test_thai_articles_are_addressable():
+    text = "มาตรา ๑ บทนำ\n\nมาตรา ๑๓ การส่งข้อมูลข้ามพรมแดน\n\nมาตรา ๒๔ มาตรการรักษาความปลอดภัย"
+    block = HtmlBlock(dom_anchor="#d", text=text, char_start=0, char_end=len(text))
+    by_id = {c.clause_id: c for c in parse_structure_html("doc", [block])}
+    assert {"doc::a1", "doc::a13", "doc::a24"} <= set(by_id)
+
+
+def test_english_act_is_not_misparsed_as_articles():
+    # An English Act that merely mentions "article" in prose must still parse as
+    # sections — the winner-takes-all picks the dominant style, not stray matches.
+    text = (
+        "1  Short title\n\n"
+        "2  This Act gives effect to Article 17 of the Convention.\n\n"
+        "13  Cross-border disclosure"
+    )
+    by_id = {
+        c.clause_id: c
+        for c in parse_structure_html(
+            "doc", [HtmlBlock(dom_anchor="#s", text=text, char_start=0, char_end=len(text))]
+        )
+    }
+    assert set(by_id) == {"doc::s1", "doc::s2", "doc::s13"}
+    assert not any("::a" in cid for cid in by_id)

@@ -60,16 +60,23 @@ def test_ascii_numbered_chinese_tokenizes_after_g1a():
     assert r.coverage_pct == 0.0  # G-3a / G-1b will move this off 0
 
 
-def test_native_numbered_chinese_isolates_parser_cliff():
-    # The parser is blind to 第N条 -> zero yield (a different, upstream cliff).
+def test_native_numbered_chinese_parses_after_g1c():
+    # After G-1c the parser recognises 第N条 articles: non-zero yield, unique ids,
+    # verbatim holds, CJK body tokenizes. cov% stays 0 (English query — G-3a/G-1b).
     r = _run("civil-law-native-num-zh")
-    assert r.clauses == 0  # G-1c will move this off 0
-    assert r.query_ok_pct == 100.0  # query side is unaffected
+    assert r.clauses > 0  # was 0 before G-1c
+    assert r.uniq_pct == 100.0
+    assert r.verbatim_pct == 100.0
+    assert r.token_pct == 100.0
+    assert r.query_ok_pct == 100.0
 
 
-def test_native_numbered_thai_is_a_hard_zero():
+def test_native_numbered_thai_parses_after_g1c():
+    # มาตรา N articles are now recovered with verbatim-correct spans.
     r = _run("civil-law-native-num-th")
-    assert r.clauses == 0
+    assert r.clauses > 0  # was 0 before G-1c
+    assert r.verbatim_pct == 100.0
+    assert r.token_pct == 100.0
 
 
 def test_query_side_is_universal_across_all_fixtures():

@@ -89,6 +89,54 @@ _APP_ITEM = re.compile(r"\n[ \t]*(?P<app>\d+)\.(?P<item>\d+)\s+(?=\S)")
 # pointer, not the real heading, so it must not open a Schedule part.
 _TOC_TAIL = re.compile(r"(?:\.{2,}\s*\d*|\s{2,}\d+)\s*$")
 
+# --- Civil-law article openers (G-1c, multi-script) --------------------------
+# Civil-law codes number provisions as "articles", not common-law "sections", in
+# the document's own script. Each pattern captures the number in its native form;
+# `_normalize_numeral` folds it to ASCII digits for a stable clause_id (::aN). The
+# winner-takes-all in `_detect_boundaries` only adopts these when they yield more
+# boundaries than the dotted/spaced section styles, so an English Act that merely
+# mentions "Article" is unaffected.
+_ARTICLE_ZH = re.compile(r"第\s*(?P<num>[0-9０-９〇零一二三四五六七八九十百千两]+)\s*[条條]")
+_ARTICLE_TH = re.compile(r"มาตรา\s*(?P<num>[0-9๐-๙]+)")
+_ARTICLE_LATIN = re.compile(r"Art(?:icle|ículo|icolo|igo|\.)?\s+(?P<num>\d+)", re.I)
+
+# All section/article openers, each tagged with the structural kind it yields.
+_SECTION_OPENERS = ((_DOTTED, "section"), (_SPACED, "section"))
+_ARTICLE_OPENERS = (
+    (_ARTICLE_ZH, "article"), (_ARTICLE_TH, "article"), (_ARTICLE_LATIN, "article"),
+)
+_ALL_OPENERS = _SECTION_OPENERS + _ARTICLE_OPENERS
+
+_FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９",
+                                  "0123456789")
+_THAI_DIGITS = str.maketrans("๐๑๒๓๔๕๖๗๘๙",
+                             "0123456789")
+_CN_DIGIT = {"〇": 0, "零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4,
+             "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+_CN_UNIT = {"十": 10, "百": 100, "千": 1000}
+
+
+def _cn_to_int(s: str) -> int:
+    """Parse a Chinese numeral (十三 -> 13, 二十四 -> 24, 一百零五 -> 105). Article
+    numbers stay well under 1000, so multi-section composition is enough."""
+    total = current = 0
+    for ch in s:
+        if ch in _CN_DIGIT:
+            current = _CN_DIGIT[ch]
+        elif ch in _CN_UNIT:
+            total += (current or 1) * _CN_UNIT[ch]
+            current = 0
+    return total + current
+
+
+def _normalize_numeral(raw: str) -> str:
+    """Fold a native-script article number to ASCII digits, or '' if unparseable."""
+    s = raw.strip().translate(_FULLWIDTH_DIGITS).translate(_THAI_DIGITS)
+    if s.isdigit():
+        return str(int(s))
+    value = _cn_to_int(s)
+    return str(value) if value else ""
+
 # Back-compat alias (the dotted opener was the original public name).
 SECTION_OPENER = _DOTTED
 
@@ -123,6 +171,7 @@ class _Spec:
     item: str | None
     char_start: int
     char_end: int
+    article: str | None = None  # civil-law article number (G-1c)
 
 
 def _make_locator(segments: Sequence[_Segment]) -> Locator:
@@ -206,58 +255,74 @@ def _split_parts(global_text: str) -> list[_Part]:
     return parts
 
 
-def _detect_boundaries(global_text: str) -> list[tuple[int, str, str | None]]:
-    """Find section/subsection boundaries, auto-selecting the numbering style.
+def _detect_boundaries(global_text: str) -> list[tuple[int, str, str | None, str]]:
+    """Find section/article boundaries, auto-selecting the numbering style.
 
-    Each candidate must start a line and not be a 4-digit year. Both the dotted
-    (SG/MY) and spaced (AU) styles are scanned; the one yielding more valid
-    boundaries wins, so a document is parsed in its own style rather than a
-    hard-coded one.
+    Each candidate must start a line and (for sections) not be a 4-digit year.
+    The dotted (SG/MY) and spaced (AU) section styles plus the civil-law article
+    styles (第N条 / มาตรา N / Article N) are all scanned; the style yielding the
+    most valid boundaries wins, so a document is parsed in its own style — common
+    law as sections, civil law as articles — rather than a hard-coded one. Returns
+    ``(pos, number, subsection_or_None, kind)`` where kind is "section"|"article".
     """
-    best: list[tuple[int, str, str | None]] = []
-    for opener in (_DOTTED, _SPACED):
+    best: list[tuple[int, str, str | None, str]] = []
+    for opener, kind in _ALL_OPENERS:
         has_sub = "sub" in opener.groupindex
-        found: list[tuple[int, str, str | None]] = []
+        numgroup = "sec" if "sec" in opener.groupindex else "num"
+        found: list[tuple[int, str, str | None, str]] = []
         for match in opener.finditer(global_text):
             if not _line_start(global_text, match.start()):
                 continue
-            sec = match.group("sec")
-            if _YEARISH.fullmatch(sec):
+            raw = match.group(numgroup)
+            if kind == "section":
+                if _YEARISH.fullmatch(raw):
+                    continue
+                num: str | None = raw
+            else:
+                num = _normalize_numeral(raw) or None
+            if not num:
                 continue
-            found.append((match.start(), sec, match.group("sub") if has_sub else None))
+            found.append((match.start(), num, match.group("sub") if has_sub else None, kind))
         if len(found) > len(best):
             best = found
     return best
 
 
 def _dedupe_boundaries(
-    boundaries: list[tuple[int, str, str | None]],
-) -> list[tuple[int, str, str | None]]:
-    """Collapse a section that appears twice — once in the front contents list and
-    again as the real provision — to its last (body) occurrence. Keyed by
-    (section, inline-subsection) so distinct inline subsections like ``26.—(1)``
-    and ``26.—(2)`` are preserved while a duplicated plain ``26`` heading is not."""
-    last: dict[tuple[str, str | None], tuple[int, str, str | None]] = {}
-    for pos, sec, sub in boundaries:
-        last[(sec, sub)] = (pos, sec, sub)
+    boundaries: list[tuple[int, str, str | None, str]],
+) -> list[tuple[int, str, str | None, str]]:
+    """Collapse a provision that appears twice — once in the front contents list
+    and again as the real text — to its last (body) occurrence. Keyed by
+    (kind, number, inline-subsection) so distinct inline subsections like
+    ``26.—(1)`` and ``26.—(2)`` are preserved while a duplicated plain ``26``
+    heading is not."""
+    last: dict[tuple[str, str, str | None], tuple[int, str, str | None, str]] = {}
+    for pos, num, sub, kind in boundaries:
+        last[(kind, num, sub)] = (pos, num, sub, kind)
     return sorted(last.values())
 
 
 def _section_specs(part_text: str, offset: int) -> list[_Spec]:
-    """Resolve section/subsection clauses within a part (offsets globalised)."""
+    """Resolve section/article clauses within a part (offsets globalised)."""
     boundaries = _dedupe_boundaries(_detect_boundaries(part_text))
     specs: list[_Spec] = []
-    for i, (start, sec, sub) in enumerate(boundaries):
+    for i, (start, num, sub, kind) in enumerate(boundaries):
         end = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(part_text)
         body = part_text[start:end].rstrip()
         true_end = start + len(body)
+        if kind == "article":
+            # Civil-law articles are kept atomic (no common-law (N) sub-split):
+            # their paragraphs (款) are usually unmarked, so the article is the
+            # citable unit. char-span correctness is preserved either way.
+            specs.append(_Spec(None, None, None, None, offset + start, offset + true_end, num))
+            continue
         if sub is None:
-            chunks = _split_markers(body, start, sec, _SUBSECTION)
+            chunks = _split_markers(body, start, num, _SUBSECTION)
             if chunks:
                 for csec, csub, cstart, cend in chunks:
                     specs.append(_Spec(csec, csub, None, None, offset + cstart, offset + cend))
                 continue
-        specs.append(_Spec(sec, sub, None, None, offset + start, offset + true_end))
+        specs.append(_Spec(num, sub, None, None, offset + start, offset + true_end))
     return specs
 
 
@@ -389,6 +454,12 @@ def _ids_and_path(
     article_number) for a spec, namespaced by Schedule when present."""
     sch_path = f"Schedule {schedule} > " if schedule is not None else ""
     sch_id = f"sch{schedule}-" if schedule is not None else ""
+
+    if spec.article is not None:
+        path = f"{sch_path}Article {spec.article}"
+        suffix = f"a{spec.article}"
+        return (path, f"{document_id}::{sch_id}{suffix}",
+                f"{document_id}::span::{sch_id}{suffix}", None, None, spec.article)
 
     if spec.app is not None:
         if spec.item is not None:
