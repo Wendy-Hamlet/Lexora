@@ -42,6 +42,22 @@ class FakeEmbedder:
 
 # --- pure helpers -----------------------------------------------------------
 
+def test_embedding_model_resolves_both_env_var_names(monkeypatch):
+    # G-1b wiring: config sets LEXORA_EMBEDDING_MODEL but the embedder historically
+    # only read LEXORA_EMBED_MODEL, so the promised multilingual model was dead.
+    from lexora.semantic.embedder import _FALLBACK_MODEL, resolve_model_name
+
+    monkeypatch.delenv("LEXORA_EMBED_MODEL", raising=False)
+    monkeypatch.delenv("LEXORA_EMBEDDING_MODEL", raising=False)
+    assert resolve_model_name() == _FALLBACK_MODEL  # light English default
+
+    monkeypatch.setenv("LEXORA_EMBEDDING_MODEL", "BAAI/bge-m3")
+    assert resolve_model_name() == "BAAI/bge-m3"  # config knob now honoured
+
+    monkeypatch.setenv("LEXORA_EMBED_MODEL", "legacy/override")
+    assert resolve_model_name() == "legacy/override"  # explicit legacy var wins
+
+
 def test_cosine_topk_orders_and_truncates():
     docs = np.array([[1.0, 0.0], [0.0, 1.0], [0.7071, 0.7071]], dtype=np.float32)
     q = np.array([1.0, 0.0], dtype=np.float32)

@@ -23,9 +23,31 @@ from functools import lru_cache
 
 import numpy as np
 
-# A 384-dim English model: small (~130MB), fast on CPU, strong enough to bridge
-# the statutory-vs-concept vocabulary gap. Override with LEXORA_EMBED_MODEL.
-DEFAULT_MODEL = os.environ.get("LEXORA_EMBED_MODEL", "BAAI/bge-small-en-v1.5")
+# Default 384-dim English model: small (~130MB), fast on CPU, strong enough to
+# bridge the statutory-vs-concept vocabulary gap for the (English) round-1
+# economies. For non-Latin generalization, set the model to a multilingual one
+# (the submission's promised ``BAAI/bge-m3``, ~2.3GB, cross-lingual) — fastembed
+# downloads it on first use.
+#
+# One knob, two accepted names: ``LEXORA_EMBED_MODEL`` is the legacy explicit
+# override; ``LEXORA_EMBEDDING_MODEL`` is the unified config var (see config.py).
+# Honouring both fixes a dead-config bug — config defaulted ``LEXORA_EMBEDDING_
+# MODEL=BAAI/bge-m3`` while the embedder only ever read ``LEXORA_EMBED_MODEL``, so
+# the promised multilingual model was never actually reachable.
+_FALLBACK_MODEL = "BAAI/bge-small-en-v1.5"
+
+
+def resolve_model_name() -> str:
+    """Pick the embedding model from the environment (legacy name wins), else the
+    light English fallback. Centralised so the two accepted env vars never drift."""
+    return (
+        os.environ.get("LEXORA_EMBED_MODEL")
+        or os.environ.get("LEXORA_EMBEDDING_MODEL")
+        or _FALLBACK_MODEL
+    )
+
+
+DEFAULT_MODEL = resolve_model_name()
 
 
 def _default_cache_dir() -> str:
