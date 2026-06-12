@@ -33,7 +33,7 @@ Current user-scoped stage is complete when the repository proves the mandatory L
 | 4 | complete | Run focused verification commands and capture artifacts without leaking secrets. |
 | 5 | complete | Run independent review/feedback loop and address findings. |
 | 6 | complete | Audit every `goal.md` acceptance item and decide whether the active goal is complete. |
-| 7 | in_progress | Sync the completed code, output artifacts, and conclusion reports to the remote branch without committing secrets. |
+| 7 | complete | Sync the completed code, output artifacts, and conclusion reports to the remote branch without committing secrets. |
 
 ## Errors Encountered
 
