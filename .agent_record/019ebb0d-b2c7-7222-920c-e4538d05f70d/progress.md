@@ -1,0 +1,97 @@
+# Progress
+
+Thread: `019ebb0d-b2c7-7222-920c-e4538d05f70d`
+
+## 2026-06-12
+
+- Read the `planning-with-files` skill instructions.
+- Confirmed the active thread ID from `CODEX_THREAD_ID`.
+- Read the beginning of `goal.md` and current git status.
+- Created this thread's planning files under `.agent_record/019ebb0d-b2c7-7222-920c-e4538d05f70d/`.
+- Read the remainder of `goal.md` and previous thread planning records for handoff context.
+- Recorded the previously identified config/verifier integration gap in `findings.md`.
+- Updated plan scope after user clarified that LLM integration is mandatory and non-LLM follow-up items can be skipped if blocked.
+- Safely inspected `.env` variable names, `.env.example`, `config.py`, `llm_client.py`, `verifier.py`, CLI map flow, and `scripts/run_submission.py`.
+- Created implementation worktree `../worktree_Lexora/llm-env-integration-019ebb0d` on branch `codex/llm-env-integration-019ebb0d`.
+- Marked context restore and worktree creation complete; implementation phase is now in progress.
+- In the implementation worktree, updated `src/lexora/config.py` to parse local `.env`/`.env.example`, support `LEXORA_ENV_FILE`, and fall back from `OPENAI_BASE_URL` / `OPENAI_API_KEY` to `LEXORA_LLM_*`.
+- Updated LLM client docs and `scripts/run_submission.py --dry-run --verify` to report verifier readiness without printing secrets.
+- Added `tests/test_config.py` for dotenv loading, `OPENAI_*` alias support, process env precedence, and explicit env-file handling.
+- Targeted test attempt with `pytest tests/test_config.py tests/test_verifier.py` failed because `pytest` is not on PATH.
+- Second targeted test attempt with `python -m pytest ...` failed because `python` is not on PATH.
+- Third targeted test attempt with `python3 -m pytest ...` failed because the `pytest` module is not installed.
+- User requested a project-local `.venv`. Attempting `python3 -m venv .venv` in the worktree failed because the system Python lacks `ensurepip` / `python3.12-venv`.
+- Found `uv` available and used `uv venv --clear .venv` to create the project-local virtualenv in the implementation worktree.
+- Installed the project with `.[dev,llm]` into `.venv` using `uv pip install -e '.[dev,llm]'`; this installed `pytest` and the `openai` SDK locally.
+- Ran `.venv/bin/python -m pytest tests/test_config.py tests/test_verifier.py`; result: 14 passed.
+- Ran full `.venv/bin/python -m pytest`; result: 123 passed, 4 skipped.
+- Ran targeted ruff check; it failed only on import ordering in `config.py` and `scripts/run_submission.py`.
+- Ran `.venv/bin/ruff check --fix ...`; result: 2 import-order issues fixed.
+- Re-ran targeted ruff check; result: all checks passed.
+- Re-ran `.venv/bin/python -m pytest tests/test_config.py tests/test_verifier.py`; result: 14 passed.
+- Re-ran full `.venv/bin/python -m pytest`; result: 123 passed, 4 skipped.
+- Ran `LEXORA_ENV_FILE=/home/ubuntu/scratch/swx/Lexora/.env .venv/bin/python scripts/run_submission.py --dry-run --verify`; result: exit 0 and printed `LLM verifier ON (model: gpt-5.4)` with no secrets.
+- Ran `LEXORA_ENV_FILE=/home/ubuntu/scratch/swx/Lexora/.env .venv/bin/lexora map -j my --verify --budget 3`; it printed `LLM verifier ON` then failed before crawl because `httpx` needed `socksio` for the current SOCKS proxy environment.
+- Updated `pyproject.toml` dependency from `httpx>=0.27` to `httpx[socks]>=0.27`.
+- Reinstalled `.[dev,llm]` into `.venv`; `socksio==1.0.0` was installed.
+- Re-ran `.venv/bin/python -m pytest tests/test_config.py tests/test_verifier.py`; result: 14 passed.
+- Re-ran targeted ruff check after dependency change; result: all checks passed.
+- Fixed config precedence so `.env` aliases can override `.env.example` defaults, including `OPENAI_BASE_URL` over example `LEXORA_LLM_BASE_URL`.
+- Added LLM client compatibility handling for endpoints that reject or mishandle `response_format=json_object`: lower-case `json` prompt injection, retry without JSON mode on 400/empty content, and `LlmResponseError` for empty/unparseable structured responses.
+- Added `tests/test_llm_client.py` covering JSON-mode empty-content fallback and explicit response errors.
+- Added verifier backend error reporting to `lexora map` and `scripts/run_submission.py`.
+- Re-ran `scripts/run_submission.py --dry-run --verify`; result: exit 0 and `LLM verifier ON (model: gpt-5.4)`.
+- Re-ran minimal LLM smoke; result: endpoint reached, but structured output returns `LlmResponseError`.
+- Re-ran `lexora map -j my --verify --budget 3 --out outputs/map_my_verify_on_budget3.jsonld`; result: exit 0, `LLM verifier ON`, explicit warning for 3 failed judgements with last error `LlmResponseError`, and 0 citation rows.
+- Created `outputs/llm_verifier_ab_my_budget3.md` summarizing A/B metrics, dropped samples, and recommendation not to default-enable `--verify` until endpoint/model returns parseable JSON.
+- Spawned independent review subagent `019ebb37-0900-7371-8aa2-902a122f8985` for closed-loop review of config, LLM client, error visibility, tests, and secret-handling risks.
+- Ran final full `.venv/bin/python -m pytest`; result: 125 passed, 4 skipped.
+- Checked implementation worktree status: modified tracked files are `pyproject.toml`, `scripts/run_submission.py`, `src/lexora/classify/llm_client.py`, `src/lexora/classify/verifier.py`, `src/lexora/cli.py`, `src/lexora/config.py`, `tests/test_verifier.py`; untracked new tests are `tests/test_config.py` and `tests/test_llm_client.py`.
+- Received independent review from subagent `019ebb37-0900-7371-8aa2-902a122f8985`.
+- Addressed review finding 1: `.env.example` is no longer parsed as a full runtime layer; only `LEXORA_LLM_MODEL` / `OPENAI_MODEL` can be sourced from `.env.example`.
+- Addressed review finding 2: `scripts/run_submission.py` non-dry-run now warns if `--verify` was requested but verifier construction returns `None`; added an offline test in `tests/test_robustness.py`.
+- Addressed review finding 3: updated `LlmClient.chat()` docstring to match `LlmResponseError` behavior.
+- Addressed review finding 4: added config regression coverage for `.env.example` not changing non-LLM defaults and run-submission warning coverage.
+- Re-ran targeted tests `tests/test_config.py tests/test_llm_client.py tests/test_verifier.py tests/test_robustness.py`; result: 25 passed.
+- Re-ran targeted ruff check; result: all checks passed.
+- Re-ran safe config structure check and `scripts/run_submission.py --dry-run --verify`; result: endpoint/model/key detected from the intended files and `LLM verifier ON (model: gpt-5.4)` printed without secrets.
+- Re-ran final full `.venv/bin/python -m pytest`; result: 127 passed, 4 skipped.
+- Synchronized implementation worktree `.env.example` to `LEXORA_LLM_MODEL=gpt-5.4`, matching the source checkout's user-provided model setting.
+- Re-ran full `.venv/bin/python -m pytest` after the `.env.example` sync; result: 127 passed, 4 skipped.
+- Completed audit: do not mark active goal complete yet because LLM integration is wired but the configured endpoint/model returns `LlmResponseError` instead of parseable verifier JSON.
+- Ran a non-secret endpoint parameter probe. Result: explicit `max_tokens` or `max_completion_tokens` makes the configured chat endpoint return content; JSON prompt with `max_completion_tokens` returned parseable `{"ok":true}`. This suggests the LLM client should set an output-token limit by default.
+- Added `llm_max_tokens` config with `LEXORA_LLM_MAX_TOKENS` / `OPENAI_MAX_TOKENS` support, defaulting to 512.
+- Updated `LlmClient` so chat requests include `max_completion_tokens`.
+- Added config and client tests for the token-limit behavior.
+- Ran targeted tests `tests/test_config.py tests/test_llm_client.py tests/test_verifier.py tests/test_robustness.py`; result: 26 passed.
+- Ran targeted ruff check; result: all checks passed.
+- Ran a real minimal LLM smoke check with `LEXORA_ENV_FILE=/home/ubuntu/scratch/swx/Lexora/.env`; result: model `gpt-5.4`, max_tokens `512`, parseable JSON returned with key `ok`.
+- Re-ran MY budget-3 verify-on after adding token limit; backend errors dropped but did not disappear, so further prompt/response robustness was needed.
+- Diagnosed verifier prompt behavior with raw endpoint calls. `response_format=json_object` often returned empty content, but plain chat with explicit token limit returned valid verifier JSON for simpler prompts.
+- Added robust JSON object extraction for fenced JSON and explanatory text.
+- Added structured-output retries for empty/invalid verifier responses, controlled by `llm_max_retries` (default 2).
+- Re-ran targeted tests after retry/extraction changes; result: 29 passed and ruff passed.
+- Re-ran minimal LLM smoke after retry changes; result: model `gpt-5.4`, max_tokens `512`, max_retries `2`, parseable JSON returned with key `ok`.
+- Re-ran `lexora map -j my --verify --budget 3 --out outputs/map_my_verify_on_budget3.jsonld`; result: exit 0, no backend-error warning, 1 citation row for `P7-I1`, routed to `CONFLICT_REVIEW`.
+- Read verify-on CSV and JSON-LD: verify-on row has note `LLM verifier flagged the mapping as uncertain` and JSON-LD `review_status` is `CONFLICT_REVIEW`.
+- Updated `outputs/llm_verifier_ab_my_budget3.md` with final A/B result: verify-off 4 rows / 0 conflict-review; verify-on 1 row / 1 conflict-review; three weak/wrong rows removed.
+- Re-ran `scripts/run_submission.py --dry-run --verify`; result: exit 0 and `LLM verifier ON (model: gpt-5.4)`.
+- Re-ran final full `.venv/bin/python -m pytest`; result: 131 passed, 4 skipped.
+- Re-ran targeted ruff check; result: all checks passed.
+- Ran secret-pattern scan over outputs, worktree `.agent_record`, tests, source, scripts, pyproject, and `.env.example`; matches were only placeholders/test fixtures, not real `.env` values.
+- Completion audit now passes for the current stage of `goal.md`.
+- User requested two reports: one technical and one product-oriented, covering implemented features, completed functionality, extension points, tests, test completeness, larger-scale test plan, and next steps.
+- Created `technical_report.md` and `product_report.md` under this thread's `.agent_record` directory.
+- User clarified that the product-facing report should describe the whole current project, not only the current LLM verifier stage.
+- Rewrote `product_report.md` as a global project/product status report covering product positioning, the full implemented pipeline, discovery/full-text retrieval, parsing/verbatim citation, semantic mapping, regulator connectors, full submission run, LLM verifier, testing maturity, larger-scale testing plan, roadmap, risks, and Hackathon narrative.
+- User requested syncing this code version to the remote, including generated outputs and conclusions.
+- Added Phase 7 to `task_plan.md` for remote sync.
+- Checked implementation worktree state on branch `codex/llm-env-integration-019ebb0d`; code/test changes are uncommitted, outputs exist in the worktree, and conclusion reports exist in the source checkout thread record.
+- Confirmed `outputs/` is ignored by `.gitignore`; the sync needs explicit `git add -f` for the selected A/B artifacts only.
+- Decision: include this thread's `.agent_record/019ebb0d-b2c7-7222-920c-e4538d05f70d/` reports/records as the conclusion artifacts, and avoid staging unrelated source-checkout docs or the subagent's separate thread directory.
+- Re-copied this thread's conclusion/record directory into the implementation worktree for inclusion in the remote branch.
+- Pre-commit verification in the implementation worktree: `.venv/bin/python -m pytest` passed with 131 passed, 4 skipped.
+- Pre-commit ruff verification on touched source/test/script files passed with `All checks passed!`.
+- Staged only the intended code/test/report files and five forced output artifacts; the untracked subagent record directory remains unstaged.
+- Secret scan over staged paths found no real `.env` or long token values; matches were limited to `.env.example` placeholders and dummy test keys.
+- `git diff --cached --check` passes for code, tests, reports, JSON-LD, and the A/B markdown report. Generated CSV files retain source text whitespace and were excluded from whitespace cleanup to preserve output fidelity.

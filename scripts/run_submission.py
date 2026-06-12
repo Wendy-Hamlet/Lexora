@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from lexora.classify.verifier import make_verifier  # noqa: E402
 from lexora.collect.profile_loader import load_profile  # noqa: E402
+from lexora.config import load_config  # noqa: E402
 from lexora.export.csv_exporter import to_csv  # noqa: E402
 from lexora.export.jsonld_exporter import to_jsonld  # noqa: E402
 from lexora.indicators import load_indicators  # noqa: E402
@@ -53,10 +54,21 @@ def run_one(
     profile = load_profile(JURIS / f"{iso.lower()}.yaml")
     indicators = load_indicators(INDICATORS)
     verifier = make_verifier(use_llm=verify)
-    return run_pipeline_map(
+    if verify and verifier is None:
+        print("warning: --verify requested but the LLM verifier is unavailable "
+              "(install the [llm] extra); continuing with BM25 + verbatim only.")
+    result = run_pipeline_map(
         portal=profile.portals[0], profile=profile, indicators=indicators,
         budget=budget, timeout=timeout, verifier=verifier,
     )
+    if verifier is not None and getattr(verifier, "error_count", 0):
+        print(
+            f"warning: LLM verifier backend errors for {iso}: "
+            f"{verifier.error_count} judgement(s) failed "
+            f"(last error: {verifier.last_error_type or 'unknown'}); "
+            "run continued without fabricating citations."
+        )
+    return result
 
 
 def summarize(iso: str, result: MapResult) -> dict:
@@ -104,6 +116,13 @@ def main() -> None:
         for iso in isos:
             print(f"  - {ISO_TO_COUNTRY.get(iso, iso)} ({iso}) "
                   f"-> map budget {args.budget}, verify={args.verify}")
+        if args.verify:
+            verifier = make_verifier(use_llm=True)
+            if verifier is None:
+                print("  -> LLM verifier unavailable (install the [llm] extra)")
+            else:
+                cfg = load_config()
+                print(f"  -> LLM verifier ON (model: {cfg.llm_model})")
         print(f"  -> would write {args.out} (+ .jsonld) and {args.out.with_suffix('.summary.json')}")
         return
 
