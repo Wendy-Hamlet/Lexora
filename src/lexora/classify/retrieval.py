@@ -20,7 +20,29 @@ from lexora.models.clause import Clause
 from lexora.models.indicator import RDTIIIndicator
 from lexora.models.source import SourceProfile
 
+# Latin / digit word tokens: hyphen- or underscore-joined alphanumerics. This is
+# the original tokenizer; it is kept verbatim so English / common-law retrieval is
+# byte-for-byte unchanged (the G-1 generalization work must not regress round-1).
 _TOKEN = re.compile(r"[A-Za-z0-9]+(?:[-_][A-Za-z0-9]+)*", re.UNICODE)
+
+# Runs of scripts written without spaces between words — CJK ideographs, Japanese
+# kana, Thai. The ASCII tokenizer scored a hard zero on these (BM25 saw empty
+# documents; see scripts/eval_intrinsic.py), so each run is cut into overlapping
+# character bigrams — the standard IR move for boundary-free scripts (cf. Lucene
+# CJKBigramFilter). A `\w+` run would instead glue a whole sentence into one token
+# that no query could match; bigrams give matchable, position-tolerant keys.
+_NGRAM_SCRIPT = re.compile(
+    r"[㐀-䶿一-鿿豈-﫿"  # CJK ideographs + compatibility
+    r"぀-ヿ"                              # hiragana + katakana
+    r"฀-๿]+"                            # Thai
+)
+
+
+def _char_ngrams(run: str) -> list[str]:
+    """Overlapping character bigrams of a boundary-free run (unigram if length 1)."""
+    if len(run) < 2:
+        return [run]
+    return [run[i : i + 2] for i in range(len(run) - 1)]
 
 # Front-matter sections (short title, interpretation, objects, …) are vocabulary
 # hubs: they restate the whole Act's defined terms and aims, so a dense query
@@ -37,7 +59,15 @@ _LEAD_SECTION = re.compile(r"^\s*\d+[A-Z]?\s*[.—\-]*\s*")
 
 
 def _tokenize(text: str) -> list[str]:
-    return [t.lower() for t in _TOKEN.findall(text)]
+    """Bag of BM25 tokens: lowercased Latin words plus CJK/Thai character bigrams.
+
+    Latin text yields exactly the original tokens; non-Latin runs additionally
+    contribute bigrams, so a Chinese/Thai clause is no longer an empty document.
+    """
+    tokens = [t.lower() for t in _TOKEN.findall(text)]
+    for run in _NGRAM_SCRIPT.findall(text):
+        tokens.extend(_char_ngrams(run))
+    return tokens
 
 
 def _is_boilerplate(clause: Clause) -> bool:

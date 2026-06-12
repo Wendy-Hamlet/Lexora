@@ -48,14 +48,16 @@ def test_spaced_english_control_parses():
     assert r.token_pct == 100.0
 
 
-def test_ascii_numbered_chinese_isolates_tokenizer_cliff():
-    # Parser handles the ASCII numbering (clauses > 0, verbatim holds), but the
-    # ASCII tokenizer drops the Chinese body -> tok% and cov% collapse to 0.
+def test_ascii_numbered_chinese_tokenizes_after_g1a():
+    # Parser handles the ASCII numbering (clauses > 0, verbatim holds). After
+    # G-1a the CJK body is bigram-tokenized, so tok% is now 100 (BM25 sees a
+    # non-empty document). cov% stays 0 because the *query* is still English —
+    # cross-lingual matching is G-3a (CN synonyms) / G-1b (dense), not G-1a.
     r = _run("civil-law-ascii-num-zh")
     assert r.clauses > 0
     assert r.verbatim_pct == 100.0
-    assert r.token_pct == 0.0  # G-1a will move this off 0
-    assert r.coverage_pct == 0.0
+    assert r.token_pct == 100.0  # was 0 before G-1a
+    assert r.coverage_pct == 0.0  # G-3a / G-1b will move this off 0
 
 
 def test_native_numbered_chinese_isolates_parser_cliff():
