@@ -68,6 +68,12 @@ def main() -> None:
               f"(last: {gen.last_error_type}); those indicators were skipped.",
               file=sys.stderr)
 
+    client = getattr(gen, "_client", None)
+    if client is not None and getattr(client, "calls", 0):
+        print(f"\nLLM usage: {client.calls} call(s), "
+              f"{client.prompt_tokens} prompt + {client.completion_tokens} completion "
+              f"= {client.total_tokens} tokens")
+
     doc = {"keywords_by_indicator": block}
     text = yaml.safe_dump(doc, allow_unicode=True, sort_keys=True, width=100)
     if args.out:

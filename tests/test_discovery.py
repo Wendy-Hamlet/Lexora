@@ -13,6 +13,7 @@ import pytest
 
 from lexora.collect.discovery import (
     DiscoveryResult,
+    _fetch_page,
     discover,
     discover_for_indicators,
     harvest_candidates,
@@ -143,6 +144,46 @@ def test_discover_escalates_to_browser_on_403(monkeypatch):
     client.close()
     assert results and all(r.via == "browser" for r in results)
     assert any("PDPA2012" in r.url for r in results)
+
+
+class _CapturingSession:
+    """A fake BrowserSession that records the render kwargs (no Chromium)."""
+
+    def __init__(self):
+        self.render_kwargs = None
+
+    def render(self, url, **kwargs):
+        self.render_kwargs = kwargs
+
+        class _R:
+            html = RESULTS_HTML
+            status = 200
+            final_url = url
+            content_type = "text/html"
+
+        return _R()
+
+
+def test_fetch_page_forwards_render_wait_until():
+    # G-5: SG SSO long-polls, so the render must avoid `networkidle`. _fetch_page
+    # threads the chosen wait_until to the browser session.
+    session = _CapturingSession()
+    html, via = _fetch_page(
+        "https://sso.agc.gov.sg/Search/Content?Phrase=x",
+        force_browser=True, client=None, timeout=5.0, user_agent="t",
+        browser_session=session, render_wait_until="load",
+    )
+    assert via == "browser"
+    assert session.render_kwargs["wait_until"] == "load"
+
+
+def test_fetch_page_render_wait_until_defaults_to_networkidle():
+    session = _CapturingSession()
+    _fetch_page(
+        "https://example.gov/", force_browser=True, client=None, timeout=5.0,
+        user_agent="t", browser_session=session,
+    )
+    assert session.render_kwargs["wait_until"] == "networkidle"
 
 
 def test_dedupes_instrument_variants_to_one():

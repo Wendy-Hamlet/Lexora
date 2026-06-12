@@ -335,6 +335,7 @@ def _fetch_page(
     browser_session=None,
     is_valid=None,
     render_retries: int = 0,
+    render_wait_until: str = "networkidle",
 ) -> tuple[str | bytes, str]:
     """Fetch a page's HTML, escalating to a headless browser on anti-bot 403/429
     (or when ``force_browser``). Returns ``(html, via)`` where via is http|browser.
@@ -366,12 +367,13 @@ def _fetch_page(
         # bot UA here just re-triggers the anti-bot 403 we are escalating past.
         if browser_session is not None:
             html = browser_session.render(
-                url, timeout=timeout, retries=render_retries, is_valid=is_valid
+                url, timeout=timeout, retries=render_retries, is_valid=is_valid,
+                wait_until=render_wait_until,
             ).html
         else:
             from lexora.collect.browser import render
 
-            html = render(url, timeout=timeout).html
+            html = render(url, timeout=timeout, wait_until=render_wait_until).html
         return html, "browser"
     return html, "http"
 
@@ -440,6 +442,7 @@ def discover(
     browser_session=None,
     is_valid=None,
     render_retries: int = 0,
+    render_wait_until: str = "networkidle",
 ) -> list[DiscoveryResult]:
     """Discover candidate instrument URLs on a portal for a query.
 
@@ -471,6 +474,7 @@ def discover(
         page_url, force_browser=use_browser, client=client,
         timeout=timeout, user_agent=user_agent, browser_session=browser_session,
         is_valid=is_valid, render_retries=render_retries,
+        render_wait_until=render_wait_until,
     )
 
     if not html:
@@ -650,9 +654,16 @@ def discover_for_indicators(
     # keep the no-retry default.
     is_valid = None
     render_retries = 0
+    render_wait_until = "networkidle"
     if "sso.agc.gov.sg" in urlparse(str(portal.url)).netloc.lower():
         is_valid = sg_results_present
         render_retries = 2
+        # SG SSO's search page long-polls, so a navigation NEVER reaches the
+        # `networkidle` state — the default render then deterministically times
+        # out (60s) before any retry. Wait for the `load` event instead (it fires
+        # regardless of the background long-poll XHR); settle_ms + the
+        # `sg_results_present` retry remain the content backstop.
+        render_wait_until = "load"
     session_cm = None
     if needs_browser:
         # Use the browser's own realistic Chrome UA, NOT the polite HTTP bot UA —
@@ -676,6 +687,7 @@ def discover_for_indicators(
                 force_browser=force_browser, known_instruments=known_instruments,
                 known_instrument_ids=known_instrument_ids, browser_session=session,
                 is_valid=is_valid, render_retries=render_retries,
+                render_wait_until=render_wait_until,
             ):
                 key = _identity_key(r)
                 _merge_into(agg, r, key)

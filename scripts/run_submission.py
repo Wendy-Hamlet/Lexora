@@ -68,6 +68,13 @@ def run_one(
             f"(last error: {verifier.last_error_type or 'unknown'}); "
             "run continued without fabricating citations."
         )
+    client = getattr(verifier, "_client", None) if verifier is not None else None
+    if client is not None and getattr(client, "calls", 0):
+        print(
+            f"  LLM verifier usage [{iso}]: {client.calls} call(s), "
+            f"{client.total_tokens} tokens "
+            f"({client.prompt_tokens} prompt + {client.completion_tokens} completion)"
+        )
     return result
 
 
