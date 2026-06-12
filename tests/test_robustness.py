@@ -123,3 +123,25 @@ def test_summarize_counts_instruments_citations_and_review():
     assert s["indicators_covered"] == ["P6-I4", "P7-I1"]  # distinct + sorted
     assert s["n_indicators_covered"] == 2
     assert s["review_rows"] == 1         # the CONFLICT_REVIEW row
+
+
+def test_run_one_warns_when_verify_requested_but_verifier_unavailable(monkeypatch, capsys):
+    monkeypatch.setattr(
+        rs,
+        "load_profile",
+        lambda _path: SimpleNamespace(portals=[SimpleNamespace()]),
+    )
+    monkeypatch.setattr(rs, "load_indicators", lambda _path: [])
+    monkeypatch.setattr(rs, "make_verifier", lambda use_llm: None)
+
+    def fake_run_pipeline_map(**kwargs):
+        assert kwargs["verifier"] is None
+        return MapResult(discovered=[], documents=[], citations=[])
+
+    monkeypatch.setattr(rs, "run_pipeline_map", fake_run_pipeline_map)
+
+    rs.run_one("sg", budget=1, verify=True, timeout=1.0)
+
+    out = capsys.readouterr().out
+    assert "LLM verifier is unavailable" in out
+    assert "BM25 + verbatim only" in out

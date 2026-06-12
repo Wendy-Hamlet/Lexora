@@ -92,7 +92,10 @@ def test_verify_uncertain_is_kept_as_uncertain():
 
 def test_verify_backend_failure_abstains_instead_of_raising():
     client = FakeClient(RuntimeError("endpoint down"))
-    assert Verifier(client).verify(_ind(), _candidates()) is None
+    verifier = Verifier(client)
+    assert verifier.verify(_ind(), _candidates()) is None
+    assert verifier.error_count == 1
+    assert verifier.last_error_type == "RuntimeError"
 
 
 def test_verify_empty_candidates_returns_none():

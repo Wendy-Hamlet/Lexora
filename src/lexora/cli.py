@@ -170,6 +170,13 @@ def map(  # noqa: A001 - CLI verb
     if not result.discovered:
         console.print("[red]No instruments discovered.[/red]")
         raise typer.Exit(1)
+    if verifier is not None and getattr(verifier, "error_count", 0):
+        console.print(
+            "[yellow]LLM verifier backend errors encountered: "
+            f"{verifier.error_count} judgement(s) failed"
+            f" (last error: {verifier.last_error_type or 'unknown'}). "
+            "The run continued without fabricating citations.[/yellow]"
+        )
 
     # Working set: which instruments did discovery assemble?
     disc = Table(title=f"Working set — {len(result.discovered)} instrument(s)")

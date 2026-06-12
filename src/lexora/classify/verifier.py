@@ -49,6 +49,8 @@ class Verifier:
 
     def __init__(self, client) -> None:
         self._client = client
+        self.error_count = 0
+        self.last_error_type: str | None = None
 
     def verify(
         self,
@@ -68,9 +70,11 @@ class Verifier:
         try:
             data = self._client.chat(_SYSTEM, self._user_prompt(indicator, candidates),
                                      json_schema=_RESPONSE_SCHEMA)
-        except Exception:
+        except Exception as exc:
             # A backend failure must not fabricate or block — treat as abstain so
-            # the run degrades to BM25 + verbatim rather than crashing.
+            # the run can continue, while callers can still report the failure.
+            self.error_count += 1
+            self.last_error_type = type(exc).__name__
             return None
 
         clause_id = data.get("clause_id")

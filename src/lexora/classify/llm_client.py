@@ -6,7 +6,9 @@ Works with any OpenAI-compatible endpoint:
     - Ollama
     - OpenAI API itself
 
-Reads endpoint + key + model from LEXORA_LLM_* env vars (see config.py).
+Reads endpoint + key + model from ``LEXORA_LLM_*`` env vars or local dotenv
+files. ``OPENAI_BASE_URL`` / ``OPENAI_API_KEY`` are supported as compatibility
+aliases.
 
 Optional-dependency contract (mirrors :mod:`lexora.semantic.embedder`):
 :func:`is_available` reports whether the ``openai`` SDK is importable, and the
@@ -16,8 +18,14 @@ bare install and the offline test suite never require this package or a server.
 from __future__ import annotations
 
 import json
+import re
+from typing import Any
 
 from lexora.config import load_config
+
+
+class LlmResponseError(RuntimeError):
+    """Raised when the endpoint returns no parseable verifier JSON."""
 
 
 def is_available() -> bool:
@@ -42,6 +50,8 @@ class LlmClient:
         self.base_url = cfg.llm_base_url
         self.api_key = cfg.llm_api_key
         self.model = cfg.llm_model
+        self.max_tokens = cfg.llm_max_tokens
+        self.max_retries = cfg.llm_max_retries
         self.timeout = timeout
         self._client = None
 
@@ -57,30 +67,87 @@ class LlmClient:
     def chat(self, system: str, user: str, json_schema: dict | None = None) -> dict:
         """Send a chat completion and return the parsed JSON object.
 
-        ``temperature=0`` for determinism. When ``json_schema`` is given we ask
-        the server for JSON-object output (``response_format``) — supported by
-        vLLM, Ollama and the OpenAI API alike — and the schema itself is also
-        spelled out in the system prompt so a server without strict structured
-        output still returns the right shape. Returns ``{}`` if the response is
-        not parseable JSON (the caller treats that as an abstain).
+        ``temperature=0`` for determinism. When ``json_schema`` is given, the
+        client first asks the server for JSON-object output
+        (``response_format``). Some OpenAI-compatible endpoints reject or ignore
+        that mode, so the client retries once without ``response_format`` while
+        keeping the prompt constrained to JSON. If the structured response is
+        still empty or not parseable, :class:`LlmResponseError` is raised so the
+        verifier can count and report a backend response error instead of
+        silently treating it as a valid abstention.
         """
         client = self._ensure_client()
-        kwargs: dict = {
+        if json_schema is not None and "json" not in system:
+            system = f"{system}\nRespond with a valid json object."
+        if json_schema is not None and "json" not in user:
+            user = f"{user}\nReturn valid json."
+        attempts = [json_schema is not None]
+        if json_schema is not None:
+            attempts.extend([False] * max(1, self.max_retries))
+        content = ""
+        parse_error: Exception | None = None
+        for json_mode in attempts:
+            kwargs = self._chat_kwargs(system, user, json_mode=json_mode)
+            try:
+                resp = client.chat.completions.create(**kwargs)
+            except Exception as exc:
+                if json_schema is None or getattr(exc, "status_code", None) != 400:
+                    raise
+                parse_error = exc
+                continue
+            content = resp.choices[0].message.content or ""
+            if not content and json_schema is not None:
+                continue
+            if json_schema is None:
+                break
+            try:
+                return _parse_json_object(content)
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                parse_error = exc
+                continue
+        if json_schema is not None and not content:
+            raise LlmResponseError("empty response content") from parse_error
+        try:
+            return _parse_json_object(content)
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            if json_schema is not None:
+                raise LlmResponseError("response content is not valid JSON") from exc
+            return {}
+
+    def _chat_kwargs(self, system: str, user: str, *, json_mode: bool) -> dict[str, Any]:
+        kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
             "temperature": 0.0,
+            "max_completion_tokens": self.max_tokens,
         }
-        if json_schema is not None:
+        if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
-        resp = client.chat.completions.create(**kwargs)
-        content = resp.choices[0].message.content or ""
-        try:
-            return json.loads(content)
-        except (json.JSONDecodeError, TypeError):
-            return {}
+        return kwargs
 
 
-__all__ = ["LlmClient", "is_available"]
+def _parse_json_object(content: str) -> dict:
+    text = content.strip()
+    if not text:
+        raise ValueError("empty content")
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError:
+        fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.IGNORECASE | re.DOTALL)
+        if fenced:
+            data = json.loads(fenced.group(1))
+        else:
+            start = text.find("{")
+            if start < 0:
+                raise
+            decoder = json.JSONDecoder()
+            data, _ = decoder.raw_decode(text[start:])
+    if not isinstance(data, dict):
+        raise ValueError("JSON response is not an object")
+    return data
+
+
+__all__ = ["LlmClient", "LlmResponseError", "is_available"]
