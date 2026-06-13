@@ -299,7 +299,20 @@ def _dedupe_boundaries(
     last: dict[tuple[str, str, str | None], tuple[int, str, str | None, str]] = {}
     for pos, num, sub, kind in boundaries:
         last[(kind, num, sub)] = (pos, num, sub, kind)
-    return sorted(last.values())
+    # An "Arrangement of Sections" contents list (no dotted-leader/page-number, so
+    # _TOC_TAIL misses it) lists each provision as a bare "N" with no operative
+    # text; the body then re-introduces it as "N.—(1)". Keying by sub keeps both,
+    # leaving the contents entry as a stray heading-only clause. Drop a bare
+    # (kind, num, None) when the body also yields a subsectioned (kind, num, sub)
+    # occurrence — the bare one is the contents-list entry. (A genuinely
+    # subsection-less section, e.g. SG PDPA s.13/s.24, has no such sibling and is
+    # kept; its TOC duplicate is already collapsed by the keep-last above.)
+    subsectioned = {(k, n) for (k, n, s) in last if s is not None}
+    pruned = [
+        val for key, val in last.items()
+        if not (key[2] is None and (key[0], key[1]) in subsectioned)
+    ]
+    return sorted(pruned)
 
 
 def _section_specs(part_text: str, offset: int) -> list[_Spec]:
