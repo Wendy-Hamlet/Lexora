@@ -346,27 +346,79 @@ def _dedupe_boundaries(
 _HEADING_NOISE = re.compile(
     r"informal consolidation|version in force|\bed\.|^\d+$", re.I)
 
+# A divisional heading that introduces the *following* sections, not part of the
+# previous clause: "PART 4", "Part II", "PART 9D", "Division 1", "Chapter 3".
+# (Roman or arabic number, optional trailing letter.) A genuine heading never ends
+# with sentence punctuation, which lets a wrapped prose reference like "…under
+# Division 2 of\nPart II;" — which *does* line-start with "Part II" — be excluded.
+_DIVISION_HEADING = re.compile(r"(?i)^(part|division|chapter)\s+[0-9IVXLCDM]+[A-Z]?\b")
+# Whole-line edition/amendment tag and running title that punctuate consolidated
+# Acts between a section's end and the next section's heading: "[40/2020]",
+# "[Act 25 of 2021 wef 01/04/2022]", "Act 2012".
+_AMEND_TAG = re.compile(r"^\[.*\]$")
+_RUNNING_TITLE = re.compile(r"(?i)^act\s+\d+\b")
+
+
+def _is_marginal_heading(line: str) -> bool:
+    """A section's own marginal heading: short, no terminal sentence/subsection
+    punctuation, not a numbered/parenthesised/divisional line, not a page footer."""
+    return not (
+        not line or len(line) > 80
+        or line[-1] in ".;:)’”\"'"
+        or line[0].isdigit() or line[0] in "(["
+        or re.match(r"(?i)(part|division|chapter|schedule)\b", line)
+        or _HEADING_NOISE.search(line)
+    )
+
+
+def _is_leadin(line: str) -> bool:
+    """True if ``line`` introduces the following section rather than belonging to
+    the previous clause's operative text: a Part/Division/Chapter divisional
+    heading, its ALL-CAPS title continuation ("PERSONAL DATA PROTECTION
+    COMMISSION"), an edition/amendment tag or running title, a page footer, or the
+    section's own marginal heading. Used to walk a whole lead-in block back onto
+    the next section (see ``_pull_heading_start``)."""
+    if not line:
+        return False
+    if _DIVISION_HEADING.match(line) and line[-1] not in ".;,":
+        return True
+    if _AMEND_TAG.match(line) or _RUNNING_TITLE.match(line) or _HEADING_NOISE.search(line):
+        return True
+    # ALL-CAPS divisional-title continuation: uppercase, has letters, not a
+    # sentence (no terminal full stop / semicolon / colon).
+    if (len(line) <= 80 and line == line.upper() and any(c.isalpha() for c in line)
+            and line[-1] not in ".;:"):
+        return True
+    return _is_marginal_heading(line)
+
 
 def _pull_heading_start(text: str, pos: int) -> int:
-    """If a short marginal heading sits on the line directly above the section
-    boundary at ``pos``, return that line's start so the heading attaches to THIS
-    section instead of bleeding onto the previous clause's tail (SG/MY put the
-    heading on its own line above the number: "Advisory committees\\n6.—(1) …").
-    Conservative — one line back, only for a heading-like line: short, no terminal
-    sentence/subsection punctuation, not itself a numbered or structural line, not
-    a page footer. Otherwise return ``pos`` unchanged."""
+    """Walk the section boundary at ``pos`` back over a contiguous *lead-in block*
+    so it attaches to THIS section instead of bleeding onto the previous clause's
+    tail. The block is any run of lines that introduce the section — the
+    Part/Division/Chapter divisional heading and its ALL-CAPS title, edition /
+    amendment tags, running page titles, and the section's own marginal heading
+    (SG/MY put it on its own line above the number: "Advisory committees\\n6.—(1)
+    …"; a Part change inserts a whole "PART 4\\nCOLLECTION…\\nDivision 1 — …"
+    block). Blank lines are crossed; the walk stops at the first operative line
+    (sentence text, a "(N)" subsection, a numbered line), so operative text is
+    never absorbed. Returns the topmost lead-in line's start, or ``pos`` if the
+    line directly above is already operative."""
     if pos <= 0:
         return pos
-    line_end = pos - 1  # pos is a line start; pos-1 is the preceding newline
-    line_start = text.rfind("\n", 0, line_end) + 1
-    line = text[line_start:line_end].strip()
-    if (not line or len(line) > 80
-            or line[-1] in ".;:)’”\"'"
-            or line[0].isdigit() or line[0] in "(["
-            or re.match(r"(?i)(part|division|chapter|schedule)\b", line)
-            or _HEADING_NOISE.search(line)):
-        return pos
-    return line_start
+    target = cur = pos
+    while cur > 0:
+        line_end = cur - 1  # cur is a line start; cur-1 is the preceding newline
+        line_start = text.rfind("\n", 0, line_end) + 1
+        line = text[line_start:line_end].strip()
+        if not line:           # blank line: cross it, but only commit on a lead-in
+            cur = line_start
+            continue
+        if _is_leadin(line):
+            target = cur = line_start
+            continue
+        break
+    return target
 
 
 def _section_specs(part_text: str, offset: int) -> list[_Spec]:

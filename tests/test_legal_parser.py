@@ -167,6 +167,54 @@ def test_repeated_marker_gets_unique_suffix():
     assert len(ids) == len(set(ids))  # invariant: ids are unique per document
 
 
+# --- Part/Division lead-in block attaches to the following section -----------
+
+def test_part_division_block_does_not_bleed_onto_previous_clause():
+    # A consolidated Act inserts a whole "PART 4 / TITLE / Division 1 — …" block
+    # plus an edition tag and the next section's marginal heading between two
+    # sections. The block must attach to the FOLLOWING section, not bleed onto the
+    # previous clause's verbatim tail.
+    text = (
+        "12.  The first section ends with operative text here.\n\n"
+        "[40/2020]\n"
+        "PART 4\n"
+        "COLLECTION, USE AND DISCLOSURE OF\n"
+        "PERSONAL DATA\n"
+        "Division 1 — Consent\n"
+        "Consent required\n"
+        "13.  An organisation must obtain consent before collecting data."
+    )
+    block = HtmlBlock(dom_anchor="#s", text=text, char_start=0, char_end=len(text))
+    by_id = {c.clause_id: c for c in parse_structure_html("doc", [block])}
+    s12, s13 = by_id["doc::s12"], by_id["doc::s13"]
+    # the previous clause's tail is clean — no Part/Division/edition lead-in
+    assert "PART 4" not in s12.span.text
+    assert "Division 1" not in s12.span.text
+    assert "[40/2020]" not in s12.span.text
+    assert s12.span.text.rstrip().endswith("operative text here.")
+    # the lead-in block now heads the section it introduces
+    assert s13.span.text.lstrip().startswith("[40/2020]")
+    assert "PART 4" in s13.span.text and "Consent required" in s13.span.text
+    # verbatim invariant holds for both
+    for c in (s12, s13):
+        assert text[c.span.char_start:c.span.char_end] == c.span.text
+
+
+def test_wrapped_prose_part_reference_is_not_treated_as_a_heading():
+    # "…under Division 2 of\nPart II;" line-starts with "Part II" but ends with a
+    # semicolon — it is operative prose, not a divisional heading, so it must stay
+    # inside its own clause and never be pulled onto the next section.
+    text = (
+        "93.  A decision to refuse registration under Division 2 of\n"
+        "Part II; and any related matter.\n\n"
+        "94.  The next section."
+    )
+    block = HtmlBlock(dom_anchor="#s", text=text, char_start=0, char_end=len(text))
+    by_id = {c.clause_id: c for c in parse_structure_html("doc", [block])}
+    assert "Part II;" in by_id["doc::s93"].span.text
+    assert "Part II" not in by_id["doc::s94"].span.text
+
+
 # --- G-1c multi-script civil-law articles ------------------------------------
 
 def test_chinese_numeral_parsing():
