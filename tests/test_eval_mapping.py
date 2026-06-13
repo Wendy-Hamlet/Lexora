@@ -260,6 +260,57 @@ def test_dump_candidates_lists_topk_per_indicator():
     assert rows[0]["candidates"][0]["key"] == "26"
 
 
+class FakeLlm:
+    """Returns a fixed section list, ignoring the prompt (records the call)."""
+
+    def __init__(self, sections: list[str]):
+        self.sections = sections
+        self.calls = 0
+
+    def chat(self, system: str, user: str, json_schema=None) -> dict:
+        self.calls += 1
+        return {"sections": self.sections}
+
+
+def test_pool_candidates_unions_methods_and_tags_provenance():
+    # The pool must union BM25 ∪ dense ∪ LLM (keyed by section), tag each candidate
+    # with which methods found it, drop an LLM hallucination, and order by consensus.
+    clauses = [
+        _clause("26", "transfer of personal data to a country outside Singapore"),
+        _clause("13", "an organisation must obtain consent to collect personal data"),
+        _clause("24", "an organisation must protect personal data it holds"),
+        _clause("99", "miscellaneous provisions about fees and forms"),
+    ]
+    ind = _ind("P6-I4", "cross-border transfer of personal data outside the country",
+               keywords=["transfer", "outside", "country"])
+    # LLM nominates the on-point section (26), an off-pool one (24), and a hallucination.
+    llm = FakeLlm(["26", "24", "404"])
+    rows = em.pool_candidates(clauses, _profile(), [ind], pool_k=20,
+                              embedder=FakeEmbedder(), llm=llm)
+    assert llm.calls == 1
+    cands = {c["key"]: c for c in rows[0]["candidates"]}
+    assert "404" not in cands                       # hallucination filtered to real sections
+    assert "26" in cands and "24" in cands
+    # s.26 is found by all three channels; s.24 only by the LLM here.
+    assert set(cands["26"]["found"]) == {"bm25", "dense", "llm"}
+    assert cands["24"]["found"].get("llm") == 2
+    # consensus first: the all-three section outranks a single-method one.
+    order = [c["key"] for c in rows[0]["candidates"]]
+    assert order.index("26") < order.index("24")
+    # full provision text is carried for review
+    assert "outside Singapore" in cands["26"]["text"]
+
+
+def test_pool_candidates_runs_without_optional_channels():
+    # No embedder and no LLM -> BM25-only pool, still well-formed.
+    clauses = [_clause("26", "transfer outside the country"),
+               _clause("13", "consent to collect"), _clause("99", "fees and forms")]
+    ind = _ind("P6-I4", "cross-border transfer outside the country", keywords=["transfer"])
+    rows = em.pool_candidates(clauses, _profile(), [ind], pool_k=20, embedder=None, llm=None)
+    assert rows[0]["indicator"] == "P6-I4"
+    assert all(set(c["found"]) == {"bm25"} for c in rows[0]["candidates"])
+
+
 def test_summarize_rank_mrr_and_recall():
     rows = [{"rank": 1}, {"rank": 3}, {"rank": None}]
     s = em.summarize_rank(rows, ks=(1, 3, 5))

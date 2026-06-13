@@ -39,7 +39,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from lexora.classify.retrieval import build_index, retrieve_candidates  # noqa: E402
+from lexora.classify.retrieval import (  # noqa: E402
+    _concept_text,
+    _is_boilerplate,
+    build_index,
+    retrieve_candidates,
+)
 from lexora.indicators import load_indicators  # noqa: E402
 from lexora.models.clause import Clause  # noqa: E402
 from lexora.models.indicator import RDTIIIndicator  # noqa: E402
@@ -193,6 +198,126 @@ def dump_candidates(
     return rows
 
 
+# --- multi-method candidate pool (independent-gold aid) ---------------------
+# Single-system top-k labelling makes gold ⊆ the system's own output, so hit@k is
+# tautological and a truly-missed provision can never be detected. Pooling the
+# UNION of several DIFFERENT methods' top-k (the standard IR fix) lets gold come
+# from outside any one system, so the production system's misses become visible.
+# Methods: BM25-only, dense-only, and an LLM asked which sections fit the
+# indicator (a non-retrieval mechanism that can surface what retrieval misses).
+# The LLM only feeds the pool for human review — it never writes gold.
+
+def _section_index_lines(clauses_by_key: dict[str, list[Clause]]) -> str:
+    """One compact "key: heading…" line per section for the LLM channel."""
+    lines = []
+    for key, group in clauses_by_key.items():
+        head = " ".join(group[0].span.text.split())[:90]
+        lines.append(f"{key}: {head}")
+    return "\n".join(lines)
+
+
+def _norm_section(raw: str) -> str:
+    """Fold an LLM-returned section label to a `_clause_key` token (APP8 / 13 / 26WR)."""
+    s = str(raw).strip().upper()
+    for noise in ("SECTION", "CLAUSE", "S.", "SEC.", "ART.", "ARTICLE"):
+        s = s.replace(noise, "")
+    return s.replace(" ", "")
+
+
+def llm_suggest_sections(
+    llm, indicator: RDTIIIndicator, index_lines: str, k: int
+) -> list[str]:
+    """Ask the LLM which sections address the indicator (ToC-only, returns keys).
+
+    A mechanism independent of BM25/dense: it reads the section headings and reasons
+    about which provision fits, so it can nominate sections retrieval ranked low or
+    missed. Hallucinated numbers are filtered by the caller against the real index.
+    """
+    system = (
+        "You are a legal analyst mapping a data-protection statute to RDTII "
+        "indicators. Given an indicator and the Act's section list (number + "
+        "heading), return the section numbers whose TEXT most likely contains the "
+        "operative provision for that indicator. Use ONLY numbers from the list, "
+        "ordered best-first, at most the requested count; return an empty list if "
+        'none fit. Respond as json: {"sections": ["13", "24"]}.'
+    )
+    user = (
+        f"Indicator {indicator.submission_id}: {indicator.name}\n"
+        f"Definition: {indicator.description}\n\n"
+        f"Sections:\n{index_lines}\n\nReturn at most {k} section numbers."
+    )
+    data = llm.chat(system, user, json_schema={"type": "object"})
+    out = data.get("sections", []) if isinstance(data, dict) else []
+    return [_norm_section(s) for s in out][:k]
+
+
+def pool_candidates(
+    clauses: list[Clause],
+    profile: SourceProfile,
+    indicators: list[RDTIIIndicator],
+    *,
+    pool_k: int,
+    embedder=None,
+    llm=None,
+) -> list[dict]:
+    """For every indicator, pool the UNION of BM25-only, dense-only and LLM section
+    suggestions (each top ``pool_k``), keyed by section. Each candidate records
+    which methods found it and at what rank, plus the full provision text (all the
+    section's clauses joined). A draft for independent human gold labelling."""
+    index = build_index(clauses)
+    clause_by_id = {c.clause_id: c for c in clauses}
+
+    clauses_by_key: dict[str, list[Clause]] = defaultdict(list)
+    for c in clauses:
+        clauses_by_key[_clause_key(c)].append(c)
+    for group in clauses_by_key.values():
+        group.sort(key=lambda c: c.span.char_start)
+    index_lines = _section_index_lines(clauses_by_key)
+
+    rows: list[dict] = []
+    for indicator in indicators:
+        methods: dict[str, dict[str, int]] = defaultdict(dict)
+        # BM25-only
+        for rank, h in enumerate(retrieve_candidates(
+            indicator, profile, index, top_k=pool_k, use_semantic=False), 1):
+            methods[_clause_key(clause_by_id[h.clause_id])].setdefault("bm25", rank)
+        # dense-only (boilerplate dropped, mirroring retrieval's pool)
+        if embedder is not None:
+            skip = {i for i, c in enumerate(index.clauses) if _is_boilerplate(c)}
+            dense_idx = [i for i in index.dense_ranking(
+                _concept_text(indicator, profile), embedder, pool_k + len(skip))
+                if i not in skip][:pool_k]
+            for rank, i in enumerate(dense_idx, 1):
+                methods[_clause_key(index.clauses[i])].setdefault("dense", rank)
+        # LLM section suggestions (filtered to real sections)
+        if llm is not None:
+            for rank, key in enumerate(
+                llm_suggest_sections(llm, indicator, index_lines, pool_k), 1):
+                if key in clauses_by_key:
+                    methods[key].setdefault("llm", rank)
+
+        cands = []
+        for key, found in methods.items():
+            group = clauses_by_key[key]
+            text = " ".join(" ".join(c.span.text.split()) for c in group)
+            cands.append({
+                "key": key,
+                "path": group[0].structural_path,
+                "page": group[0].span.page_number,
+                "found": found,           # {method: rank}
+                "text": text,
+            })
+        # consensus first (more methods, then best single rank), so we can SEE the
+        # overlap; the law-group copy can drop these tags to avoid anchoring.
+        cands.sort(key=lambda c: (-len(c["found"]), min(c["found"].values())))
+        rows.append({
+            "indicator": indicator.submission_id,
+            "name": indicator.name,
+            "candidates": cands,
+        })
+    return rows
+
+
 def evaluate_rank(
     clauses: list[Clause],
     profile: SourceProfile,
@@ -317,6 +442,11 @@ def main() -> None:
                     help="G-6.4: dump top candidate sections for EVERY in-scope "
                          "indicator (draft for law-group gold verification, not gold)")
     ap.add_argument("--dump-k", type=int, default=5, help="candidates per indicator in --dump")
+    ap.add_argument("--pool", action="store_true",
+                    help="pool the UNION of BM25 / dense / LLM top-k per indicator "
+                         "(independent-gold aid; breaks single-system top-k circularity)")
+    ap.add_argument("--pool-k", type=int, default=20, help="top-k per method in --pool")
+    ap.add_argument("--no-llm", action="store_true", help="skip the LLM channel in --pool")
     args = ap.parse_args()
 
     from lexora.collect.profile_loader import load_profile
@@ -360,15 +490,61 @@ def main() -> None:
               "!! Gold is matched by section NUMBER, so a wrong statute with the same\n"
               "!! numbers would score FALSE hits. Check the --pdf/--url source.\n")
 
+    official = {
+        "sg": "https://sso.agc.gov.sg/Act/PDPA2012",
+        "au": "https://www.legislation.gov.au/C2004A03712",
+        "my": "https://mohre.um.edu.my/img/files/Personal%20Data%20Protection%20(PDPA)%20Act%202010.pdf",
+    }
+    in_scope = [i for i in indicators if i.submission_id != "P6-I5"]
+
+    if args.pool:
+        from lexora.classify.retrieval import _maybe_embedder
+
+        embedder = _maybe_embedder(True)
+        llm = None
+        if not args.no_llm:
+            from lexora.classify import llm_client
+            if llm_client.is_available():
+                llm = llm_client.LlmClient()
+        rows = pool_candidates(clauses, profile, in_scope, pool_k=args.pool_k,
+                               embedder=embedder, llm=llm)
+        chans = ["bm25"] + (["dense"] if embedder is not None else []) + (["llm"] if llm else [])
+        out = REPO / "outputs" / f"mapping_pool_{iso}.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        lines = [f"# Mapping candidate POOL — {ISO_TO_COUNTRY.get(iso, iso)} / {doc_name}",
+                 f"\n- Official text (authoritative): {official.get(iso, '(see profile)')}",
+                 f"- Parsed from: `{src}`  ·  clauses: {len(clauses)}  ·  "
+                 f"pool = UNION of {' ∪ '.join(chans)}, each top-{args.pool_k}",
+                 "\n**Draft for INDEPENDENT law-group gold labelling — NOT gold.** Each candidate is a "
+                 "whole section pooled from several methods, with the full provision text. The "
+                 "`found by` tags (which method, what rank) are for our analysis — **ignore them when "
+                 "judging**; pick the on-point section(s) on the law alone, and add any correct section "
+                 "that is missing (use the official text). Mark `N/A` if the Act does not cover the "
+                 "indicator.\n"]
+        # overlap stats for "see the effect"
+        print(f"\nCandidate pool -- {ISO_TO_COUNTRY.get(iso, iso)} / {doc_name}")
+        print(f"channels: {' ∪ '.join(chans)} (each top-{args.pool_k}); clauses {len(clauses)}\n")
+        for r in rows:
+            cs = r["candidates"]
+            by_n = {n: sum(1 for c in cs if len(c["found"]) == n) for n in (3, 2, 1)}
+            llm_only = sum(1 for c in cs if set(c["found"]) == {"llm"})
+            print(f"   {r['indicator']:<7} union={len(cs):<3} "
+                  f"all3={by_n.get(3,0)} two={by_n.get(2,0)} one={by_n.get(1,0)} "
+                  f"llm-only={llm_only}")
+            lines.append(f"\n## {r['indicator']} — {r['name']}  ·  {len(cs)} candidates")
+            for c in cs:
+                pg = f"p.{c['page']}" if c["page"] else "p.?"
+                tag = ", ".join(f"{m}#{rk}" for m, rk in sorted(c["found"].items()))
+                body = c["text"] if len(c["text"]) <= 3500 else \
+                    c["text"][:3500] + f" …[truncated — read full at {pg} / official URL]"
+                lines.append(f"\n**`{c['key']}`** — {c['path']} ({pg})  ·  found by: {tag}\n\n> {body}")
+        out.write_text("\n".join(lines), encoding="utf-8")
+        print(f"\nreview file -> {out.relative_to(REPO)}")
+        return
+
     if args.dump:
         # G-6.4: draft candidate sections for law-group gold verification. BM25-only
         # (the live mapping default after G-6.3); writes a review markdown.
-        official = {
-            "sg": "https://sso.agc.gov.sg/Act/PDPA2012",
-            "au": "https://www.legislation.gov.au/C2004A03712",
-            "my": "https://mohre.um.edu.my/img/files/Personal%20Data%20Protection%20(PDPA)%20Act%202010.pdf",
-        }
-        in_scope = [i for i in indicators if i.submission_id != "P6-I5"]
         rows = dump_candidates(clauses, profile, in_scope, top_k=args.dump_k,
                                use_semantic=False)
         out = REPO / "outputs" / f"mapping_candidates_{iso}.md"
