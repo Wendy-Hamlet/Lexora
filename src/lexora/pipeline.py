@@ -75,13 +75,13 @@ class MapResult:
 def _map_use_dense() -> bool:
     """Whether mapping clause retrieval fuses the dense channel.
 
-    Default OFF (BM25-only). G-6.3 measured that dense equal-weight RRF fusion
-    net-hurts section rank on all three round-1 flagship statutes (SG/AU/MY): on
-    each, BM25-only beat every fused config on MRR and recall@k with no country
-    regressing. Dense fusion is kept as an explicit opt-in — set
-    ``LEXORA_MAP_DENSE=1`` — for cases its tail recall may help (e.g. a
-    cross-lingual document once a multilingual embedder is active). This gates the
-    MAPPING clause retrieval only; discovery's semantic re-rank is separate."""
+    Default OFF (BM25-only) — PROVISIONAL. The G-6.3 ablation favours BM25-only on
+    AU (large margin) and MY, but the corrected SG PDPA run favours dense fusion
+    (it recovers one tail gold), so the result is NOT unanimous and the gold is too
+    small (~2-3 points/economy) to settle a global default — pending G-6.4 gold
+    expansion. Dense fusion stays an explicit opt-in via ``LEXORA_MAP_DENSE=1``
+    (e.g. for SG, or a cross-lingual doc once a multilingual embedder is active).
+    Gates the MAPPING clause retrieval only; discovery's semantic re-rank is separate."""
     return os.environ.get("LEXORA_MAP_DENSE", "").lower() in ("1", "true", "yes", "on")
 
 
