@@ -21,6 +21,7 @@ Two entry points:
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -71,6 +72,23 @@ class MapResult:
     citations: list[Citation]
 
 
+def _maybe_ocr_fill(pages: list[PdfPage], source: Path | bytes) -> list[PdfPage]:
+    """Fill image-only page slots with OCR when ``LEXORA_OCR`` is set.
+
+    Inert by default (like the LLM verifier): a scanned PDF still yields blank
+    pages unless OCR is explicitly enabled, so offline tests and the default path
+    never import the OCR backend. When any page lacks a text layer, OCR fills it
+    and the global char offsets are recomputed so verbatim spans stay valid."""
+    if not os.environ.get("LEXORA_OCR"):
+        return pages
+    if all(p.has_text_layer for p in pages):
+        return pages
+    from lexora.extract.ocr_extractor import ocr_fill_pages
+
+    filled, _conf = ocr_fill_pages(pages, source)
+    return filled
+
+
 def run_demo_pipeline(
     *,
     pdf_path: Path,
@@ -97,6 +115,7 @@ def run_demo_pipeline(
         title=title,
     )
     pages = extract_pdf_text(pdf_path)
+    pages = _maybe_ocr_fill(pages, pdf_path)
     clauses = parse_structure(document.document_id, pages)
     citations = _citations_from_clauses(
         clauses, document, profile, indicators, legal_form, top_k, min_score,
@@ -146,6 +165,7 @@ def run_pipeline_from_url(
     if 200 <= document.http_status < 300:
         if result.is_pdf():
             pages = extract_pdf_bytes(result.body)
+            pages = _maybe_ocr_fill(pages, result.body)
             clauses = parse_structure(document.document_id, pages)
         elif result.is_html():
             blocks = extract_html(result.body, url)
