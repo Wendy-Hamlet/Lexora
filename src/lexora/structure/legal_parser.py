@@ -92,7 +92,14 @@ _SCHEDULE_CONTINUED = re.compile(r"[—–-]\s*continued\b", re.I)
 # "Australian Privacy Principle 8—cross-border disclosure of personal information".
 # The dash likewise separates the real heading from prose cross-references
 # ("Australian Privacy Principle 8 sets out ...") and running page headers.
-_APP = re.compile(r"Australian\s+Privacy\s+Principle\s+(?P<num>\d+)\s*[—–-]", re.I)
+# The REAL operative heading carries a leading clause number ("8  Australian
+# Privacy Principle 8—…"); the front "Overview of the APPs" lists each principle
+# WITHOUT that number. Both line-start; an optional ``\d+\s+`` prefix lets the
+# numbered (real) heading match too, so `_dedupe_keep_last` keeps the deeper real
+# heading over the overview entry (otherwise APP bodies ran from the overview and
+# the next principle's heading bled onto the previous one's last item).
+_APP = re.compile(
+    r"(?:(?P<clause>\d+)\s+)?Australian\s+Privacy\s+Principle\s+(?P<num>\d+)\s*[—–-]", re.I)
 
 # An APP item line: "8.1 ...", "8.2  ..." (the dotted N.M numbering APPs use).
 _APP_ITEM = re.compile(r"\n[ \t]*(?P<app>\d+)\.(?P<item>\d+)\s+(?=\S)")
@@ -466,6 +473,19 @@ def _app_specs(part_text: str, offset: int) -> list[_Spec]:
     )
     if not headers:
         return _section_specs(part_text, offset)
+    # Pull each APP heading back over its lead-in block — the "Part N  Title"
+    # division that groups the principles inside Schedule 1, plus the "Clause N"
+    # number line above the heading — so the block heads its own principle instead
+    # of bleeding onto the previous principle's last item.
+    pulled: list[tuple[int, str]] = []
+    prev = -1
+    for start, app in headers:
+        s = _pull_heading_start(part_text, start)
+        if s <= prev:
+            s = start
+        pulled.append((s, app))
+        prev = s
+    headers = pulled
     specs: list[_Spec] = []
     for i, (start, app) in enumerate(headers):
         end = headers[i + 1][0] if i + 1 < len(headers) else len(part_text)
@@ -542,15 +562,29 @@ def _split_markers(
     positions = [(m.start() + 1, m.group("key")) for m in pattern.finditer(body)]
     if not positions:
         return []
+    # Pull each "(N)" marker back over a marginal heading that groups it (AU files
+    # them as "(2) … inspection.\nMatters subject to monitoring\n(3) …"); the
+    # heading then leads the chunk it introduces instead of bleeding onto the
+    # previous subsection's tail. The walk stops at operative text, so a chunk
+    # never swallows the preceding subsection's body. The first marker is left
+    # un-pulled so the section heading stays in the head chunk.
+    starts: list[int] = []
+    prev = -1
+    for idx, (pos, _key) in enumerate(positions):
+        s = pos if idx == 0 else _pull_heading_start(body, pos)
+        if s <= prev:
+            s = pos
+        starts.append(s)
+        prev = s
     chunks: list[tuple[str, str | None, int, int]] = []
-    first_pos = positions[0][0]
-    head_text = body[:first_pos].rstrip()
+    head_text = body[:starts[0]].rstrip()
     if head_text.strip():
         chunks.append((section, None, body_start, body_start + len(head_text)))
-    for i, (pos, key) in enumerate(positions):
-        end = positions[i + 1][0] if i + 1 < len(positions) else len(body)
-        slice_text = body[pos:end].rstrip()
-        chunks.append((section, key, body_start + pos, body_start + pos + len(slice_text)))
+    for i, (_pos, key) in enumerate(positions):
+        cstart = starts[i]
+        end = starts[i + 1] if i + 1 < len(positions) else len(body)
+        slice_text = body[cstart:end].rstrip()
+        chunks.append((section, key, body_start + cstart, body_start + cstart + len(slice_text)))
     return chunks
 
 
@@ -566,15 +600,27 @@ def _split_app_items(
     ]
     if not positions:
         return []
+    # Pull each item back over a marginal heading that groups it ("…intermediary.\n
+    # Access charges\n12.6 …"), so the heading leads its item instead of bleeding
+    # onto the previous item's tail. Stops at operative text (see `_pull_heading_start`).
+    # The first item is left un-pulled so the principle's heading stays in the head chunk.
+    starts: list[int] = []
+    prev = -1
+    for idx, (pos, _app_no, _item) in enumerate(positions):
+        s = pos if idx == 0 else _pull_heading_start(body, pos)
+        if s <= prev:
+            s = pos
+        starts.append(s)
+        prev = s
     chunks: list[tuple[str, str | None, int, int]] = []
-    first_pos = positions[0][0]
-    head_text = body[:first_pos].rstrip()
+    head_text = body[: starts[0]].rstrip()
     if head_text.strip():
         chunks.append((app, None, body_start, body_start + len(head_text)))
-    for i, (pos, app_no, item) in enumerate(positions):
-        end = positions[i + 1][0] if i + 1 < len(positions) else len(body)
-        slice_text = body[pos:end].rstrip()
-        chunks.append((app_no, item, body_start + pos, body_start + pos + len(slice_text)))
+    for i, (_pos, app_no, item) in enumerate(positions):
+        cstart = starts[i]
+        end = starts[i + 1] if i + 1 < len(positions) else len(body)
+        slice_text = body[cstart:end].rstrip()
+        chunks.append((app_no, item, body_start + cstart, body_start + cstart + len(slice_text)))
     return chunks
 
 

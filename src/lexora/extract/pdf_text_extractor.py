@@ -80,9 +80,91 @@ def _strip_running_lines(page_texts: list[str]) -> list[str]:
     return cleaned
 
 
+# Document-final, non-operative trailing matter that the last section would
+# otherwise absorb: a government-printer imprint/colophon (e.g. Malaysia's
+# "DICETAK OLEH PERCETAKAN NASIONAL MALAYSIA BERHAD … BAGI PIHAK DAN DENGAN
+# PERINTAH KERAJAAN MALAYSIA") and the consolidated-reprint amendment tables
+# ("LIST OF AMENDMENTS" / "LIST OF SECTIONS AMENDED" / "TABLE OF AMENDMENTS").
+# These markers head end-matter only; none opens an operative provision.
+_DOC_TAIL = re.compile(
+    r"(?im)^[ \t]*(?:dicetak\s+oleh|printed\s+by|printed\s+for|by\s+authority"
+    r"|percetakan\s+nasional|bagi\s+pihak\s+dan\s+dengan\s+perintah"
+    r"|government\s+printer|list\s+of\s+(?:sections\s+)?amendments?"
+    r"|list\s+of\s+sections\s+amended|table\s+of\s+amendments)\b")
+
+
+def _strip_trailing_matter(page_texts: list[str]) -> list[str]:
+    """Remove document-final non-operative trailing matter (printer imprint /
+    colophon, consolidated-reprint amendment tables) so the final section does not
+    absorb it. Walks back over the final contiguous run of pages that each carry an
+    end-matter marker; truncates the first such page at its marker (keeping any
+    operative prose before it) and blanks the rest. A page whose pre-marker text
+    has no sentence terminator is pure end-matter (running title + table heading)
+    and is blanked entirely. Operative text — which always ends in a sentence — is
+    never removed."""
+    n = len(page_texts)
+    cut: int | None = None
+    for idx in range(n - 1, -1, -1):
+        if not page_texts[idx].strip():
+            continue  # skip trailing blank pages
+        if _DOC_TAIL.search(page_texts[idx]):
+            cut = idx
+            continue
+        break  # first substantive (operative) page from the end ends the run
+    if cut is None:
+        return page_texts
+    m = _DOC_TAIL.search(page_texts[cut])
+    assert m is not None
+    before = page_texts[cut][: m.start()]
+    page_texts[cut] = before.rstrip() if re.search(r"[.;]", before) else ""
+    for idx in range(cut + 1, n):
+        page_texts[idx] = ""
+    return page_texts
+
+
+# legislation.gov.au stamps a per-page navigational header that names the current
+# Section/Clause and the enclosing Part/Division/Schedule, e.g. "Section 26WR",
+# "Notification of eligible data breaches  Part IIIC", "Schedule 1  Australian
+# Privacy Principles". Because each line names a different unit it appears on only
+# a handful of pages, so the cross-page-repetition cleaner (≥40% of pages) leaves
+# it, and it then bleeds into provisions that span a page break. It is recognised
+# structurally instead: a lone "Section/Clause N" line, or a TWO-SPACE-celled line
+# one of whose cells is a bare "Part/Division/Schedule N" token. The two-space
+# layout and Title-case distinguish it from a real divisional heading, which the
+# parser needs: SG's is ALL-CAPS ("PART 4") and AU's carries an em dash
+# ("Part 3—Dealing with personal information"); both are preserved by the dash
+# guard and the case-sensitive token.
+_NAV_SECTION = re.compile(r"(?:Section|Clause)\s+\d+[A-Z]*\Z")
+_NAV_STRUCT = re.compile(r"(?:Part|Division|Schedule)\s+[0-9IVXLC]+[A-Z]?\Z")
+
+
+def _is_nav_header(line: str) -> bool:
+    s = line.strip()
+    if not s or "—" in s or "–" in s:  # a dash marks a real divisional heading
+        return False
+    if _NAV_SECTION.fullmatch(s):
+        return True
+    if "  " in s:
+        cells = [c for c in re.split(r"\s{2,}", s) if c.strip()]
+        if len(cells) == 2 and any(_NAV_STRUCT.fullmatch(c.strip()) for c in cells):
+            return True
+    return False
+
+
+def _strip_nav_headers(page_texts: list[str]) -> list[str]:
+    """Drop legislation.gov.au navigational running-header lines (see `_is_nav_header`)
+    that the repetition cleaner misses because each names a different unit."""
+    return [
+        "\n".join(ln for ln in t.split("\n") if not _is_nav_header(ln))
+        for t in page_texts
+    ]
+
+
 def _pages_from_doc(doc: fitz.Document) -> list[PdfPage]:
     raw = [(page.get_text("text") or "").rstrip("\f") for page in doc]
     raw = _strip_running_lines(raw)
+    raw = _strip_nav_headers(raw)
+    raw = _strip_trailing_matter(raw)
     pages: list[PdfPage] = []
     cursor = 0
     for idx, text in enumerate(raw, start=1):

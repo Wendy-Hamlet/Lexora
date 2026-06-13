@@ -215,6 +215,49 @@ def test_wrapped_prose_part_reference_is_not_treated_as_a_heading():
     assert "Part II" not in by_id["doc::s94"].span.text
 
 
+# --- APP real heading (clause-number prefix) + interior heading pull ----------
+
+def test_app_real_heading_with_clause_number_wins_over_overview():
+    # The front "Overview" lists each principle WITHOUT a number; the real heading
+    # carries a leading clause number ("8  Australian Privacy Principle 8—…"). The
+    # numbered heading must be the one that opens the principle, otherwise the next
+    # principle's heading bleeds onto the previous one's last item.
+    text = (
+        "Schedule 1—Australian Privacy Principles\n\n"
+        "Overview\n\n"
+        "Australian Privacy Principle 8—cross-border disclosure of personal information\n\n"
+        "Australian Privacy Principle 9—government related identifiers\n\n"
+        "Part 4  Integrity of personal information\n\n"
+        "8  Australian Privacy Principle 8—cross-border disclosure of personal information\n\n"
+        "8.1  Before disclosing, the entity must take reasonable steps.\n\n"
+        "9  Australian Privacy Principle 9—government related identifiers\n\n"
+        "9.1  An organisation must not adopt a government related identifier.\n"
+    )
+    block = HtmlBlock(dom_anchor="#d", text=text, char_start=0, char_end=len(text))
+    by_id = {c.clause_id: c for c in parse_structure_html("doc", [block])}
+    assert "doc::sch1-app8-1" in by_id
+    app8_1 = by_id["doc::sch1-app8-1"]
+    # the last item of APP 8 stops at its own sentence, not the APP 9 heading
+    assert app8_1.span.text.rstrip().endswith("reasonable steps.")
+    assert "Principle 9" not in app8_1.span.text
+    # verbatim invariant
+    for c in by_id.values():
+        assert text[c.span.char_start:c.span.char_end] == c.span.text
+
+
+def test_subsection_marginal_heading_attaches_to_following_subsection():
+    text = (
+        "80TB  Monitoring powers\n\n"
+        "(2) The information is correct. It includes powers of entry.\n"
+        "Matters subject to monitoring\n"
+        "(3) The following matters are subject to monitoring."
+    )
+    block = HtmlBlock(dom_anchor="#s", text=text, char_start=0, char_end=len(text))
+    by_id = {c.clause_id: c for c in parse_structure_html("doc", [block])}
+    assert by_id["doc::s80TB-2"].span.text.rstrip().endswith("powers of entry.")
+    assert "Matters subject to monitoring" in by_id["doc::s80TB-3"].span.text
+
+
 # --- G-1c multi-script civil-law articles ------------------------------------
 
 def test_chinese_numeral_parsing():
