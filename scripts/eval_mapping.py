@@ -535,9 +535,9 @@ def main() -> None:
             for c in cs:
                 pg = f"p.{c['page']}" if c["page"] else "p.?"
                 tag = ", ".join(f"{m}#{rk}" for m, rk in sorted(c["found"].items()))
-                body = c["text"] if len(c["text"]) <= 3500 else \
-                    c["text"][:3500] + f" …[truncated — read full at {pg} / official URL]"
-                lines.append(f"\n**`{c['key']}`** — {c['path']} ({pg})  ·  found by: {tag}\n\n> {body}")
+                # full provision text, no truncation — the law group needs the whole
+                # section to judge (see gold-handoff full-text rule).
+                lines.append(f"\n**`{c['key']}`** — {c['path']} ({pg})  ·  found by: {tag}\n\n> {c['text']}")
         out.write_text("\n".join(lines), encoding="utf-8")
         print(f"\nreview file -> {out.relative_to(REPO)}")
         return
