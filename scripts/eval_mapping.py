@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import random
 import re
 import sys
 from collections import defaultdict
@@ -208,12 +209,40 @@ def dump_candidates(
 # The LLM only feeds the pool for human review — it never writes gold.
 
 def _section_index_lines(clauses_by_key: dict[str, list[Clause]]) -> str:
-    """One compact "key: heading…" line per section for the LLM channel."""
+    """One compact "key: heading…" line per section for the LLM channel (ToC mode)."""
     lines = []
     for key, group in clauses_by_key.items():
         head = " ".join(group[0].span.text.split())[:90]
         lines.append(f"{key}: {head}")
     return "\n".join(lines)
+
+
+def _section_fulltext_lines(clauses_by_key: dict[str, list[Clause]]) -> str:
+    """One "key: <full provision text>" block per section (full-text LLM mode), so
+    the LLM judges on the same text BM25/dense see, not just the heading."""
+    lines = []
+    for key, group in clauses_by_key.items():
+        body = " ".join(" ".join(c.span.text.split()) for c in group)
+        lines.append(f"{key}: {body}")
+    return "\n".join(lines)
+
+
+def _est_tokens(text: str) -> int:
+    """Rough token estimate (~chars/4 for English legal text). Used only to keep a
+    full-text LLM prompt under the model's context window; an over-estimate just
+    triggers the ToC fallback, which is safe."""
+    return len(text) // 4
+
+
+def _blind_order(cands: list[dict], seed: str) -> list[dict]:
+    """A reproducible random ordering for the law-group copy. The pool is built by
+    several methods; presenting it in method-confidence (consensus) order, or with
+    "found by" tags, would anchor the reviewer onto the system's guess — exactly
+    what an independent gold must avoid. So the handed-off markdown shuffles the
+    candidates (seeded per indicator so re-runs are stable) and drops the tags."""
+    out = list(cands)
+    random.Random(seed).shuffle(out)
+    return out
 
 
 def _norm_section(raw: str) -> str:
@@ -235,11 +264,11 @@ def llm_suggest_sections(
     """
     system = (
         "You are a legal analyst mapping a data-protection statute to RDTII "
-        "indicators. Given an indicator and the Act's section list (number + "
-        "heading), return the section numbers whose TEXT most likely contains the "
-        "operative provision for that indicator. Use ONLY numbers from the list, "
-        "ordered best-first, at most the requested count; return an empty list if "
-        'none fit. Respond as json: {"sections": ["13", "24"]}.'
+        "indicators. Given an indicator and the Act's sections (each with its "
+        "number and text), return the section numbers whose provision most likely "
+        "addresses that indicator. Use ONLY numbers from the list, ordered "
+        "best-first, at most the requested count; return an empty list if none "
+        'fit. Respond as json: {"sections": ["13", "24"]}.'
     )
     user = (
         f"Indicator {indicator.submission_id}: {indicator.name}\n"
@@ -259,11 +288,20 @@ def pool_candidates(
     pool_k: int,
     embedder=None,
     llm=None,
+    llm_fulltext: bool = True,
+    llm_context_tokens: int = 120_000,
 ) -> list[dict]:
     """For every indicator, pool the UNION of BM25-only, dense-only and LLM section
     suggestions (each top ``pool_k``), keyed by section. Each candidate records
     which methods found it and at what rank, plus the full provision text (all the
-    section's clauses joined). A draft for independent human gold labelling."""
+    section's clauses joined). A draft for independent human gold labelling.
+
+    The LLM channel reads the whole statute (all section texts) so it judges on the
+    same evidence as BM25/dense — UNLESS that prompt would exceed
+    ``llm_context_tokens`` (the model's usable context), in which case it falls back
+    to the compact heading-only ToC for this statute. Set ``llm_fulltext=False`` to
+    force ToC. Decided once per statute and announced on stdout.
+    """
     index = build_index(clauses)
     clause_by_id = {c.clause_id: c for c in clauses}
 
@@ -272,7 +310,20 @@ def pool_candidates(
         clauses_by_key[_clause_key(c)].append(c)
     for group in clauses_by_key.values():
         group.sort(key=lambda c: c.span.char_start)
+
     index_lines = _section_index_lines(clauses_by_key)
+    if llm is not None:
+        if llm_fulltext:
+            full = _section_fulltext_lines(clauses_by_key)
+            est = _est_tokens(full)
+            if est <= llm_context_tokens:
+                index_lines = full
+                print(f"   LLM channel: full-text (~{est:,} tok, budget {llm_context_tokens:,})")
+            else:
+                print(f"   LLM channel: ToC fallback (full ~{est:,} tok > budget "
+                      f"{llm_context_tokens:,}); raise --llm-context-tokens if the model allows")
+        else:
+            print("   LLM channel: ToC (forced --llm-toc)")
 
     rows: list[dict] = []
     for indicator in indicators:
@@ -447,6 +498,15 @@ def main() -> None:
                          "(independent-gold aid; breaks single-system top-k circularity)")
     ap.add_argument("--pool-k", type=int, default=20, help="top-k per method in --pool")
     ap.add_argument("--no-llm", action="store_true", help="skip the LLM channel in --pool")
+    ap.add_argument("--llm-toc", action="store_true",
+                    help="force the LLM channel to read the heading-only ToC instead of "
+                         "full section text (default: full text, auto-falls-back to ToC "
+                         "when it would exceed --llm-context-tokens)")
+    ap.add_argument("--llm-context-tokens", type=int, default=120_000,
+                    help="usable model context for the full-text LLM channel (else ToC)")
+    ap.add_argument("--provenance", action="store_true",
+                    help="(analysis only) keep consensus order + 'found by' method tags "
+                         "in the pool markdown; default is a blind, shuffled, tag-free copy")
     args = ap.parse_args()
 
     from lexora.collect.profile_loader import load_profile
@@ -507,20 +567,25 @@ def main() -> None:
             if llm_client.is_available():
                 llm = llm_client.LlmClient()
         rows = pool_candidates(clauses, profile, in_scope, pool_k=args.pool_k,
-                               embedder=embedder, llm=llm)
+                               embedder=embedder, llm=llm,
+                               llm_fulltext=not args.llm_toc,
+                               llm_context_tokens=args.llm_context_tokens)
+        llm_tag = "" if llm is None else (
+            " (LLM reads ToC headings)" if args.llm_toc
+            else " (LLM reads full section text, ToC fallback past --llm-context-tokens)")
         chans = ["bm25"] + (["dense"] if embedder is not None else []) + (["llm"] if llm else [])
         out = REPO / "outputs" / f"mapping_pool_{iso}.md"
         out.parent.mkdir(parents=True, exist_ok=True)
         lines = [f"# Mapping candidate POOL — {ISO_TO_COUNTRY.get(iso, iso)} / {doc_name}",
                  f"\n- Official text (authoritative): {official.get(iso, '(see profile)')}",
                  f"- Parsed from: `{src}`  ·  clauses: {len(clauses)}  ·  "
-                 f"pool = UNION of {' ∪ '.join(chans)}, each top-{args.pool_k}",
+                 f"pool = UNION of {' ∪ '.join(chans)}, each top-{args.pool_k}{llm_tag}",
                  "\n**Draft for INDEPENDENT law-group gold labelling — NOT gold.** Each candidate is a "
-                 "whole section pooled from several methods, with the full provision text. The "
-                 "`found by` tags (which method, what rank) are for our analysis — **ignore them when "
-                 "judging**; pick the on-point section(s) on the law alone, and add any correct section "
-                 "that is missing (use the official text). Mark `N/A` if the Act does not cover the "
-                 "indicator.\n"]
+                 "whole section (full provision text), pooled from several methods and presented in "
+                 "**random order with no scores or rankings**, so the system's guess does not anchor "
+                 "your judgement. Pick the on-point section(s) on the law alone, **add any correct "
+                 "section that is missing** (use the official text), and mark `N/A` if the Act does not "
+                 "cover the indicator.\n"]
         # overlap stats for "see the effect"
         print(f"\nCandidate pool -- {ISO_TO_COUNTRY.get(iso, iso)} / {doc_name}")
         print(f"channels: {' ∪ '.join(chans)} (each top-{args.pool_k}); clauses {len(clauses)}\n")
@@ -532,12 +597,19 @@ def main() -> None:
                   f"all3={by_n.get(3,0)} two={by_n.get(2,0)} one={by_n.get(1,0)} "
                   f"llm-only={llm_only}")
             lines.append(f"\n## {r['indicator']} — {r['name']}  ·  {len(cs)} candidates")
-            for c in cs:
+            # default: blind copy for the law group — shuffle + no provenance tags so
+            # the system's guess does not anchor the judgement. --provenance restores
+            # the consensus order + "found by" tags for our own analysis.
+            render = cs if args.provenance else _blind_order(cs, r["indicator"])
+            for c in render:
                 pg = f"p.{c['page']}" if c["page"] else "p.?"
-                tag = ", ".join(f"{m}#{rk}" for m, rk in sorted(c["found"].items()))
+                tag = ""
+                if args.provenance:
+                    found = ", ".join(f"{m}#{rk}" for m, rk in sorted(c["found"].items()))
+                    tag = f"  ·  found by: {found}"
                 # full provision text, no truncation — the law group needs the whole
                 # section to judge (see gold-handoff full-text rule).
-                lines.append(f"\n**`{c['key']}`** — {c['path']} ({pg})  ·  found by: {tag}\n\n> {c['text']}")
+                lines.append(f"\n**`{c['key']}`** — {c['path']} ({pg}){tag}\n\n> {c['text']}")
         out.write_text("\n".join(lines), encoding="utf-8")
         print(f"\nreview file -> {out.relative_to(REPO)}")
         return

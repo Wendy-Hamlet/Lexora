@@ -261,14 +261,16 @@ def test_dump_candidates_lists_topk_per_indicator():
 
 
 class FakeLlm:
-    """Returns a fixed section list, ignoring the prompt (records the call)."""
+    """Returns a fixed section list, ignoring the prompt (records the last prompt)."""
 
     def __init__(self, sections: list[str]):
         self.sections = sections
         self.calls = 0
+        self.last_user = ""
 
     def chat(self, system: str, user: str, json_schema=None) -> dict:
         self.calls += 1
+        self.last_user = user
         return {"sections": self.sections}
 
 
@@ -299,6 +301,44 @@ def test_pool_candidates_unions_methods_and_tags_provenance():
     assert order.index("26") < order.index("24")
     # full provision text is carried for review
     assert "outside Singapore" in cands["26"]["text"]
+
+
+# A section whose distinctive token sits well past the 90-char ToC heading window,
+# so it appears in the full-text prompt but NOT in the heading-only ToC.
+_LONG_S26 = ("an organisation must not transfer any personal data to a country or "
+             "territory outside the jurisdiction except in accordance with UNIQUEBODYTOKEN")
+
+
+def test_pool_llm_reads_full_text_when_it_fits():
+    # With a generous context budget the LLM channel sends each section's FULL text
+    # (so it judges on the same evidence as BM25/dense), not just the heading.
+    clauses = [_clause("26", _LONG_S26),
+               _clause("13", "consent to collect"), _clause("99", "fees and forms")]
+    ind = _ind("P6-I4", "cross-border transfer", keywords=["transfer"])
+    llm = FakeLlm(["26"])
+    em.pool_candidates(clauses, _profile(), [ind], pool_k=20, embedder=None,
+                       llm=llm, llm_fulltext=True, llm_context_tokens=120_000)
+    assert "UNIQUEBODYTOKEN" in llm.last_user      # full provision text was sent
+
+
+def test_pool_llm_falls_back_to_toc_over_budget():
+    # A tiny context budget forces the heading-only ToC, dropping the full body.
+    clauses = [_clause("26", _LONG_S26),
+               _clause("13", "consent to collect"), _clause("99", "fees and forms")]
+    ind = _ind("P6-I4", "cross-border transfer", keywords=["transfer"])
+    llm = FakeLlm(["26"])
+    em.pool_candidates(clauses, _profile(), [ind], pool_k=20, embedder=None,
+                       llm=llm, llm_fulltext=True, llm_context_tokens=1)
+    assert "UNIQUEBODYTOKEN" not in llm.last_user   # fell back to ToC headings only
+
+
+def test_blind_order_is_reproducible_and_a_permutation():
+    cands = [{"key": k} for k in ["26", "13", "24", "99", "11"]]
+    a = em._blind_order(cands, "P6-I4")
+    b = em._blind_order(cands, "P6-I4")
+    assert [c["key"] for c in a] == [c["key"] for c in b]          # stable per seed
+    assert sorted(c["key"] for c in a) == sorted(c["key"] for c in cands)  # permutation
+    assert em._blind_order(cands, "P6-I4") != em._blind_order(cands, "P7-I1") or len(cands) < 2
 
 
 def test_pool_candidates_runs_without_optional_channels():
