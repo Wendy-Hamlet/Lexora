@@ -73,25 +73,58 @@ def _reading_order(items: list[tuple[list, str, float]]) -> list[tuple[str, floa
     return [(text, float(score)) for _box, text, score in ordered]
 
 
+def _ocr_cuda_ready() -> bool:
+    """True if the ONNX Runtime CUDA provider is usable for OCR.
+
+    ``LEXORA_OCR_GPU`` = ``0``/``cpu`` forces CPU; otherwise the GPU is used when
+    present. As with the embedder, ``preload_dlls()`` must run first or the CUDA
+    provider lists as available but silently falls back to CPU."""
+    pref = os.environ.get("LEXORA_OCR_GPU", "auto").lower()
+    if pref in ("0", "cpu", "false", "no", "off"):
+        return False
+    try:
+        import contextlib
+
+        import onnxruntime as ort
+
+        with contextlib.suppress(Exception):
+            ort.preload_dlls()
+        return "CUDAExecutionProvider" in ort.get_available_providers()
+    except Exception:
+        return False
+
+
 class _RapidEngine:
-    """RapidOCR (PP-OCR models on ONNX Runtime). Lazy, single shared instance."""
+    """RapidOCR (PP-OCR models on ONNX Runtime). Lazy, single shared instance.
+
+    Runs on GPU when onnxruntime-gpu + CUDA are present (det/cls/rec all on CUDA),
+    falling back to CPU otherwise — recognized text is identical either way."""
 
     def __init__(self) -> None:
         import rapidocr_onnxruntime as _r
 
         self._RapidOCR = _r.RapidOCR
         self._ocr = None
+        self._cuda = _ocr_cuda_ready()
         try:
             from importlib.metadata import version
 
             ver = version("rapidocr-onnxruntime")
         except Exception:
             ver = getattr(_r, "__version__", "?")
-        self.name = f"rapidocr:{ver}"
+        self.name = f"rapidocr:{ver}{'+cuda' if self._cuda else ''}"
 
     def recognize(self, image: np.ndarray) -> list[tuple[str, float]]:
         if self._ocr is None:
-            self._ocr = self._RapidOCR()
+            if self._cuda:
+                try:
+                    self._ocr = self._RapidOCR(
+                        det_use_cuda=True, cls_use_cuda=True, rec_use_cuda=True
+                    )
+                except Exception:
+                    self._ocr = self._RapidOCR()
+            else:
+                self._ocr = self._RapidOCR()
         result, _elapse = self._ocr(image)
         if not result:
             return []

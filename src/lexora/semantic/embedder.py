@@ -71,19 +71,52 @@ def is_available() -> bool:
     return True
 
 
+def _cuda_ready() -> bool:
+    """True if the ONNX Runtime CUDA provider is available and wanted.
+
+    ``LEXORA_EMBED_DEVICE`` = ``cpu`` forces CPU; ``cuda``/``auto`` (default) use
+    the GPU when present. onnxruntime-gpu finds the nvidia pip-wheel DLLs only
+    after ``preload_dlls()``, so we call it before probing the providers — without
+    it the CUDA provider lists as available but silently falls back to CPU."""
+    if os.environ.get("LEXORA_EMBED_DEVICE", "auto").lower() == "cpu":
+        return False
+    try:
+        import contextlib
+
+        import onnxruntime as ort
+
+        with contextlib.suppress(Exception):
+            ort.preload_dlls()
+        return "CUDAExecutionProvider" in ort.get_available_providers()
+    except Exception:
+        return False
+
+
 class Embedder:
     """Thin wrapper over a fastembed text model returning L2-normalized vectors.
 
     Normalizing on the way out makes a dot product a cosine similarity, so the
-    downstream crosswalk / re-rank code can use plain matrix multiplies.
+    downstream crosswalk / re-rank code can use plain matrix multiplies. Uses the
+    GPU automatically when onnxruntime-gpu + CUDA are present (~tens of x faster on
+    a batch), falling back to CPU on any error — the vectors are identical either way.
     """
 
     def __init__(self, model_name: str = DEFAULT_MODEL, *, cache_dir: str | None = None):
         from fastembed import TextEmbedding
 
-        os.makedirs(cache_dir or _default_cache_dir(), exist_ok=True)
+        cache = cache_dir or _default_cache_dir()
+        os.makedirs(cache, exist_ok=True)
         self.model_name = model_name
-        self._model = TextEmbedding(model_name, cache_dir=cache_dir or _default_cache_dir())
+        self.device = "cpu"
+        self._model = None
+        if _cuda_ready():
+            try:
+                self._model = TextEmbedding(model_name, cache_dir=cache, cuda=True)
+                self.device = "cuda"
+            except Exception:
+                self._model = None  # fastembed without GPU extra, or CUDA init failed
+        if self._model is None:
+            self._model = TextEmbedding(model_name, cache_dir=cache)
 
     def encode(self, texts: list[str]) -> np.ndarray:
         """Embed ``texts`` -> ``(len(texts), dim)`` float32, L2-normalized rows.
