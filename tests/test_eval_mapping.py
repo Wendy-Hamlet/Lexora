@@ -226,6 +226,21 @@ def test_evaluate_rank_misses_when_gold_absent():
     assert rows[0]["rank"] is None
 
 
+def test_document_identity_guard_catches_wrong_statute():
+    # The exact bug it guards against: a Criminal Procedure Code standing in for the
+    # PDPA scores false hits because gold matches by section number.
+    pdpa = [_clause("13", "an organisation must not collect personal data without the consent "
+                    "of the individual under this Personal Data Protection Act"),
+            _clause("26", "transfer of personal data to a country outside Singapore")]
+    cpc = [_clause("24", "a court may issue a search warrant to a police officer investigating "
+                   "an arrestable offence under the Criminal Procedure Code"),
+           _clause("20", "the police officer may seize any document or thing")]
+    assert em.document_identity_ok(pdpa, "Personal Data Protection Act 2012") is True
+    assert em.document_identity_ok(cpc, "Personal Data Protection Act 2012") is False
+    # Empty / placeholder doc name never blocks.
+    assert em.document_identity_ok(cpc, "Act 2012") is True
+
+
 def test_dump_candidates_lists_topk_per_indicator():
     # G-6.4: the gold-expansion dump returns top-k candidates with a snippet for
     # EVERY indicator passed (not just labelled ones), for human verification.

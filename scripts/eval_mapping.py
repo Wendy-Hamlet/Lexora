@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -52,6 +53,22 @@ MAX_K = 3
 
 
 # --- pure, offline-testable core -------------------------------------------
+
+def document_identity_ok(clauses: list[Clause], doc_name: str) -> bool:
+    """Guard against scoring section gold on the WRONG document.
+
+    Gold is matched by section NUMBER, so a different statute sharing section numbers
+    scores silent false hits (this masked a Criminal Procedure Code file standing in
+    for the SG PDPA). Check that the gold ``document`` name's core phrase (its words
+    minus the year) appears verbatim in the parsed text — measured to discriminate
+    the SG PDPA from the CPC perfectly (the phrase 'personal data protection act' is
+    in one and not the other). Heuristic + lenient: it only flags a gross mismatch."""
+    core = " ".join(re.findall(r"[a-z]+", doc_name.lower()))  # drops the year (digits)
+    if len(core.split()) < 2:
+        return True
+    full = " ".join(" ".join(c.span.text for c in clauses).lower().split())
+    return core in full
+
 
 def _clause_key(clause: Clause) -> str:
     """The token a retrieved clause is matched against in the gold. An Australian
@@ -337,6 +354,10 @@ def main() -> None:
     if not clauses:
         print("No clauses parsed — check the document source.")
         return
+    if doc_name and not doc_name.startswith("(") and not document_identity_ok(clauses, doc_name):
+        print(f"!! WARNING: parsed document does not look like '{doc_name}'.\n"
+              "!! Gold is matched by section NUMBER, so a wrong statute with the same\n"
+              "!! numbers would score FALSE hits. Check the --pdf/--url source.\n")
 
     if args.dump:
         # G-6.4: draft candidate sections for law-group gold verification. BM25-only
