@@ -226,6 +226,25 @@ def test_evaluate_rank_misses_when_gold_absent():
     assert rows[0]["rank"] is None
 
 
+def test_dump_candidates_lists_topk_per_indicator():
+    # G-6.4: the gold-expansion dump returns top-k candidates with a snippet for
+    # EVERY indicator passed (not just labelled ones), for human verification.
+    clauses = [
+        _clause("26", "transfer of personal data to a country outside Singapore"),
+        _clause("13", "an organisation must not collect personal data without consent"),
+        _clause("99", "miscellaneous provisions about fees and forms"),
+    ]
+    inds = [_ind("P6-I4", "cross-border transfer outside the country", keywords=["transfer"]),
+            _ind("P7-I1", "consent to collect personal data", keywords=["consent", "collect"])]
+    rows = em.dump_candidates(clauses, _profile(), inds, top_k=2, use_semantic=False)
+    assert [r["indicator"] for r in rows] == ["P6-I4", "P7-I1"]
+    for r in rows:
+        assert 1 <= len(r["candidates"]) <= 2
+        assert all(set(c) >= {"key", "path", "snippet"} for c in r["candidates"])
+    # The cross-border indicator's top candidate is the transfer section.
+    assert rows[0]["candidates"][0]["key"] == "26"
+
+
 def test_summarize_rank_mrr_and_recall():
     rows = [{"rank": 1}, {"rank": 3}, {"rank": None}]
     s = em.summarize_rank(rows, ks=(1, 3, 5))

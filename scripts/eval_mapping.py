@@ -140,6 +140,41 @@ def summarize(rows: list[dict]) -> tuple[int, int, int]:
     return (sum(r["hit1"] for r in rows), sum(r["hit3"] for r in rows), len(rows))
 
 
+def dump_candidates(
+    clauses: list[Clause],
+    profile: SourceProfile,
+    indicators: list[RDTIIIndicator],
+    *,
+    top_k: int,
+    use_semantic: bool,
+    embedder=None,
+) -> list[dict]:
+    """G-6.4 gold-expansion aid: for EVERY indicator (not just labelled ones),
+    return the top-``top_k`` candidate clauses with a text snippet, so the law
+    group can verify/correct them into section gold. This produces a draft for
+    human review — it never writes gold itself (gold stays eval-only, hand-checked).
+    """
+    index = build_index(clauses)
+    clause_by_id = {c.clause_id: c for c in clauses}
+    rows: list[dict] = []
+    for indicator in indicators:
+        hits = retrieve_candidates(
+            indicator, profile, index, top_k=top_k,
+            use_semantic=use_semantic, embedder=embedder,
+        )
+        cands = []
+        for h in hits:
+            c = clause_by_id[h.clause_id]
+            snippet = " ".join(c.span.text.split())[:140]
+            cands.append({"key": _clause_key(c), "path": c.structural_path, "snippet": snippet})
+        rows.append({
+            "indicator": indicator.submission_id,
+            "name": indicator.name,
+            "candidates": cands,
+        })
+    return rows
+
+
 def evaluate_rank(
     clauses: list[Clause],
     profile: SourceProfile,
@@ -260,6 +295,10 @@ def main() -> None:
     ap.add_argument("--ablate", action="store_true",
                     help="G-6.2: sweep single general scoring knobs (anchor / "
                          "boilerplate-drop / channel weights) and report MRR + recall@k")
+    ap.add_argument("--dump", action="store_true",
+                    help="G-6.4: dump top candidate sections for EVERY in-scope "
+                         "indicator (draft for law-group gold verification, not gold)")
+    ap.add_argument("--dump-k", type=int, default=5, help="candidates per indicator in --dump")
     args = ap.parse_args()
 
     from lexora.collect.profile_loader import load_profile
@@ -268,14 +307,19 @@ def main() -> None:
     profile = load_profile(REPO / "configs" / "jurisdictions" / f"{iso}.yaml")
     indicators = load_indicators(INDICATORS)
     by_doc = load_gold().get(iso, {})
-    if not by_doc:
+    if not by_doc and not args.dump:
         print(f"No mapping gold for {iso} in {GOLD.relative_to(REPO)}.")
         return
-    try:
-        doc_name, gold = select_gold(by_doc, args.doc)
-    except KeyError as exc:
-        print(exc)
-        return
+    if by_doc:
+        try:
+            doc_name, gold = select_gold(by_doc, args.doc)
+        except KeyError as exc:
+            if not args.dump:
+                print(exc)
+                return
+            doc_name, gold = (args.doc or "(document)"), {}
+    else:
+        doc_name, gold = (args.doc or "(document)"), {}
 
     if args.pdf:
         clauses = _clauses_from_pdf(args.pdf, profile, indicators)
@@ -292,6 +336,28 @@ def main() -> None:
     print(f"parsed clauses: {len(clauses)}\n")
     if not clauses:
         print("No clauses parsed — check the document source.")
+        return
+
+    if args.dump:
+        # G-6.4: draft candidate sections for law-group gold verification. BM25-only
+        # (the live mapping default after G-6.3); writes a review markdown.
+        in_scope = [i for i in indicators if i.submission_id != "P6-I5"]
+        rows = dump_candidates(clauses, profile, in_scope, top_k=args.dump_k,
+                               use_semantic=False)
+        out = REPO / "outputs" / f"mapping_candidates_{iso}.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        lines = [f"# Mapping gold candidates — {ISO_TO_COUNTRY.get(iso, iso)} / {doc_name}",
+                 f"\nDocument: `{src}`  ·  parsed clauses: {len(clauses)}  ·  BM25-only, top-{args.dump_k}",
+                 "\n**Draft for law-group verification — NOT gold.** Tick the on-point "
+                 "section(s) per indicator; these then go into `mapping_sections.csv`.\n"]
+        for r in rows:
+            lines.append(f"\n## {r['indicator']} — {r['name']}")
+            for i, c in enumerate(r["candidates"], 1):
+                lines.append(f"{i}. `{c['key']}`  ({c['path']})  —  {c['snippet']}")
+        out.write_text("\n".join(lines), encoding="utf-8")
+        print(f"\nMapping candidate dump -- {ISO_TO_COUNTRY.get(iso, iso)} / {doc_name}")
+        print(f"parsed clauses: {len(clauses)}; {len(rows)} indicators")
+        print(f"review file -> {out.relative_to(REPO)}")
         return
 
     # A/B: BM25-only vs BM25+dense fusion on the SAME parsed document.
