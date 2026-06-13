@@ -124,3 +124,18 @@ def test_run_pipeline_map_empty_when_no_instruments(monkeypatch):
     profile = _profile()
     result = pipe.run_pipeline_map(portal=profile.portals[0], profile=profile, indicators=[])
     assert result.discovered == [] and result.documents == [] and result.citations == []
+
+
+def test_map_use_dense_defaults_off_and_honors_env(monkeypatch):
+    # G-6.3: mapping clause retrieval is BM25-only by default; dense fusion is an
+    # explicit opt-in via LEXORA_MAP_DENSE.
+    import lexora.pipeline as pipe
+
+    monkeypatch.delenv("LEXORA_MAP_DENSE", raising=False)
+    assert pipe._map_use_dense() is False
+    for val in ("1", "true", "yes", "on", "ON"):
+        monkeypatch.setenv("LEXORA_MAP_DENSE", val)
+        assert pipe._map_use_dense() is True
+    for val in ("0", "false", "no", ""):
+        monkeypatch.setenv("LEXORA_MAP_DENSE", val)
+        assert pipe._map_use_dense() is False

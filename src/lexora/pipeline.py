@@ -72,6 +72,19 @@ class MapResult:
     citations: list[Citation]
 
 
+def _map_use_dense() -> bool:
+    """Whether mapping clause retrieval fuses the dense channel.
+
+    Default OFF (BM25-only). G-6.3 measured that dense equal-weight RRF fusion
+    net-hurts section rank on all three round-1 flagship statutes (SG/AU/MY): on
+    each, BM25-only beat every fused config on MRR and recall@k with no country
+    regressing. Dense fusion is kept as an explicit opt-in — set
+    ``LEXORA_MAP_DENSE=1`` — for cases its tail recall may help (e.g. a
+    cross-lingual document once a multilingual embedder is active). This gates the
+    MAPPING clause retrieval only; discovery's semantic re-rank is separate."""
+    return os.environ.get("LEXORA_MAP_DENSE", "").lower() in ("1", "true", "yes", "on")
+
+
 def _maybe_ocr_fill(pages: list[PdfPage], source: Path | bytes) -> list[PdfPage]:
     """Fill image-only page slots with OCR when ``LEXORA_OCR`` is set.
 
@@ -357,7 +370,9 @@ def _citations_from_clauses(
         # relevance floor (raw BM25 is unbounded and corpus-dependent — a
         # fixed raw cutoff prunes nothing on a big document).
         passing = [
-            hit for hit in retrieve_candidates(indicator, profile, index, top_k=top_k)
+            hit for hit in retrieve_candidates(
+                indicator, profile, index, top_k=top_k, use_semantic=_map_use_dense()
+            )
             if _normalize_score(hit.score) >= min_score
         ]
         if not passing:
