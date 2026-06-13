@@ -342,9 +342,48 @@ def _dedupe_boundaries(
     return sorted(pruned)
 
 
+# Lines that are NOT a section's marginal heading: page footers / running headers.
+_HEADING_NOISE = re.compile(
+    r"informal consolidation|version in force|\bed\.|^\d+$", re.I)
+
+
+def _pull_heading_start(text: str, pos: int) -> int:
+    """If a short marginal heading sits on the line directly above the section
+    boundary at ``pos``, return that line's start so the heading attaches to THIS
+    section instead of bleeding onto the previous clause's tail (SG/MY put the
+    heading on its own line above the number: "Advisory committees\\n6.—(1) …").
+    Conservative — one line back, only for a heading-like line: short, no terminal
+    sentence/subsection punctuation, not itself a numbered or structural line, not
+    a page footer. Otherwise return ``pos`` unchanged."""
+    if pos <= 0:
+        return pos
+    line_end = pos - 1  # pos is a line start; pos-1 is the preceding newline
+    line_start = text.rfind("\n", 0, line_end) + 1
+    line = text[line_start:line_end].strip()
+    if (not line or len(line) > 80
+            or line[-1] in ".;:)’”\"'"
+            or line[0].isdigit() or line[0] in "(["
+            or re.match(r"(?i)(part|division|chapter|schedule)\b", line)
+            or _HEADING_NOISE.search(line)):
+        return pos
+    return line_start
+
+
 def _section_specs(part_text: str, offset: int) -> list[_Spec]:
     """Resolve section/article clauses within a part (offsets globalised)."""
     boundaries = _dedupe_boundaries(_detect_boundaries(part_text))
+    # Re-attach each section's marginal heading (the line above its number) to that
+    # section, so a clause ends at its own last sentence rather than absorbing the
+    # next section's heading. Guarded so a pull never reorders/overlaps boundaries.
+    pulled: list[tuple[int, str, str | None, str]] = []
+    prev = -1
+    for start, num, sub, kind in boundaries:
+        s = _pull_heading_start(part_text, start) if kind == "section" else start
+        if s <= prev:
+            s = start
+        pulled.append((s, num, sub, kind))
+        prev = s
+    boundaries = pulled
     specs: list[_Spec] = []
     for i, (start, num, sub, kind) in enumerate(boundaries):
         end = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(part_text)
