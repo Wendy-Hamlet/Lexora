@@ -250,8 +250,10 @@ def ocr_fill_pages(
     if not blank:
         return pages, {}
 
-    eng = engine or make_engine()
-    ocr_pages = extract_ocr(source, dpi=dpi, engine=eng, page_numbers=blank)
+    # Pass the engine through (default None); extract_ocr builds it lazily only
+    # when it actually OCRs a page. Building it here would import the OCR backend
+    # eagerly — unwanted when the backend is absent (e.g. CI without the [ocr] extra).
+    ocr_pages = extract_ocr(source, dpi=dpi, engine=engine, page_numbers=blank)
     ocr_by_num = {op.page_number: op for op in ocr_pages}
 
     page_conf: dict[int, float] = {}

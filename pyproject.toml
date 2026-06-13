@@ -54,8 +54,11 @@ embeddings = [
     "fastembed>=0.3",
 ]
 ocr = [
-    "pytesseract>=0.3.10",
-    "Pillow>=10.0",
+    # OCR for image-only (scanned) legal PDFs. RapidOCR runs PaddleOCR's PP-OCR
+    # models on onnxruntime (no torch, Windows/py3.13-stable, bundled models). For
+    # GPU, also install onnxruntime-gpu + the nvidia-*-cu12 runtime; native
+    # PaddleOCR is an opt-in alternative on a CUDA server (LEXORA_OCR_ENGINE=paddleocr).
+    "rapidocr-onnxruntime>=1.2",
 ]
 llm = [
     "openai>=1.30",
