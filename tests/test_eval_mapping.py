@@ -234,6 +234,38 @@ def test_summarize_rank_mrr_and_recall():
     assert s["recall"] == {1: 1, 3: 2, 5: 2}
 
 
+def test_ablation_grid_toggles_one_general_knob_each():
+    grid = em.ablation_grid()
+    labels = [g[0] for g in grid]
+    assert labels[0] == "bm25-only" and grid[0][1] is False and grid[0][2] == {}
+    # The default fused config carries no overrides (it IS the live behavior).
+    assert ("fused (default)", True, {}) in grid
+    # Every ablation forwards only known retrieval knobs, never an answer-specific key.
+    allowed = {"anchor_bm25_top1", "drop_boilerplate", "dense_weight", "bm25_weight"}
+    for _, use_sem, kw in grid:
+        assert isinstance(use_sem, bool)
+        assert set(kw) <= allowed
+
+
+def test_ablation_kwargs_are_accepted_by_retrieve_candidates():
+    # The grid's kwargs must actually flow through evaluate_rank -> retrieve_candidates
+    # without error (guards against a renamed knob silently breaking the sweep).
+    clauses = [
+        _clause("26", "transfer of personal data to a country outside Singapore"),
+        _clause("13", "an organisation must not collect personal data without consent"),
+        _clause("99", "miscellaneous provisions about fees and forms"),
+    ]
+    indicators = [_ind("P6-I4", "cross-border transfer outside the country",
+                       keywords=["transfer", "outside"])]
+    gold = {"P6-I4": {"26"}}
+    for _, use_sem, kw in em.ablation_grid():
+        if use_sem:
+            continue  # bm25-only path covers the kwargs without an embedder
+        rows = em.evaluate_rank(clauses, _profile(), indicators, gold,
+                                rank_k=5, use_semantic=False, **kw)
+        assert rows[0]["rank"] == 1
+
+
 def test_evaluate_threads_dense_channel_and_still_hits_gold():
     # The A/B path: passing an embedder routes retrieval through BM25+dense fusion
     # (the run the live script labels "fused"). The harness must thread it through

@@ -191,6 +191,23 @@ def summarize_rank(rows: list[dict], ks: tuple[int, ...] = (1, 3, 5, 10)) -> dic
     return {"n": len(rows), "mrr": mrr, "recall": recall}
 
 
+# G-6.2 ablation grid. Each entry toggles ONE general scoring knob (never an
+# answer-specific change); the rank distribution (MRR/recall@k), not a single
+# hit@1, tells whether that signal helps or hurts. ``use_semantic`` selects the
+# channel; the kwargs are forwarded to ``retrieve_candidates``. Conclusions are
+# only valid across all three economies (leave-one-country-out) — one doc's grid
+# is a diagnostic, not a tuning decision.
+def ablation_grid() -> list[tuple[str, bool, dict]]:
+    return [
+        ("bm25-only", False, {}),
+        ("fused (default)", True, {}),
+        ("fused -anchor", True, {"anchor_bm25_top1": False}),
+        ("fused -boilerplate_drop", True, {"drop_boilerplate": False}),
+        ("fused dense*2", True, {"dense_weight": 2.0}),
+        ("fused bm25*2", True, {"bm25_weight": 2.0}),
+    ]
+
+
 # --- document acquisition (I/O) --------------------------------------------
 
 def _clauses_from_pdf(pdf: Path, profile: SourceProfile, indicators) -> list[Clause]:
@@ -240,6 +257,9 @@ def main() -> None:
                          "report MRR + recall@k instead of just hit@1/hit@3")
     ap.add_argument("--rank-k", type=int, default=20,
                     help="how deep to look for the gold section in --rank-report")
+    ap.add_argument("--ablate", action="store_true",
+                    help="G-6.2: sweep single general scoring knobs (anchor / "
+                         "boilerplate-drop / channel weights) and report MRR + recall@k")
     args = ap.parse_args()
 
     from lexora.collect.profile_loader import load_profile
@@ -278,6 +298,24 @@ def main() -> None:
     from lexora.classify.retrieval import _maybe_embedder
 
     embedder = _maybe_embedder(True)
+
+    if args.ablate:
+        # G-6.2: one knob at a time, judged on MRR/recall@k (rank distribution),
+        # not hit@1 (too gameable on a handful of gold points).
+        print(f"[ablation] single-knob sweep, rank_k={args.rank_k}, MRR + recall@k\n")
+        for label, use_sem, kw in ablation_grid():
+            emb = embedder if use_sem else None
+            if use_sem and emb is None:
+                continue
+            rows = evaluate_rank(clauses, profile, indicators, gold,
+                                 rank_k=args.rank_k, use_semantic=use_sem, embedder=emb, **kw)
+            s = summarize_rank(rows)
+            rec = "  ".join(f"r@{k} {v}/{s['n']}" for k, v in s["recall"].items())
+            print(f"   {label:<26} MRR {s['mrr']:.3f}   {rec}")
+        if embedder is None:
+            print("\nnote: dense backend unavailable — only the bm25-only row ran.")
+        return
+
     runs = [("bm25", False, None)]
     if embedder is not None:
         runs.append(("fused", True, embedder))
