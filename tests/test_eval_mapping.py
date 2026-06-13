@@ -351,6 +351,73 @@ def test_pool_candidates_runs_without_optional_channels():
     assert all(set(c["found"]) == {"bm25"} for c in rows[0]["candidates"])
 
 
+def _clause_at(section: str, text: str, start: int, item: str | None = None) -> Clause:
+    suffix = f"-{item}" if item else ""
+    cid = f"doc::s{section}{suffix}"
+    return Clause(
+        clause_id=cid, document_id="doc", structural_path=f"Section {section}",
+        section_number=section, paragraph_number=item,
+        span=CanonicalSpan(span_id=cid + ".s", document_id="doc", char_start=start,
+                           char_end=start + len(text), text=text, page_number=1 + start // 100),
+    )
+
+
+def test_section_index_one_row_per_section_in_document_order():
+    # Two subsection clauses of s.13 collapse to a single index row; rows follow
+    # document (char) order, not section-number order.
+    clauses = [
+        _clause_at("26", "transfer outside the country", 0),
+        _clause_at("13", "consent required", 200),
+        _clause_at("13", "(2) consent may be withdrawn", 240, item="2"),
+    ]
+    rows = em.section_index_rows(clauses)
+    assert [r["key"] for r in rows] == ["26", "13"]      # document order, deduped
+    assert rows[0]["head"].startswith("transfer outside")
+    assert all(set(r) >= {"key", "path", "page", "head", "start"} for r in rows)
+
+
+def test_pool_gold_recall_counts_out_of_pool_and_hidden_by_top5():
+    rows = [
+        {"indicator": "P6-I4", "candidates": [
+            {"key": "26", "found": {"bm25": 1, "dense": 1}},      # in a top-5
+            {"key": "10", "found": {"dense": 8}}]},
+        {"indicator": "P7-I1", "candidates": [
+            {"key": "24", "found": {"bm25": 11, "dense": 12}}]},  # in pool, no top-5
+    ]
+    gold = {"P6-I4": {"26"}, "P7-I1": {"13", "24"}}              # 13 is absent from the pool
+    rec = em.pool_gold_recall(rows, gold)
+    assert rec["n"] == 3
+    assert rec["out_of_pool"] == 1                                # s.13 missed entirely
+    assert rec["hidden_by_top5"] == 2                             # s.13 (missed) + s.24 (rank 11/12)
+    s13 = next(p for p in rec["per"] if p["gold"] == "13")
+    assert s13["found"] is None and s13["in_some_top5"] is False
+
+
+def test_collect_gold_round_trips_filled_answer_blocks():
+    # A filled pool md: P6-I4 answered, P7-I1 answered with two sections + a non-ASCII
+    # separator, P7-I2 left blank (skipped).
+    md = (
+        "# Mapping candidate POOL — Singapore / PDPA 2012\n"
+        + em._answer_block("P6-I4").replace("GOLD=\n", "GOLD=26\n").replace("NOTE=\n", "NOTE=transfer\n")
+        + em._answer_block("P7-I1").replace("GOLD=\n", "GOLD=13；24\n").replace("NOTE=\n", "NOTE=consent+protect\n")
+        + em._answer_block("P7-I2")  # left blank
+    )
+    rows = em.collect_gold(md, "PDPA 2012")
+    by = {r["indicator"]: r for r in rows}
+    assert set(by) == {"P6-I4", "P7-I1"}             # blank block skipped
+    assert by["P6-I4"]["gold_sections"] == "26"
+    assert by["P7-I1"]["gold_sections"] == "13;24"   # full-width ；normalised to ;
+    assert by["P6-I4"]["note"] == "transfer"
+    assert by["P6-I4"]["document"] == "PDPA 2012"
+
+
+def test_answer_block_markers_are_extractable():
+    block = em._answer_block("P7-I4")
+    assert "<!--GOLD:P7-I4:START-->" in block and "<!--GOLD:P7-I4:END-->" in block
+    # an empty block yields no row
+    assert em.collect_gold(block, "doc") == []
+
+
 def test_summarize_rank_mrr_and_recall():
     rows = [{"rank": 1}, {"rank": 3}, {"rank": None}]
     s = em.summarize_rank(rows, ks=(1, 3, 5))

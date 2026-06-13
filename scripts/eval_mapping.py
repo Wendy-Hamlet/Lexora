@@ -369,6 +369,79 @@ def pool_candidates(
     return rows
 
 
+def section_index_rows(clauses: list[Clause]) -> list[dict]:
+    """A whole-statute section index (one row per section, document order) for the
+    law group to scan ALL sections by topic and locate gold INDEPENDENTLY of our
+    scored pool — the channel that lets gold come from outside any system's output."""
+    by_key: dict[str, list[Clause]] = defaultdict(list)
+    for c in clauses:
+        by_key[_clause_key(c)].append(c)
+    for group in by_key.values():
+        group.sort(key=lambda c: c.span.char_start)
+    rows = []
+    for key, group in by_key.items():
+        head = " ".join(group[0].span.text.split())[:130]
+        rows.append({"key": key, "path": group[0].structural_path,
+                     "page": group[0].span.page_number, "head": head,
+                     "start": group[0].span.char_start})
+    rows.sort(key=lambda r: r["start"])
+    return rows
+
+
+def pool_gold_recall(rows: list[dict], gold: dict[str, set[str]]) -> dict:
+    """Honesty / recall check for the pool: for each known gold section, is it in the
+    pool, by which methods, at what best rank — and would a single-method top-5 have
+    caught it? Aggregates the *out-of-pool rate* (gold a pool of this depth still
+    misses) and the *hidden-by-top5 rate* (gold no single method ranked in its top 5,
+    i.e. exactly what the old top-5 labelling protocol would have buried)."""
+    per: list[dict] = []
+    for r in rows:
+        g = gold.get(r["indicator"])
+        if not g:
+            continue
+        found = {c["key"]: c["found"] for c in r["candidates"]}
+        for sec in sorted(g):
+            f = found.get(sec)
+            best = min(f.values()) if f else None
+            in_top5 = bool(f) and any(rk <= 5 for rk in f.values())
+            per.append({"indicator": r["indicator"], "gold": sec, "found": f,
+                        "best_rank": best, "in_some_top5": in_top5})
+    n = len(per)
+    out_of_pool = sum(1 for p in per if not p["found"])
+    hidden_by_top5 = sum(1 for p in per if not p["in_some_top5"])
+    return {"n": n, "out_of_pool": out_of_pool, "hidden_by_top5": hidden_by_top5, "per": per}
+
+
+# --- fillable answer block in the pool md + its collector --------------------
+# The law group fills GOLD=/NOTE= between these per-indicator markers; the markers
+# are machine-extractable so the filled md round-trips straight into gold CSV rows.
+def _answer_block(indicator_id: str) -> str:
+    return (f"\n**✍️ 答案 {indicator_id}** — 在 `GOLD=` 后填正确条文号（多条用 `;`；不涉及填 "
+            f"`N/A`）。**勿改动 `<!-- -->` 标记。**\n\n"
+            f"```\n<!--GOLD:{indicator_id}:START-->\nGOLD=\nNOTE=\n<!--GOLD:{indicator_id}:END-->\n```")
+
+
+_ANSWER_RE = re.compile(
+    r"<!--GOLD:(?P<ind>[^:>]+):START-->(?P<body>.*?)<!--GOLD:(?P=ind):END-->", re.S)
+
+
+def collect_gold(md_text: str, document: str) -> list[dict]:
+    """Extract filled answer blocks from a pool markdown into gold rows. An empty
+    or N/A-less ``GOLD=`` is skipped; separators (; ， ；) normalise to ``;``."""
+    rows: list[dict] = []
+    for m in _ANSWER_RE.finditer(md_text):
+        body = m.group("body")
+        gm = re.search(r"GOLD[ \t]*=[ \t]*(.*)", body)
+        nm = re.search(r"NOTE[ \t]*=[ \t]*(.*)", body)
+        gold_raw = (gm.group(1).strip() if gm else "")
+        if not gold_raw:
+            continue  # unfilled
+        gold = ";".join(s.strip() for s in re.split(r"[;,；，]", gold_raw) if s.strip())
+        rows.append({"indicator": m.group("ind").strip(), "document": document,
+                     "gold_sections": gold, "note": (nm.group(1).strip() if nm else "")})
+    return rows
+
+
 def evaluate_rank(
     clauses: list[Clause],
     profile: SourceProfile,
@@ -476,7 +549,7 @@ def _clauses_from_discovery(profile: SourceProfile, indicators) -> list[Clause]:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--iso", required=True, help="sg|au|my")
+    ap.add_argument("--iso", help="sg|au|my (not needed with --collect)")
     ap.add_argument("--doc", help="gold document name (substring) when an economy has several")
     ap.add_argument("--pdf", type=Path, help="local PDF (deterministic)")
     ap.add_argument("--url", help="live-fetch one full-text URL")
@@ -507,7 +580,40 @@ def main() -> None:
     ap.add_argument("--provenance", action="store_true",
                     help="(analysis only) keep consensus order + 'found by' method tags "
                          "in the pool markdown; default is a blind, shuffled, tag-free copy")
+    ap.add_argument("--toc", action="store_true",
+                    help="write a whole-statute section index (every section, document "
+                         "order) for the law group to locate gold independently of the pool")
+    ap.add_argument("--collect", action="store_true",
+                    help="harvest filled answer blocks from outputs/mapping_pool_*.md "
+                         "into outputs/collected_gold.csv (no PDF needed)")
     args = ap.parse_args()
+
+    if args.collect:
+        iso_to_name = {"sg": "Personal Data Protection Act 2012",
+                       "au": "Privacy Act 1988", "my": "Personal Data Protection Act 2010"}
+        out_rows: list[tuple[str, str, str, str, str]] = []
+        for iso2 in ("sg", "au", "my"):
+            p = REPO / "outputs" / f"mapping_pool_{iso2}.md"
+            if not p.exists():
+                continue
+            text = p.read_text(encoding="utf-8")
+            first = text.splitlines()[0] if text else ""
+            mdoc = re.search(r"/\s*(.+?)\s*$", first)
+            doc = mdoc.group(1) if mdoc else iso_to_name.get(iso2, iso2)
+            for r in collect_gold(text, doc):
+                out_rows.append((iso2.upper(), r["document"], r["indicator"],
+                                 r["gold_sections"], r["note"]))
+        out = REPO / "outputs" / "collected_gold.csv"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        with out.open("w", newline="", encoding="utf-8") as f:
+            w = csv.writer(f)
+            w.writerow(["iso", "document", "indicator", "gold_sections", "note"])
+            w.writerows(out_rows)
+        print(f"collected {len(out_rows)} filled gold rows -> {out.relative_to(REPO)}")
+        return
+
+    if not args.iso:
+        ap.error("--iso is required (except with --collect)")
 
     from lexora.collect.profile_loader import load_profile
 
@@ -556,6 +662,25 @@ def main() -> None:
         "my": "https://mohre.um.edu.my/img/files/Personal%20Data%20Protection%20(PDPA)%20Act%202010.pdf",
     }
     in_scope = [i for i in indicators if i.submission_id != "P6-I5"]
+
+    if args.toc:
+        rows = section_index_rows(clauses)
+        out = REPO / "outputs" / f"section_index_{iso}.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        lines = [f"# Section index — {ISO_TO_COUNTRY.get(iso, iso)} / {doc_name}",
+                 f"\n- Official text (authoritative): {official.get(iso, '(see profile)')}",
+                 f"- Parsed from: `{src}`  ·  {len(rows)} sections, document order",
+                 "\n**Scan every section by topic and locate the right provision for each "
+                 "indicator independently — this is NOT filtered by our retrieval, so gold can "
+                 "come from anywhere in the Act.** Jump to a section by its page; read the full "
+                 "text in the official source above.\n"]
+        for r in rows:
+            pg = f"p.{r['page']}" if r["page"] else "p.?"
+            lines.append(f"- **`{r['key']}`** ({pg}) — {r['head']}")
+        out.write_text("\n".join(lines), encoding="utf-8")
+        print(f"\nSection index -- {ISO_TO_COUNTRY.get(iso, iso)} / {doc_name}: "
+              f"{len(rows)} sections -> {out.relative_to(REPO)}")
+        return
 
     if args.pool:
         from lexora.classify.retrieval import _maybe_embedder
@@ -610,8 +735,22 @@ def main() -> None:
                 # full provision text, no truncation — the law group needs the whole
                 # section to judge (see gold-handoff full-text rule).
                 lines.append(f"\n**`{c['key']}`** — {c['path']} ({pg}){tag}\n\n> {c['text']}")
+            lines.append(_answer_block(r["indicator"]))
         out.write_text("\n".join(lines), encoding="utf-8")
         print(f"\nreview file -> {out.relative_to(REPO)}")
+        # honesty / recall check against current gold (stdout only — never in the
+        # blind law-group file): does the pool actually contain the known gold, and
+        # how much would the old single-method top-5 protocol have buried?
+        if gold:
+            rec = pool_gold_recall(rows, gold)
+            print(f"\ngold-in-pool check ({rec['n']} gold sections):"
+                  f" out-of-pool {rec['out_of_pool']}/{rec['n']},"
+                  f" hidden-by-top5 {rec['hidden_by_top5']}/{rec['n']}")
+            for p in rec["per"]:
+                where = ", ".join(f"{m}#{rk}" for m, rk in sorted(p["found"].items())) \
+                    if p["found"] else "MISSED by all methods"
+                print(f"   {p['indicator']:<7} gold {p['gold']:<5} -> {where}"
+                      f"{'' if p['in_some_top5'] else '   <- hidden by single-method top-5'}")
         return
 
     if args.dump:
