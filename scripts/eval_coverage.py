@@ -79,19 +79,20 @@ def _act_ids(text: str) -> set[str]:
     return ids
 
 
-def _is_covered(gold_name: str, discovered: list[dict]) -> bool:
-    """A gold instrument is covered if any discovered hit matches it by fuzzy name
-    OR by shared Act identifier (filename titles like 'Act 854.pdf' defeat name
-    fuzz but carry the Act number)."""
-    gold_l = gold_name.lower()
+def _matches(gold_name: str, d: dict) -> bool:
+    """True if one discovered hit ``d`` matches a gold instrument by fuzzy name OR
+    by shared Act identifier (filename titles like 'Act 854.pdf' defeat name fuzz
+    but carry the Act number)."""
+    hay = f"{d['title']} {d['url']}"
+    if int(fuzz.token_set_ratio(gold_name.lower(), hay.lower())) >= _MATCH_THRESHOLD:
+        return True
     gold_ids = _act_ids(gold_name)
-    for d in discovered:
-        hay = f"{d['title']} {d['url']}"
-        if int(fuzz.token_set_ratio(gold_l, hay.lower())) >= _MATCH_THRESHOLD:
-            return True
-        if gold_ids and (gold_ids & _act_ids(hay)):
-            return True
-    return False
+    return bool(gold_ids and (gold_ids & _act_ids(hay)))
+
+
+def _is_covered(gold_name: str, discovered: list[dict]) -> bool:
+    """A gold instrument is covered if any discovered hit matches it."""
+    return any(_matches(gold_name, d) for d in discovered)
 
 
 def _best_match(name: str, hay: list[str]) -> int:
@@ -145,6 +146,98 @@ def _eval_one(iso: str, gold: list[str], *, budget: int, dry_run: bool,
     }
 
 
+def _rank_report_one(iso: str, gold: list[str], *, budget: int, rank_budget: int,
+                     use_semantic: bool) -> dict:
+    """G-6.1 rank-before-truncation diagnostic (discovery layer).
+
+    Runs discovery ONCE with a large ``rank_budget`` so nothing is truncated, then
+    records each gold instrument's actual rank in the primary ranked list (the same
+    ``known + rest`` ordering the live budget cut uses). Each gold lands in one of
+    four buckets, which point at different fixes:
+
+      kept       rank <= budget                  — already returned live
+      truncated  budget < rank <= rank_budget    — FOUND but the budget cut drops it
+                                                    (fix: budget split / re-rank, NOT retrieval)
+      secondary  only matched on a regulator site — subsidiary instrument, not a
+                                                    primary-portal ranking problem
+      not_found  matched nowhere                  — retrieval / connector / query gap
+
+    Pure diagnostic: it never changes the live ``budget``, only measures where the
+    gold sits relative to it.
+    """
+    profile = load_profile(REPO / "configs" / "jurisdictions" / f"{iso}.yaml")
+    indicators = load_indicators(INDICATORS)
+    portal = profile.portals[0]
+
+    error = None
+    primary: list[dict] = []
+    secondary: list[dict] = []
+    try:
+        hits = discover_for_indicators(
+            portal, indicators, budget=rank_budget, timeout=60.0,
+            force_browser=portal.fetch_method is FetchMethod.playwright,
+            known_instruments=profile.known_instruments,
+            known_instrument_ids=profile.known_instrument_ids,
+            use_semantic=use_semantic,
+        )
+        primary = [{"title": h.title, "url": h.url, "tag": h.discovery_tag,
+                    "score": round(h.score, 3)} for h in hits]
+        secondary = [{"title": h.title, "url": h.url}
+                     for h in discover_secondary(profile, indicators, timeout=60.0)]
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+
+    rows, buckets = _bucket_gold(gold, primary, secondary, budget)
+    return {"iso": iso, "error": error, "budget": budget, "rank_budget": rank_budget,
+            "primary_n": len(primary), "secondary_n": len(secondary),
+            "buckets": buckets, "rows": rows}
+
+
+def _bucket_gold(gold: list[str], primary: list[dict], secondary: list[dict],
+                 budget: int) -> tuple[list[dict], dict[str, int]]:
+    """Pure core of the rank report: bucket each gold instrument against the live
+    ``budget`` given the full ranked ``primary`` list and the ``secondary`` hits.
+
+    ``primary`` must be in the live ``known + rest`` order so an index is the rank
+    the live cut would apply. Returns (rows, bucket-counts)."""
+    rows = []
+    buckets = {"kept": 0, "truncated": 0, "secondary": 0, "not_found": 0}
+    for inst in gold:
+        rank = next((i + 1 for i, d in enumerate(primary) if _matches(inst, d)), None)
+        if rank is not None and rank <= budget:
+            bucket = "kept"
+        elif rank is not None:
+            bucket = "truncated"
+        elif any(_matches(inst, d) for d in secondary):
+            bucket = "secondary"
+        else:
+            bucket = "not_found"
+        buckets[bucket] += 1
+        rows.append({"instrument": inst, "rank": rank, "bucket": bucket,
+                     "is_agreement": _is_agreement(inst)})
+    return rows, buckets
+
+
+def _print_rank_report(report: list[dict]) -> None:
+    print("\nDiscovery rank-before-truncation (G-6.1) — gold position vs the budget cut")
+    print("buckets: kept(<=budget)  truncated(found but cut)  secondary(regulator site)  not_found")
+    for e in report:
+        if e["error"]:
+            print(f"\n[{e['iso']}] ERROR: {e['error']}")
+            continue
+        b = e["buckets"]
+        print(f"\n[{e['iso']}] budget={e['budget']} rank_budget={e['rank_budget']} "
+              f"primary={e['primary_n']} secondary={e['secondary_n']}")
+        print(f"   kept {b['kept']}  truncated {b['truncated']}  "
+              f"secondary {b['secondary']}  not_found {b['not_found']}")
+        # The truncated bucket is the actionable headline: found-but-cut gold is
+        # pure budget/ranking loss, recoverable without touching retrieval.
+        for r in sorted(e["rows"], key=lambda r: (r["bucket"] != "truncated", r["rank"] or 1e9)):
+            tag = " (agreement)" if r["is_agreement"] else ""
+            rk = f"#{r['rank']}" if r["rank"] is not None else "--"
+            print(f"   {r['bucket']:<10}{rk:>5}  {r['instrument'][:60]}{tag}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("-j", "--jurisdiction", default="all", help="sg|au|my|all")
@@ -152,7 +245,27 @@ def main() -> None:
     ap.add_argument("--dry-run", action="store_true", help="list gold only, no network")
     ap.add_argument("--no-semantic", action="store_true",
                     help="disable the dense crosswalk/re-rank (keyword-only baseline)")
+    ap.add_argument("--rank-report", action="store_true",
+                    help="G-6.1: run discovery with a large budget and bucket each "
+                         "gold instrument as kept / truncated / secondary / not_found")
+    ap.add_argument("--rank-budget", type=int, default=200,
+                    help="diagnostic budget for --rank-report (large, ~no truncation)")
     args = ap.parse_args()
+
+    if args.rank_report:
+        if not os.environ.get("LEXORA_LIVE"):
+            print("note: set LEXORA_LIVE=1 to run live discovery for the rank report.")
+        gold = _load_gold()
+        isos = ["sg", "au", "my"] if args.jurisdiction == "all" else [args.jurisdiction.lower()]
+        report = [_rank_report_one(iso, gold.get(ISO_TO_COUNTRY.get(iso, iso), []),
+                                   budget=args.budget, rank_budget=args.rank_budget,
+                                   use_semantic=not args.no_semantic) for iso in isos]
+        out = OUT.parent / "eval_coverage_rank.json"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+        _print_rank_report(report)
+        print(f"\n(full results -> {out.relative_to(REPO)})")
+        return
 
     if not args.dry_run and not os.environ.get("LEXORA_LIVE"):
         print("note: set LEXORA_LIVE=1 to run live discovery (or use --dry-run).")

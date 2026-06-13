@@ -201,6 +201,39 @@ def test_evaluate_records_miss_when_wrong_section_ranks_first():
     assert em.summarize(rows) == (0, 0, 1)
 
 
+def test_evaluate_rank_records_gold_section_rank():
+    # G-6.1: rank report finds the gold section's position even when it is not
+    # rank 1, separating a ranking problem (gold at #2) from a recall miss (None).
+    clauses = [
+        _clause("24", "an organisation must protect personal data in its possession"),
+        _clause("26", "transfer of personal data to a country outside Singapore"),
+        _clause("99", "miscellaneous provisions about fees and forms"),
+    ]
+    indicators = [_ind("P6-I4", "protect personal data; transfer outside the country",
+                       keywords=["protect", "transfer", "outside"])]
+    rows = em.evaluate_rank(clauses, _profile(), indicators, {"P6-I4": {"26"}},
+                            rank_k=10, use_semantic=False)
+    assert rows[0]["rank"] is not None and rows[0]["rank"] >= 1
+    assert "26" in rows[0]["retrieved"]
+
+
+def test_evaluate_rank_misses_when_gold_absent():
+    clauses = [_clause("24", "protect personal data"), _clause("99", "fees and forms")]
+    indicators = [_ind("P6-I4", "cross-border transfer outside the country",
+                       keywords=["transfer", "outside"])]
+    rows = em.evaluate_rank(clauses, _profile(), indicators, {"P6-I4": {"26"}},
+                            rank_k=10, use_semantic=False)
+    assert rows[0]["rank"] is None
+
+
+def test_summarize_rank_mrr_and_recall():
+    rows = [{"rank": 1}, {"rank": 3}, {"rank": None}]
+    s = em.summarize_rank(rows, ks=(1, 3, 5))
+    assert s["n"] == 3
+    assert abs(s["mrr"] - (1.0 + 1 / 3) / 3) < 1e-9
+    assert s["recall"] == {1: 1, 3: 2, 5: 2}
+
+
 def test_evaluate_threads_dense_channel_and_still_hits_gold():
     # The A/B path: passing an embedder routes retrieval through BM25+dense fusion
     # (the run the live script labels "fused"). The harness must thread it through

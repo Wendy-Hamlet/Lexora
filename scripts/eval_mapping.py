@@ -140,6 +140,57 @@ def summarize(rows: list[dict]) -> tuple[int, int, int]:
     return (sum(r["hit1"] for r in rows), sum(r["hit3"] for r in rows), len(rows))
 
 
+def evaluate_rank(
+    clauses: list[Clause],
+    profile: SourceProfile,
+    indicators: list[RDTIIIndicator],
+    gold: dict[str, set[str]],
+    *,
+    rank_k: int,
+    use_semantic: bool,
+    embedder=None,
+    **retrieval_kwargs,
+) -> list[dict]:
+    """G-6.1 rank-before-truncation diagnostic (mapping layer).
+
+    Retrieves ``rank_k`` clauses per gold indicator and records the rank of the
+    FIRST gold section in that list (None if outside the top ``rank_k``). hit@1
+    only tells us rank==1; the rank distribution separates a *ranking* problem
+    (gold at rank 5/10 — fixable by re-weighting) from a *recall* problem (gold
+    absent even at rank_k — a retrieval/parse gap). Pure diagnostic, larger top_k.
+    """
+    index = build_index(clauses)
+    clause_by_id = {c.clause_id: c for c in clauses}
+    by_submission = {i.submission_id: i for i in indicators}
+
+    rows: list[dict] = []
+    for submission_id, gold_sections in gold.items():
+        indicator = by_submission.get(submission_id)
+        if indicator is None:
+            continue
+        hits = retrieve_candidates(
+            indicator, profile, index, top_k=rank_k, pool_k=max(20, rank_k),
+            use_semantic=use_semantic, embedder=embedder, **retrieval_kwargs,
+        )
+        retrieved = [_clause_key(clause_by_id[h.clause_id]) for h in hits]
+        rank = next((i + 1 for i, sec in enumerate(retrieved) if sec in gold_sections), None)
+        rows.append({
+            "indicator": submission_id,
+            "gold": sorted(gold_sections),
+            "rank": rank,
+            "retrieved": retrieved[:rank_k],
+        })
+    return rows
+
+
+def summarize_rank(rows: list[dict], ks: tuple[int, ...] = (1, 3, 5, 10)) -> dict:
+    """MRR + recall@k over a rank-report (rows from ``evaluate_rank``)."""
+    n = len(rows) or 1
+    mrr = sum(1.0 / r["rank"] for r in rows if r["rank"]) / n
+    recall = {k: sum(1 for r in rows if r["rank"] and r["rank"] <= k) for k in ks}
+    return {"n": len(rows), "mrr": mrr, "recall": recall}
+
+
 # --- document acquisition (I/O) --------------------------------------------
 
 def _clauses_from_pdf(pdf: Path, profile: SourceProfile, indicators) -> list[Clause]:
@@ -184,6 +235,11 @@ def main() -> None:
     ap.add_argument("--pdf", type=Path, help="local PDF (deterministic)")
     ap.add_argument("--url", help="live-fetch one full-text URL")
     ap.add_argument("--browser", action="store_true", help="escalate --url to Chromium")
+    ap.add_argument("--rank-report", action="store_true",
+                    help="G-6.1: record each gold section's rank (top --rank-k), "
+                         "report MRR + recall@k instead of just hit@1/hit@3")
+    ap.add_argument("--rank-k", type=int, default=20,
+                    help="how deep to look for the gold section in --rank-report")
     args = ap.parse_args()
 
     from lexora.collect.profile_loader import load_profile
@@ -227,6 +283,18 @@ def main() -> None:
         runs.append(("fused", True, embedder))
 
     for label, use_sem, emb in runs:
+        if args.rank_report:
+            rows = evaluate_rank(clauses, profile, indicators, gold,
+                                 rank_k=args.rank_k, use_semantic=use_sem, embedder=emb)
+            s = summarize_rank(rows)
+            rec = "  ".join(f"r@{k} {v}/{s['n']}" for k, v in s["recall"].items())
+            print(f"[{label}]  MRR {s['mrr']:.3f}   {rec}")
+            for r in sorted(rows, key=lambda r: r["rank"] or 1e9):
+                rk = f"#{r['rank']}" if r["rank"] else "miss"
+                print(f"   {r['indicator']:<7} gold={','.join(r['gold']):<8} "
+                      f"rank={rk:<5} top={r['retrieved'][:8]}")
+            print()
+            continue
         rows = evaluate(clauses, profile, indicators, gold, use_semantic=use_sem, embedder=emb)
         h1, h3, n = summarize(rows)
         print(f"[{label}]  hit@1 {h1}/{n}   hit@3 {h3}/{n}")
