@@ -182,8 +182,9 @@ def dump_candidates(
         cands = []
         for h in hits:
             c = clause_by_id[h.clause_id]
-            snippet = " ".join(c.span.text.split())[:140]
-            cands.append({"key": _clause_key(c), "path": c.structural_path, "snippet": snippet})
+            text = " ".join(c.span.text.split())
+            cands.append({"key": _clause_key(c), "path": c.structural_path,
+                          "page": c.span.page_number, "text": text})
         rows.append({
             "indicator": indicator.submission_id,
             "name": indicator.name,
@@ -362,19 +363,31 @@ def main() -> None:
     if args.dump:
         # G-6.4: draft candidate sections for law-group gold verification. BM25-only
         # (the live mapping default after G-6.3); writes a review markdown.
+        official = {
+            "sg": "https://sso.agc.gov.sg/Act/PDPA2012",
+            "au": "https://www.legislation.gov.au/C2004A03712",
+            "my": "https://mohre.um.edu.my/img/files/Personal%20Data%20Protection%20(PDPA)%20Act%202010.pdf",
+        }
         in_scope = [i for i in indicators if i.submission_id != "P6-I5"]
         rows = dump_candidates(clauses, profile, in_scope, top_k=args.dump_k,
                                use_semantic=False)
         out = REPO / "outputs" / f"mapping_candidates_{iso}.md"
         out.parent.mkdir(parents=True, exist_ok=True)
         lines = [f"# Mapping gold candidates — {ISO_TO_COUNTRY.get(iso, iso)} / {doc_name}",
-                 f"\nDocument: `{src}`  ·  parsed clauses: {len(clauses)}  ·  BM25-only, top-{args.dump_k}",
-                 "\n**Draft for law-group verification — NOT gold.** Tick the on-point "
-                 "section(s) per indicator; these then go into `mapping_sections.csv`.\n"]
+                 f"\n- Official text (authoritative, read the full section here): "
+                 f"{official.get(iso, '(see jurisdiction profile)')}",
+                 f"- Parsed from: `{src}`  ·  clauses parsed: {len(clauses)}  ·  ranking: BM25-only, top-{args.dump_k}",
+                 "\n**Draft for law-group verification — NOT gold.** Each candidate below shows the "
+                 "**full provision text** plus its page in the source PDF and the official URL above, so "
+                 "you can read the whole section and judge. Mark the on-point section(s) per indicator; "
+                 "they then go into `mapping_sections.csv`.\n"]
         for r in rows:
             lines.append(f"\n## {r['indicator']} — {r['name']}")
             for i, c in enumerate(r["candidates"], 1):
-                lines.append(f"{i}. `{c['key']}`  ({c['path']})  —  {c['snippet']}")
+                pg = f"p.{c['page']}" if c["page"] else "p.?"
+                body = c["text"] if len(c["text"]) <= 3500 else \
+                    c["text"][:3500] + f" …[truncated — read the full section at {pg} / official URL]"
+                lines.append(f"\n**{i}. `{c['key']}`** — {c['path']} ({pg})\n\n> {body}")
         out.write_text("\n".join(lines), encoding="utf-8")
         print(f"\nMapping candidate dump -- {ISO_TO_COUNTRY.get(iso, iso)} / {doc_name}")
         print(f"parsed clauses: {len(clauses)}; {len(rows)} indicators")

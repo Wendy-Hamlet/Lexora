@@ -255,7 +255,7 @@ def test_dump_candidates_lists_topk_per_indicator():
     assert [r["indicator"] for r in rows] == ["P6-I4", "P7-I1"]
     for r in rows:
         assert 1 <= len(r["candidates"]) <= 2
-        assert all(set(c) >= {"key", "path", "snippet"} for c in r["candidates"])
+        assert all(set(c) >= {"key", "path", "page", "text"} for c in r["candidates"])
     # The cross-border indicator's top candidate is the transfer section.
     assert rows[0]["candidates"][0]["key"] == "26"
 
