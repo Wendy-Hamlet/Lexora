@@ -75,6 +75,19 @@ _YEARISH = re.compile(r"(?:19|20)\d{2}")
 # dash matches only the genuine divisional heading.
 _SCHEDULE = re.compile(r"Schedule\s+(?P<num>\d+[A-Z]?)\s*[—–-]", re.I)
 
+# Ordinal-word schedule heading (SG/MY consolidated Acts): "FIRST SCHEDULE",
+# "SECOND SCHEDULE — Additional bases …". Mapped to a digit so it namespaces like
+# the numeric form (Schedule 1). Running page headers ("FIRST SCHEDULE —
+# continued") repeat on every page and must be rejected (see `_split_parts`).
+_ORD_SCHEDULE = re.compile(
+    r"(?P<ord>first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth)"
+    r"\s+schedule\b",
+    re.I,
+)
+_ORDINALS = {"first": "1", "second": "2", "third": "3", "fourth": "4", "fifth": "5",
+             "sixth": "6", "seventh": "7", "eighth": "8", "ninth": "9", "tenth": "10"}
+_SCHEDULE_CONTINUED = re.compile(r"[—–-]\s*continued\b", re.I)
+
 # Australian Privacy Principle heading inside a schedule:
 # "Australian Privacy Principle 8—cross-border disclosure of personal information".
 # The dash likewise separates the real heading from prose cross-references
@@ -242,6 +255,20 @@ def _split_parts(global_text: str) -> list[_Part]:
         if _line_start(global_text, m.start())
         and not _TOC_TAIL.search(_line_at(global_text, m.start()))
     ]
+    # Ordinal-word schedules (FIRST/SECOND/…), rejecting "— continued" running page
+    # headers and dotted-leader TOC pointers.
+    for m in _ORD_SCHEDULE.finditer(global_text):
+        line = _line_at(global_text, m.start())
+        # Require the heading to be UPPERCASE ("FIRST SCHEDULE"): that is the real
+        # divisional heading's style, and it excludes the mixed-case contents-list
+        # entries ("First Schedule") and prose cross-references ("First Schedule or
+        # Part 2 of the Second Schedule") that otherwise drag the split to the wrong
+        # offset (and drop text). "— continued" running page headers are rejected too.
+        if (m.group(0).isupper()
+                and _line_start(global_text, m.start())
+                and not _TOC_TAIL.search(line)
+                and not _SCHEDULE_CONTINUED.search(line)):
+            candidates.append((m.start(), _ORDINALS[m.group("ord").lower()]))
     headers = _dedupe_keep_last(candidates)
     if not headers:
         return [_Part(None, 0, len(global_text))]
