@@ -39,7 +39,10 @@ keywords_by_indicator:
   "6.4":
     en: ["transfer any personal data out of Malaysia", "conditions for transfer", "Schedule"]
   "7.1":
-    en: ["Personal Data Protection Act 2010", "Act 709", "comprehensive data protection"]
+    # 7.1 = comprehensive data-protection framework. Target its anchor provisions by
+    # statutory wording: the Personal Data Protection Principles (s.5) + the General
+    # Principle's consent rule (s.6) — concept vocabulary, not the gold section nums.
+    en: ["Personal Data Protection Principles", "a data user shall not process personal data unless the data subject has given his consent", "comprehensive data protection", "Act 709"]
   "7.2":
     en: ["Cyber Security Act 2024", "Act 854", "Computer Crimes Act", "Act 563"]
   "7.3":

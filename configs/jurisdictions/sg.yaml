@@ -31,7 +31,12 @@ keywords_by_indicator:
   "6.4":
     en: ["transfer personal data to a country or territory outside Singapore", "comparable to the protection", "prescribed under this Act"]
   "7.1":
-    en: ["Personal Data Protection Act", "data protection officer", "consent"]
+    # 7.1 = comprehensive data-protection framework. Target its two core operative
+    # obligations by their statutory wording (consent to collect/use/disclose +
+    # protection by reasonable security arrangements) — concept vocabulary, not the
+    # gold section numbers. "data protection officer" removed: that is a 7.4 concept
+    # and pulled DPO/admin sections into 7.1.
+    en: ["individual gives consent to the collection, use or disclosure of personal data", "protect personal data by making reasonable security arrangements", "comprehensive personal data protection"]
   "7.2":
     en: ["Cybersecurity Act", "critical information infrastructure", "Computer Misuse Act"]
   "7.3":
@@ -39,7 +44,8 @@ keywords_by_indicator:
     # LIMITATION (the opposite) and is excluded by classify/boundaries.py.
     en: ["minimum retention period", "retain for at least", "keep records"]
   "7.4":
-    en: ["data protection officer", "appoint one or more"]
+    # 7.4 = designation of a data protection officer. s.11(3) wording.
+    en: ["designate one or more individuals to be responsible for ensuring compliance", "data protection officer", "appoint one or more individuals"]
   "7.5":
     en: ["access to decrypted information", "Criminal Procedure Code", "power to access computers"]
 
