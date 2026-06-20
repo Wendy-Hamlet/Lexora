@@ -99,12 +99,17 @@ def test_demo_pipeline_end_to_end(tmp_path: Path, synthetic_pdf: Path) -> None:
         assert re.fullmatch(r"P[67]-I\d", citation.indicator_id), citation.indicator_id
         assert citation.economy == "Singapore"
 
-    # The cross-border provision (Section 26) must surface for some P6 indicator.
+    # The cross-border provision (Section 26) must surface and be quoted verbatim.
     # NB: the verbatim snippet keeps the PDF's line wrap ("outside\nSingapore"),
-    # so match a phrase that does not straddle the wrap.
+    # so match a phrase that does not straddle the wrap. (Which indicator it maps to
+    # is a retrieval-ranking question this 2-clause corpus can't decide meaningfully —
+    # s.26 is a CONDITIONAL flow clause, so the 6.1/6.4 boundary routes it to P6-I4;
+    # that routing is pinned against real gold in test_eval_mapping / test_boundaries.)
     cross_border = [c for c in artifacts.citations if "transfer any personal data" in c.quote]
     assert cross_border, "the Section 26 cross-border provision should be cited"
-    assert any(c.indicator_id.startswith("P6") for c in cross_border)
+    for c in cross_border:
+        clause = next(cl for cl in artifacts.clauses if cl.clause_id == c.clause_id)
+        assert c.quote == clause.span.text, "cross-border quote must be a verbatim copy"
 
     # JSON-LD export round-trip
     out_path = tmp_path / "out.jsonld"

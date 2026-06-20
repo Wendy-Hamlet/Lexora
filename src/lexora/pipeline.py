@@ -28,7 +28,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from lexora.cite.citation_builder import build_citation
+from lexora.cite.metadata import MetadataExtractor
+from lexora.cite.rationale import RationaleGenerator, template_rationale
 from lexora.cite.validator import validate_claim
+from lexora.classify.boundaries import admits_clause
 from lexora.classify.retrieval import BM25Index, build_index, retrieve_candidates
 from lexora.collect.crawler import fetch, ingest_local_file
 from lexora.extract.html_extractor import HtmlBlock, extract_html
@@ -115,6 +118,8 @@ def run_demo_pipeline(
     top_k: int = 1,
     min_score: float = 0.1,
     verifier=None,
+    rationale_gen: RationaleGenerator | None = None,
+    meta_extractor: MetadataExtractor | None = None,
 ) -> DemoArtifacts:
     """Run extract→structure→retrieve→cite for one local PDF."""
     dest_dir = dest_dir or (Path("data") / "raw" / profile.iso_code.lower())
@@ -132,7 +137,8 @@ def run_demo_pipeline(
     clauses = parse_structure(document.document_id, pages)
     citations = _citations_from_clauses(
         clauses, document, profile, indicators, legal_form, top_k, min_score,
-        verifier=verifier,
+        verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
+        document_text="\n\n".join(p.text for p in pages),
     )
     return DemoArtifacts(document=document, clauses=clauses, citations=citations, pages=pages)
 
@@ -151,6 +157,10 @@ def run_pipeline_from_url(
     min_score: float = 0.1,
     discovery_tag: DiscoveryTag = DiscoveryTag.known,
     verifier=None,
+    rationale_gen: RationaleGenerator | None = None,
+    meta_extractor: MetadataExtractor | None = None,
+    law_number: str = "",
+    last_amended: str = "",
     **fetch_kwargs,
 ) -> DemoArtifacts:
     """Live fetch a URL and run the full pipeline, routing PDF vs HTML.
@@ -167,6 +177,8 @@ def run_pipeline_from_url(
         source_type=source_type,
         dest_dir=dest_dir,
         title=title,
+        law_number=law_number,
+        last_amended=last_amended,
         **fetch_kwargs,
     )
     document = result.document
@@ -184,9 +196,14 @@ def run_pipeline_from_url(
             blocks = extract_html(result.body, url)
             clauses = parse_structure_html(document.document_id, blocks)
 
+    document_text = (
+        "\n\n".join(p.text for p in pages) if pages
+        else "\n".join(b.text for b in blocks)
+    )
     citations = _citations_from_clauses(
         clauses, document, profile, indicators, legal_form, top_k, min_score, discovery_tag,
-        verifier=verifier,
+        verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
+        document_text=document_text,
     )
     return DemoArtifacts(
         document=document, clauses=clauses, citations=citations, pages=pages, blocks=blocks
@@ -262,6 +279,8 @@ def run_pipeline_map(
     min_score: float = 0.35,
     timeout: float = 60.0,
     verifier=None,
+    rationale_gen: RationaleGenerator | None = None,
+    meta_extractor: MetadataExtractor | None = None,
 ) -> MapResult:
     """Autonomous MULTI-instrument map (P0).
 
@@ -310,6 +329,8 @@ def run_pipeline_map(
             source_type=portal.source_type, dest_dir=dest_dir, top_k=top_k,
             min_score=min_score, discovery_tag=tag, browser_fallback=force_browser,
             timeout=timeout, user_agent=BROWSER_UA, title=hit.title, verifier=verifier,
+            rationale_gen=rationale_gen, meta_extractor=meta_extractor,
+            law_number=hit.law_number, last_amended=hit.last_amended,
         )
         documents.append(artifacts)
         for c in artifacts.citations:
@@ -341,6 +362,66 @@ def _attribute_by_name(hit, profile: SourceProfile, indicators: list[RDTIIIndica
     return wanted
 
 
+def _resolve_instrument_meta(title: str | None, profile: SourceProfile) -> tuple[str, str]:
+    """Return ``(last_amended, law_number)`` for the document's instrument, or
+    ``("", "")`` when nothing matches (graceful — the columns stay blank).
+
+    Backfills the two submission columns the fetched document does not carry, from
+    the curated ``instrument_metadata`` (configs/jurisdictions/<iso>.yaml). Matches
+    the document title fuzzily; for portals whose titles are filenames (MY Fess) it
+    also resolves via a known Act number that appears in the title."""
+    meta_map = profile.instrument_metadata
+    if not title or not meta_map:
+        return "", ""
+    from rapidfuzz import fuzz
+
+    title_l = title.lower()
+    best_name, best_score = None, 0.0
+    for name in meta_map:
+        score = fuzz.token_set_ratio(name.lower(), title_l)
+        if score > best_score:
+            best_name, best_score = name, score
+    if best_name is not None and best_score >= 85:
+        meta = meta_map[best_name]
+        return meta.last_amended, meta.law_number
+    # Filename-title fallback: a known Act number embedded in the title.
+    for number, name in profile.known_instrument_ids.items():
+        if number and number in title and name in meta_map:
+            meta = meta_map[name]
+            return meta.last_amended, meta.law_number
+    return "", ""
+
+
+def _resolve_doc_metadata(
+    document: RawDocument,
+    document_text: str,
+    profile: SourceProfile,
+    meta_extractor: MetadataExtractor | None,
+) -> tuple[str, str]:
+    """Resolve ``(last_amended, law_number)`` for a document, once, by precedence:
+
+    1. structured portal metadata captured at fetch time (most reliable; generalizes
+       to NEW laws — e.g. the AU register's act number);
+    2. the generic LLM extractor over the document text (source-verified) — the
+       generalizer for portals without a structured connector;
+    3. the curated, source-verified anchor for the known flagship instruments.
+
+    Each tier only fills a field still missing, so the highest-confidence source wins
+    and a citation always gets the best value available (or blank)."""
+    last_amended, law_number = document.last_amended, document.law_number
+    if not (last_amended and law_number) and meta_extractor is not None:
+        ex_amended, ex_number = meta_extractor.extract(
+            document_text, document.jurisdiction, document.title or ""
+        )
+        last_amended = last_amended or ex_amended
+        law_number = law_number or ex_number
+    if not (last_amended and law_number):
+        anchor_amended, anchor_number = _resolve_instrument_meta(document.title, profile)
+        last_amended = last_amended or anchor_amended
+        law_number = law_number or anchor_number
+    return last_amended, law_number
+
+
 def _citations_from_clauses(
     clauses: list[Clause],
     document: RawDocument,
@@ -351,6 +432,9 @@ def _citations_from_clauses(
     min_score: float,
     discovery_tag: DiscoveryTag = DiscoveryTag.known,
     verifier=None,
+    rationale_gen: RationaleGenerator | None = None,
+    meta_extractor: MetadataExtractor | None = None,
+    document_text: str = "",
 ) -> list[Citation]:
     """Shared core: per indicator, retrieve top-k clauses and materialize the
     ones that pass the verbatim validator.
@@ -365,6 +449,10 @@ def _citations_from_clauses(
         return citations
     index: BM25Index = build_index(clauses)
     clause_by_id = {c.clause_id: c for c in clauses}
+    # Document-level metadata (Law Number / Last Amended) resolved ONCE per document.
+    doc_last_amended, doc_law_number = _resolve_doc_metadata(
+        document, document_text, profile, meta_extractor
+    )
     for indicator in indicators:
         # Gate on the NORMALIZED score so `min_score` is a portable [0, 1]
         # relevance floor (raw BM25 is unbounded and corpus-dependent — a
@@ -374,6 +462,13 @@ def _citations_from_clauses(
                 indicator, profile, index, top_k=top_k, use_semantic=_map_use_dense()
             )
             if _normalize_score(hit.score) >= min_score
+        ]
+        # P6/P7 boundary discipline: drop clauses a scope rule excludes from this
+        # indicator (e.g. a retention LIMITATION wrongly surfaced for 7.3). Tightening
+        # only — it can never add a clause. See classify/boundaries.py.
+        passing = [
+            hit for hit in passing
+            if admits_clause(indicator.rdtii_id, clause_by_id[hit.clause_id].span.text)
         ]
         if not passing:
             continue
@@ -390,9 +485,10 @@ def _citations_from_clauses(
             hit = next(h for h in passing if h.clause_id == claim.clause_id)
             citation = _materialize(
                 indicator=indicator, clause=clause_by_id[claim.clause_id],
-                document=document, legal_form=legal_form, economy=profile.jurisdiction,
+                document=document, legal_form=legal_form, profile=profile,
                 bm25_score=hit.score, discovery_tag=discovery_tag,
-                review_label=claim.label,
+                review_label=claim.label, rationale_gen=rationale_gen,
+                last_amended=doc_last_amended, law_number=doc_law_number,
             )
             if citation is not None:
                 citations.append(citation)
@@ -404,9 +500,12 @@ def _citations_from_clauses(
                 clause=clause_by_id[hit.clause_id],
                 document=document,
                 legal_form=legal_form,
-                economy=profile.jurisdiction,
+                profile=profile,
                 bm25_score=hit.score,
                 discovery_tag=discovery_tag,
+                rationale_gen=rationale_gen,
+                last_amended=doc_last_amended,
+                law_number=doc_law_number,
             )
             if citation is not None:
                 citations.append(citation)
@@ -419,10 +518,13 @@ def _materialize(
     clause: Clause,
     document: RawDocument,
     legal_form: str,
-    economy: str,
+    profile: SourceProfile,
     bm25_score: float,
     discovery_tag: DiscoveryTag = DiscoveryTag.known,
     review_label: ClaimLabel = ClaimLabel.match,
+    rationale_gen: RationaleGenerator | None = None,
+    last_amended: str = "",
+    law_number: str = "",
 ) -> Citation | None:
     """One-clause-one-indicator: synthesize a verifier-shaped claim and run it
     through the same validator. The claim carries the official submission code
@@ -451,14 +553,22 @@ def _materialize(
     if status is ReviewStatus.verified and review_label is ClaimLabel.uncertain:
         status = ReviewStatus.conflict_review
         notes = "LLM verifier flagged the mapping as uncertain."
+    rationale = (
+        rationale_gen.generate(indicator, profile, clause, clause.structural_path)
+        if rationale_gen is not None
+        else template_rationale(indicator, profile, clause, clause.structural_path)
+    )
     return build_citation(
         claim=claim,
         span=clause.span,
         document=document,
         legal_form=legal_form,
         article_path=clause.structural_path,
-        economy=economy,
+        economy=profile.jurisdiction,
+        law_number=law_number,
+        last_amended=last_amended,
         discovery_tag=discovery_tag,
+        mapping_rationale=rationale,
         review_status=status,
         notes=notes,
     )

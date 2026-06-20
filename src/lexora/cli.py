@@ -137,6 +137,14 @@ def map(  # noqa: A001 - CLI verb
     verify: bool = typer.Option(False, "--verify/--no-verify",
                                 help="Tighten mappings with the LLM verifier (needs an "
                                      "OpenAI-compatible endpoint; see LEXORA_LLM_* env)"),
+    rationale_llm: bool = typer.Option(False, "--rationale-llm/--no-rationale-llm",
+                                       help="Author the Mapping Rationale column with the LLM "
+                                            "(template fallback + verbatim-copy guard); same "
+                                            "endpoint as --verify. Default: deterministic template."),
+    metadata_llm: bool = typer.Option(False, "--metadata-llm/--no-metadata-llm",
+                                      help="Extract Law Number / Last Amended from the document "
+                                           "text with the LLM (source-verified) when the portal "
+                                           "channel and curated anchor do not supply them."),
 ) -> None:
     """Fully autonomous MULTI-instrument map: per indicator, discover the family of
     instruments (flagship law + sectoral statutes), fetch each one's full text, and
@@ -144,6 +152,8 @@ def map(  # noqa: A001 - CLI verb
 
     No URL is handed in — Lexora searches the portal with each indicator's concept
     phrases, assembles a working set of instruments, and maps them all."""
+    from lexora.cite.metadata import make_metadata_extractor
+    from lexora.cite.rationale import make_rationale_generator
     from lexora.classify.verifier import make_verifier
     from lexora.collect.profile_loader import load_profile
     from lexora.export.csv_exporter import to_csv
@@ -158,14 +168,24 @@ def map(  # noqa: A001 - CLI verb
     if verify and verifier is None:
         console.print("[yellow]--verify requested but the LLM backend is unavailable "
                       "(install the [llm] extra); continuing with BM25 + verbatim only.[/yellow]")
+    rationale_gen = make_rationale_generator(use_llm=rationale_llm)
+    if rationale_llm and rationale_gen._client is None:
+        console.print("[yellow]--rationale-llm requested but the LLM backend is unavailable; "
+                      "using the deterministic template rationale.[/yellow]")
+    meta_extractor = make_metadata_extractor(use_llm=metadata_llm)
+    if metadata_llm and meta_extractor._client is None:
+        console.print("[yellow]--metadata-llm requested but the LLM backend is unavailable; "
+                      "using portal metadata + curated anchor only.[/yellow]")
     console.print(f"[bold]Autonomous multi-map — {profile.jurisdiction} ({profile.iso_code})[/bold]")
     console.print(f"  portal: {portal.name} · {len(indicators)} indicators · budget {budget}"
-                  f"{' · LLM verifier ON' if verifier is not None else ''}")
+                  f"{' · LLM verifier ON' if verifier is not None else ''}"
+                  f"{' · LLM rationale ON' if rationale_gen._client is not None else ''}"
+                  f"{' · LLM metadata ON' if meta_extractor._client is not None else ''}")
 
     result = run_pipeline_map(
         portal=portal, profile=profile, indicators=indicators,
         query=query, top_k=top_k, min_score=min_score, budget=budget,
-        verifier=verifier,
+        verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
     )
     if not result.discovered:
         console.print("[red]No instruments discovered.[/red]")

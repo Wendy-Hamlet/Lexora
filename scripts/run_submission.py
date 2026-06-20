@@ -27,6 +27,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from lexora.cite.metadata import make_metadata_extractor  # noqa: E402
+from lexora.cite.rationale import make_rationale_generator  # noqa: E402
 from lexora.classify.verifier import make_verifier  # noqa: E402
 from lexora.collect.profile_loader import load_profile  # noqa: E402
 from lexora.config import load_config  # noqa: E402
@@ -48,6 +50,8 @@ def run_one(
     *,
     budget: int,
     verify: bool,
+    rationale_llm: bool = False,
+    metadata_llm: bool = False,
     timeout: float,
 ) -> MapResult:
     """Run the production multi-instrument map for one economy."""
@@ -57,10 +61,33 @@ def run_one(
     if verify and verifier is None:
         print("warning: --verify requested but the LLM verifier is unavailable "
               "(install the [llm] extra); continuing with BM25 + verbatim only.")
+    rationale_gen = make_rationale_generator(use_llm=rationale_llm)
+    if rationale_llm and rationale_gen._client is None:
+        print("warning: --rationale-llm requested but the LLM backend is unavailable; "
+              "using the deterministic template rationale.")
+    meta_extractor = make_metadata_extractor(use_llm=metadata_llm)
+    if metadata_llm and meta_extractor._client is None:
+        print("warning: --metadata-llm requested but the LLM backend is unavailable; "
+              "using portal metadata + curated anchor only.")
     result = run_pipeline_map(
         portal=profile.portals[0], profile=profile, indicators=indicators,
-        budget=budget, timeout=timeout, verifier=verifier,
+        budget=budget, timeout=timeout, verifier=verifier, rationale_gen=rationale_gen,
+        meta_extractor=meta_extractor,
     )
+    if meta_extractor._client is not None:
+        print(
+            f"  LLM metadata usage [{iso}]: {meta_extractor.extracted} doc(s) extracted, "
+            f"{meta_extractor.rejected} field(s) rejected by source-check"
+            + (f" ({meta_extractor.error_count} backend error(s))"
+               if meta_extractor.error_count else "")
+        )
+    if rationale_gen._client is not None:
+        print(
+            f"  LLM rationale usage [{iso}]: {rationale_gen.llm_used} authored, "
+            f"{rationale_gen.fallbacks} fell back to template"
+            + (f" ({rationale_gen.error_count} backend error(s))"
+               if rationale_gen.error_count else "")
+        )
     if verifier is not None and getattr(verifier, "error_count", 0):
         print(
             f"warning: LLM verifier backend errors for {iso}: "
@@ -112,6 +139,12 @@ def main() -> None:
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--verify", action="store_true",
                     help="Tighten mappings with the LLM verifier (needs LEXORA_LLM_* endpoint)")
+    ap.add_argument("--rationale-llm", action="store_true",
+                    help="Author the Mapping Rationale column with the LLM (template fallback "
+                         "+ verbatim-copy guard; needs LEXORA_LLM_* endpoint)")
+    ap.add_argument("--metadata-llm", action="store_true",
+                    help="Extract Law Number / Last Amended from document text with the LLM "
+                         "(source-verified) when portal channel + curated anchor don't supply them")
     ap.add_argument("--out", type=Path, default=OUT_CSV)
     ap.add_argument("--dry-run", action="store_true", help="plan only, no network")
     args = ap.parse_args()
@@ -122,7 +155,8 @@ def main() -> None:
         print("Submission run plan (no network):")
         for iso in isos:
             print(f"  - {ISO_TO_COUNTRY.get(iso, iso)} ({iso}) "
-                  f"-> map budget {args.budget}, verify={args.verify}")
+                  f"-> map budget {args.budget}, verify={args.verify}, "
+                  f"rationale_llm={args.rationale_llm}")
         if args.verify:
             verifier = make_verifier(use_llm=True)
             if verifier is None:
@@ -140,7 +174,9 @@ def main() -> None:
     summaries = []
     for iso in isos:
         try:
-            result = run_one(iso, budget=args.budget, verify=args.verify, timeout=args.timeout)
+            result = run_one(iso, budget=args.budget, verify=args.verify,
+                             rationale_llm=args.rationale_llm, metadata_llm=args.metadata_llm,
+                             timeout=args.timeout)
         except Exception as exc:  # one economy failing must not lose the others
             summaries.append({"iso": iso, "economy": ISO_TO_COUNTRY.get(iso, iso),
                               "error": f"{type(exc).__name__}: {exc}"})
