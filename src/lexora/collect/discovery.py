@@ -90,6 +90,12 @@ class DiscoveryResult:
     # the indicators it is relevant to, so the mapper only scores a sectoral law
     # against the indicator that found it — not blindly against all of them.
     indicator_hits: list[str] = field(default_factory=list)
+    # Structured metadata read from the portal's own channel (register API field /
+    # page label), when available — the generalizable source for the submission's
+    # Law Number and Last Amended columns. Empty when the connector cannot supply
+    # it; the citation layer then falls back to the curated anchor / LLM extractor.
+    law_number: str = ""
+    last_amended: str = ""
 
 
 def _tokens(text: str) -> set[str]:

@@ -133,7 +133,7 @@ def au_legislation_api(
     flt = f"contains(tolower(name),'{_odata_escape(query.lower())}')"
     url = (
         f"{_AU_API}?%24filter={quote(flt, safe='(),')}"
-        f"&%24top=25&%24select=id,name,collection,isPrincipal,isInForce,status"
+        f"&%24top=25&%24select=id,name,collection,isPrincipal,isInForce,status,number,year"
     )
 
     owns = client is None
@@ -170,6 +170,11 @@ def au_legislation_api(
             continue
         tag, matched_name = _resolve_tag(fuzzy, matched, v["id"], known, known_instrument_ids)
         point = "latest" if v.get("isInForce") else "asmade"
+        # Official law number straight from the register: "No. 119 of 1988". The
+        # register `id` (C2004A03712) is its compilation/series ref — kept as the
+        # fallback ref when the act number is absent (e.g. some instruments).
+        num, yr = v.get("number"), v.get("year")
+        law_number = f"No. {num} of {yr}" if num and yr else (v.get("id") or "")
         results.append(
             DiscoveryResult(
                 url=_AU_DOC.format(id=v["id"], point=point),
@@ -181,6 +186,7 @@ def au_legislation_api(
                 discovery_tag=tag,
                 matched_instrument=matched_name,
                 n_variants=1,
+                law_number=law_number,
             )
         )
     results.sort(key=lambda r: r.score, reverse=True)

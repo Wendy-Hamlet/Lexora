@@ -114,6 +114,8 @@ def fetch(
     source_type: SourceType,
     dest_dir: Path | None = None,
     title: str | None = None,
+    law_number: str = "",
+    last_amended: str = "",
     timeout: float = 30.0,
     user_agent: str = DEFAULT_UA,
     retries: int = 2,
@@ -200,6 +202,8 @@ def fetch(
         jurisdiction=jurisdiction,
         source_type=source_type,
         title=title,
+        law_number=law_number,
+        last_amended=last_amended,
     )
     return FetchResult(document=document, body=body)
 
