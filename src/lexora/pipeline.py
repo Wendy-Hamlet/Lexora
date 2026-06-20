@@ -32,6 +32,7 @@ from lexora.cite.metadata import MetadataExtractor
 from lexora.cite.rationale import RationaleGenerator, template_rationale
 from lexora.cite.validator import validate_claim
 from lexora.classify.boundaries import admits_clause
+from lexora.classify.lifecycle import detect_status, is_enforced, merge_status
 from lexora.classify.retrieval import BM25Index, build_index, retrieve_candidates
 from lexora.collect.crawler import fetch, ingest_local_file
 from lexora.extract.html_extractor import HtmlBlock, extract_html
@@ -45,7 +46,13 @@ from lexora.models.citation import (
 )
 from lexora.models.clause import Clause
 from lexora.models.indicator import RDTIIIndicator
-from lexora.models.source import PortalSpec, RawDocument, SourceProfile, SourceType
+from lexora.models.source import (
+    InstrumentStatus,
+    PortalSpec,
+    RawDocument,
+    SourceProfile,
+    SourceType,
+)
 from lexora.structure.legal_parser import parse_structure, parse_structure_html
 
 if TYPE_CHECKING:
@@ -120,6 +127,7 @@ def run_demo_pipeline(
     verifier=None,
     rationale_gen: RationaleGenerator | None = None,
     meta_extractor: MetadataExtractor | None = None,
+    enforced_only: bool = True,
 ) -> DemoArtifacts:
     """Run extract→structure→retrieve→cite for one local PDF."""
     dest_dir = dest_dir or (Path("data") / "raw" / profile.iso_code.lower())
@@ -138,7 +146,7 @@ def run_demo_pipeline(
     citations = _citations_from_clauses(
         clauses, document, profile, indicators, legal_form, top_k, min_score,
         verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
-        document_text="\n\n".join(p.text for p in pages),
+        document_text="\n\n".join(p.text for p in pages), enforced_only=enforced_only,
     )
     return DemoArtifacts(document=document, clauses=clauses, citations=citations, pages=pages)
 
@@ -161,6 +169,8 @@ def run_pipeline_from_url(
     meta_extractor: MetadataExtractor | None = None,
     law_number: str = "",
     last_amended: str = "",
+    status: str = "UNKNOWN",
+    enforced_only: bool = True,
     **fetch_kwargs,
 ) -> DemoArtifacts:
     """Live fetch a URL and run the full pipeline, routing PDF vs HTML.
@@ -179,6 +189,7 @@ def run_pipeline_from_url(
         title=title,
         law_number=law_number,
         last_amended=last_amended,
+        instrument_status=status,
         **fetch_kwargs,
     )
     document = result.document
@@ -203,7 +214,7 @@ def run_pipeline_from_url(
     citations = _citations_from_clauses(
         clauses, document, profile, indicators, legal_form, top_k, min_score, discovery_tag,
         verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
-        document_text=document_text,
+        document_text=document_text, enforced_only=enforced_only,
     )
     return DemoArtifacts(
         document=document, clauses=clauses, citations=citations, pages=pages, blocks=blocks
@@ -281,6 +292,7 @@ def run_pipeline_map(
     verifier=None,
     rationale_gen: RationaleGenerator | None = None,
     meta_extractor: MetadataExtractor | None = None,
+    enforced_only: bool = True,
 ) -> MapResult:
     """Autonomous MULTI-instrument map (P0).
 
@@ -331,6 +343,7 @@ def run_pipeline_map(
             timeout=timeout, user_agent=BROWSER_UA, title=hit.title, verifier=verifier,
             rationale_gen=rationale_gen, meta_extractor=meta_extractor,
             law_number=hit.law_number, last_amended=hit.last_amended,
+            status=hit.status, enforced_only=enforced_only,
         )
         documents.append(artifacts)
         for c in artifacts.citations:
@@ -435,6 +448,7 @@ def _citations_from_clauses(
     rationale_gen: RationaleGenerator | None = None,
     meta_extractor: MetadataExtractor | None = None,
     document_text: str = "",
+    enforced_only: bool = True,
 ) -> list[Citation]:
     """Shared core: per indicator, retrieve top-k clauses and materialize the
     ones that pass the verbatim validator.
@@ -443,10 +457,21 @@ def _citations_from_clauses(
     retrieval and verbatim as a tightening step: of the BM25-passing candidates
     it selects at most one clause that actually supports the indicator, or
     abstains (dropping the citation). It can only narrow the keyword result — it
-    never adds a clause or relaxes a gate."""
+    never adds a clause or relaxes a gate.
+
+    ``enforced_only`` (official scope, internal guide p.8) drops a whole
+    instrument's citations when it is positively repealed/draft. The verdict
+    merges the authoritative portal channel (``document.status``) with a
+    conservative title/head-text signal; ``unknown`` is treated as enforced, so a
+    law is only ever dropped on a clear retire/draft signal, never on doubt."""
     citations: list[Citation] = []
     if not clauses:
         return citations
+    if enforced_only:
+        portal_status = InstrumentStatus(document.status)
+        text_status = detect_status(title=document.title or "", text=document_text)
+        if not is_enforced(merge_status(portal_status, text_status)):
+            return citations  # repealed/draft instrument — out of the inventory
     index: BM25Index = build_index(clauses)
     clause_by_id = {c.clause_id: c for c in clauses}
     # Document-level metadata (Law Number / Last Amended) resolved ONCE per document.

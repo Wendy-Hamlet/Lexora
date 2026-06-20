@@ -24,6 +24,7 @@ import httpx
 from lexora.collect.hasher import sha256_bytes
 from lexora.models.source import (
     FetchMethod,
+    InstrumentStatus,
     RawDocument,
     SourceProfile,
     SourceType,
@@ -116,6 +117,7 @@ def fetch(
     title: str | None = None,
     law_number: str = "",
     last_amended: str = "",
+    instrument_status: InstrumentStatus | str = InstrumentStatus.unknown,
     timeout: float = 30.0,
     user_agent: str = DEFAULT_UA,
     retries: int = 2,
@@ -204,6 +206,11 @@ def fetch(
         title=title,
         law_number=law_number,
         last_amended=last_amended,
+        status=(
+            InstrumentStatus(instrument_status)
+            if isinstance(instrument_status, str)
+            else instrument_status
+        ),
     )
     return FetchResult(document=document, body=body)
 
