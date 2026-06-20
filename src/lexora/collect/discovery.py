@@ -96,6 +96,10 @@ class DiscoveryResult:
     # it; the citation layer then falls back to the curated anchor / LLM extractor.
     law_number: str = ""
     last_amended: str = ""
+    # Lifecycle status from the portal channel / title marker (in_force / repealed
+    # / draft / unknown), for the official enforced-only filter. Stored as the
+    # InstrumentStatus *value* string; unknown by default. See classify/lifecycle.py.
+    status: str = "UNKNOWN"
 
 
 def _tokens(text: str) -> set[str]:
@@ -281,6 +285,8 @@ def harvest_candidates(
             if title and len(title) > len(rec["title"]):
                 rec["title"] = title
 
+    from lexora.classify.lifecycle import detect_status
+
     results = [
         DiscoveryResult(
             url=_pick_representative(rec["urls"]),
@@ -292,6 +298,9 @@ def harvest_candidates(
             discovery_tag=rec["tag"],
             matched_instrument=rec["matched"],
             n_variants=len(rec["urls"]),
+            # Title-level lifecycle stamp (e.g. SG SSO "... (Repealed)"). Portal
+            # connectors with a structured flag (AU) set this more authoritatively.
+            status=detect_status(title=rec["title"]).value,
         )
         for rec in agg.values()
     ]
@@ -533,6 +542,12 @@ def _merge_into(agg: dict[str, DiscoveryResult], r: DiscoveryResult, key: str | 
         winner.matched_instrument = winner.matched_instrument or loser.matched_instrument
     winner.fulltext_url = winner.fulltext_url or loser.fulltext_url
     winner.n_variants = max(winner.n_variants, loser.n_variants)
+    # Keep an authoritative lifecycle verdict across the merge (a connector-set
+    # status on either side beats the winner's title-only "UNKNOWN").
+    if winner.status == "UNKNOWN" and loser.status != "UNKNOWN":
+        winner.status = loser.status
+    winner.law_number = winner.law_number or loser.law_number
+    winner.last_amended = winner.last_amended or loser.last_amended
     agg[key] = winner
 
 

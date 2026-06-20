@@ -175,6 +175,14 @@ def au_legislation_api(
         # fallback ref when the act number is absent (e.g. some instruments).
         num, yr = v.get("number"), v.get("year")
         law_number = f"No. {num} of {yr}" if num and yr else (v.get("id") or "")
+        # Authoritative lifecycle from the register itself (drives enforced-only):
+        # the `isInForce` flag is machine-readable; `status` is its label fallback.
+        from lexora.classify.lifecycle import detect_status
+
+        status = detect_status(
+            in_force=bool(v.get("isInForce")) if v.get("isInForce") is not None else None,
+            portal_status=str(v.get("status") or ""),
+        ).value
         results.append(
             DiscoveryResult(
                 url=_AU_DOC.format(id=v["id"], point=point),
@@ -187,6 +195,7 @@ def au_legislation_api(
                 matched_instrument=matched_name,
                 n_variants=1,
                 law_number=law_number,
+                status=status,
             )
         )
     results.sort(key=lambda r: r.score, reverse=True)

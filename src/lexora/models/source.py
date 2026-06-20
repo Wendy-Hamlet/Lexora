@@ -34,6 +34,22 @@ class FetchMethod(str, Enum):
     api = "api"
 
 
+class InstrumentStatus(str, Enum):
+    """Lifecycle status of a legal instrument — drives the official enforced-only
+    filter (exclude pending drafts + repealed measures from the inventory).
+
+    ``unknown`` is the safe default: the enforced-only filter treats it as
+    enforced, so a law is only ever dropped on a POSITIVE repealed/draft signal,
+    never on the mere absence of an in-force confirmation. See
+    :mod:`lexora.classify.lifecycle`.
+    """
+
+    in_force = "IN_FORCE"
+    repealed = "REPEALED"  # repealed / ceased / spent / revoked — no longer enforced
+    draft = "DRAFT"  # bill / exposure draft / not yet commenced — not yet enforced
+    unknown = "UNKNOWN"
+
+
 class PortalSpec(BaseModel):
     name: str
     url: HttpUrl
@@ -117,3 +133,7 @@ class RawDocument(BaseModel):
     # NEW laws. Empty -> the citation layer falls back to the curated anchor.
     law_number: str = ""
     last_amended: str = ""
+    # Lifecycle status captured from the portal channel at fetch time (e.g. the AU
+    # register's ``isInForce`` flag). Drives the enforced-only filter; ``unknown``
+    # is treated as enforced. See :class:`InstrumentStatus`.
+    status: InstrumentStatus = InstrumentStatus.unknown
