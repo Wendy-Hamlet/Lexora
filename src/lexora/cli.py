@@ -131,8 +131,12 @@ def map(  # noqa: A001 - CLI verb
     config_dir: Path = typer.Option(Path("configs/jurisdictions"), "--config-dir"),
     indicators_path: Path = typer.Option(Path("configs/rdtii_indicators.yaml"), "--indicators"),
     out: Path = typer.Option(Path("outputs") / "map.jsonld", "--out", "-o"),
-    top_k: int = typer.Option(1, "--top-k"),
+    top_k: int = typer.Option(3, "--top-k", help="Max sections emitted per indicator per "
+                              "instrument (multi-section; gated by --rel-floor)"),
     min_score: float = typer.Option(0.35, "--min-score", help="BM25 clause-relevance floor"),
+    rel_floor: float = typer.Option(0.6, "--rel-floor", help="Multi-section precision gate: a "
+                                    "secondary section is kept only if its relevance is >= this "
+                                    "fraction of the top section's (0 disables)"),
     budget: int = typer.Option(20, "--budget", help="Max instruments to map per jurisdiction"),
     verify: bool = typer.Option(False, "--verify/--no-verify",
                                 help="Tighten mappings with the LLM verifier (needs an "
@@ -184,7 +188,7 @@ def map(  # noqa: A001 - CLI verb
 
     result = run_pipeline_map(
         portal=portal, profile=profile, indicators=indicators,
-        query=query, top_k=top_k, min_score=min_score, budget=budget,
+        query=query, top_k=top_k, min_score=min_score, rel_floor=rel_floor, budget=budget,
         verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
     )
     if not result.discovered:

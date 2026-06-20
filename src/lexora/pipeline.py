@@ -171,6 +171,7 @@ def run_pipeline_from_url(
     last_amended: str = "",
     status: str = "UNKNOWN",
     enforced_only: bool = True,
+    rel_floor: float = 0.0,
     **fetch_kwargs,
 ) -> DemoArtifacts:
     """Live fetch a URL and run the full pipeline, routing PDF vs HTML.
@@ -214,7 +215,7 @@ def run_pipeline_from_url(
     citations = _citations_from_clauses(
         clauses, document, profile, indicators, legal_form, top_k, min_score, discovery_tag,
         verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
-        document_text=document_text, enforced_only=enforced_only,
+        document_text=document_text, enforced_only=enforced_only, rel_floor=rel_floor,
     )
     return DemoArtifacts(
         document=document, clauses=clauses, citations=citations, pages=pages, blocks=blocks
@@ -286,8 +287,9 @@ def run_pipeline_map(
     max_queries_per_indicator: int = 3,
     budget: int = 20,
     dest_dir: Path | None = None,
-    top_k: int = 1,
+    top_k: int = 3,
     min_score: float = 0.35,
+    rel_floor: float = 0.6,
     timeout: float = 60.0,
     verifier=None,
     rationale_gen: RationaleGenerator | None = None,
@@ -343,7 +345,7 @@ def run_pipeline_map(
             timeout=timeout, user_agent=BROWSER_UA, title=hit.title, verifier=verifier,
             rationale_gen=rationale_gen, meta_extractor=meta_extractor,
             law_number=hit.law_number, last_amended=hit.last_amended,
-            status=hit.status, enforced_only=enforced_only,
+            status=hit.status, enforced_only=enforced_only, rel_floor=rel_floor,
         )
         documents.append(artifacts)
         for c in artifacts.citations:
@@ -449,6 +451,7 @@ def _citations_from_clauses(
     meta_extractor: MetadataExtractor | None = None,
     document_text: str = "",
     enforced_only: bool = True,
+    rel_floor: float = 0.0,
 ) -> list[Citation]:
     """Shared core: per indicator, retrieve top-k clauses and materialize the
     ones that pass the verbatim validator.
@@ -463,7 +466,14 @@ def _citations_from_clauses(
     instrument's citations when it is positively repealed/draft. The verdict
     merges the authoritative portal channel (``document.status``) with a
     conservative title/head-text signal; ``unknown`` is treated as enforced, so a
-    law is only ever dropped on a clear retire/draft signal, never on doubt."""
+    law is only ever dropped on a clear retire/draft signal, never on doubt.
+
+    ``rel_floor`` is the multi-section precision gate (WS-5). With ``top_k > 1`` an
+    indicator can map to several sections of the same instrument (the official
+    "one document, several relevant sections" case), but a secondary section is
+    emitted only when its normalized relevance is at least ``rel_floor`` of the
+    best surviving section's — so a broad indicator can't drag in weakly-related
+    sections. ``rel_floor=0`` disables the gate (single-section behaviour)."""
     citations: list[Citation] = []
     if not clauses:
         return citations
@@ -518,6 +528,15 @@ def _citations_from_clauses(
             if citation is not None:
                 citations.append(citation)
             continue
+
+        # Multi-section precision gate (WS-5): keep the best section always, and a
+        # secondary one only if it is genuinely competitive with it. `passing` is
+        # rank-ordered (BM25/fused), so passing[0] is the strongest survivor.
+        if rel_floor > 0.0 and len(passing) > 1:
+            cutoff = rel_floor * _normalize_score(passing[0].score)
+            passing = [passing[0]] + [
+                h for h in passing[1:] if _normalize_score(h.score) >= cutoff
+            ]
 
         for hit in passing:
             citation = _materialize(
