@@ -145,6 +145,9 @@ def main() -> None:
     ap.add_argument("--metadata-llm", action="store_true",
                     help="Extract Law Number / Last Amended from document text with the LLM "
                          "(source-verified) when portal channel + curated anchor don't supply them")
+    ap.add_argument("--check-links", action="store_true",
+                    help="Probe each citation's Source URL for reachability and annotate "
+                         "dead links in Notes (extra network I/O; off by default)")
     ap.add_argument("--out", type=Path, default=OUT_CSV)
     ap.add_argument("--dry-run", action="store_true", help="plan only, no network")
     args = ap.parse_args()
@@ -183,6 +186,15 @@ def main() -> None:
             continue
         all_citations.extend(result.citations)
         summaries.append(summarize(iso, result))
+
+    dead_links = 0
+    if args.check_links and all_citations:
+        from lexora.collect.liveness import annotate_dead_links, check_urls
+
+        checks = check_urls(str(c.source_url) for c in all_citations)
+        all_citations, dead_links = annotate_dead_links(all_citations, checks)
+        print(f"\nLink check: probed {len(checks)} distinct URL(s), "
+              f"{dead_links} citation row(s) carry a dead-link note.")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     n = to_csv(all_citations, args.out)
