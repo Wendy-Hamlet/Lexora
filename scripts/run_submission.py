@@ -53,6 +53,7 @@ def run_one(
     rationale_llm: bool = False,
     metadata_llm: bool = False,
     timeout: float,
+    llm_workers: int = 1,
 ) -> MapResult:
     """Run the production multi-instrument map for one economy."""
     profile = load_profile(JURIS / f"{iso.lower()}.yaml")
@@ -72,7 +73,7 @@ def run_one(
     result = run_pipeline_map(
         portal=profile.portals[0], profile=profile, indicators=indicators,
         budget=budget, timeout=timeout, verifier=verifier, rationale_gen=rationale_gen,
-        meta_extractor=meta_extractor,
+        meta_extractor=meta_extractor, llm_workers=llm_workers,
     )
     tokens = {"calls": 0, "prompt": 0, "completion": 0, "total": 0}
 
@@ -168,6 +169,11 @@ def main() -> None:
                          "OCR (onnxruntime) and network/LLM I/O release the GIL, so threads "
                          "give real speedup. SG is the only browser portal, so no cross-economy "
                          "browser contention.")
+    ap.add_argument("--llm-workers", type=int, default=1,
+                    help="Threads for the per-citation Mapping Rationale LLM calls within a "
+                         "document (LLM-call-layer parallelism). 1 = serial. Runtime-adjustable "
+                         "per run. Stacks with --jobs (e.g. --jobs 3 --llm-workers 8 = up to 24 "
+                         "concurrent requests; the endpoint handles >=32 with no rate limit).")
     ap.add_argument("--dry-run", action="store_true", help="plan only, no network")
     args = ap.parse_args()
 
@@ -199,7 +205,7 @@ def main() -> None:
     def _run(iso: str):
         return run_one(iso, budget=args.budget, verify=args.verify,
                        rationale_llm=args.rationale_llm, metadata_llm=args.metadata_llm,
-                       timeout=args.timeout)
+                       timeout=args.timeout, llm_workers=args.llm_workers)
 
     # Country-level parallelism: economies are independent, so run them concurrently.
     # Threads (not processes) because the heavy stages — network fetch, OCR

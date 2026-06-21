@@ -172,6 +172,7 @@ def run_pipeline_from_url(
     status: str = "UNKNOWN",
     enforced_only: bool = True,
     rel_floor: float = 0.0,
+    llm_workers: int = 1,
     **fetch_kwargs,
 ) -> DemoArtifacts:
     """Live fetch a URL and run the full pipeline, routing PDF vs HTML.
@@ -216,6 +217,7 @@ def run_pipeline_from_url(
         clauses, document, profile, indicators, legal_form, top_k, min_score, discovery_tag,
         verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
         document_text=document_text, enforced_only=enforced_only, rel_floor=rel_floor,
+        llm_workers=llm_workers,
     )
     return DemoArtifacts(
         document=document, clauses=clauses, citations=citations, pages=pages, blocks=blocks
@@ -295,6 +297,7 @@ def run_pipeline_map(
     rationale_gen: RationaleGenerator | None = None,
     meta_extractor: MetadataExtractor | None = None,
     enforced_only: bool = True,
+    llm_workers: int = 1,
 ) -> MapResult:
     """Autonomous MULTI-instrument map (P0).
 
@@ -346,6 +349,7 @@ def run_pipeline_map(
             rationale_gen=rationale_gen, meta_extractor=meta_extractor,
             law_number=hit.law_number, last_amended=hit.last_amended,
             status=hit.status, enforced_only=enforced_only, rel_floor=rel_floor,
+            llm_workers=llm_workers,
         )
         documents.append(artifacts)
         for c in artifacts.citations:
@@ -421,9 +425,17 @@ def _citations_from_clauses(
     document_text: str = "",
     enforced_only: bool = True,
     rel_floor: float = 0.0,
+    llm_workers: int = 1,
 ) -> list[Citation]:
     """Shared core: per indicator, retrieve top-k clauses and materialize the
     ones that pass the verbatim validator.
+
+    ``llm_workers`` > 1 generates the per-citation Mapping Rationale (the LLM call
+    inside :func:`_materialize`) concurrently across this document's citations via
+    a thread pool — the rationale request is I/O-bound, so this collapses the
+    dominant wall-clock cost of an LLM run. Order is preserved; counts/tokens stay
+    exact (the client locks its accounting). No effect without an LLM rationale
+    generator (the template path is local and already fast).
 
     When ``verifier`` is supplied (the optional LLM gate, P-3) it runs AFTER
     retrieval and verbatim as a tightening step: of the BM25-passing candidates
@@ -457,6 +469,17 @@ def _citations_from_clauses(
     doc_last_amended, doc_law_number, doc_meta_note = _resolve_doc_metadata(
         document, document_text, profile, meta_extractor
     )
+    # Common kwargs for every _materialize call on this document.
+    common = dict(
+        document=document, legal_form=legal_form, profile=profile,
+        discovery_tag=discovery_tag, rationale_gen=rationale_gen,
+        last_amended=doc_last_amended, law_number=doc_law_number,
+        meta_note=doc_meta_note,
+    )
+    # Collect materialization specs first (cheap, sequential — retrieval, boundary
+    # filtering, the verifier verdict), then run the per-citation rationale calls
+    # (the slow, I/O-bound part inside _materialize) — concurrently when asked.
+    specs: list[dict] = []
     for indicator in indicators:
         # Gate on the NORMALIZED score so `min_score` is a portable [0, 1]
         # relevance floor (raw BM25 is unbounded and corpus-dependent — a
@@ -487,16 +510,10 @@ def _citations_from_clauses(
             if claim is None:
                 continue
             hit = next(h for h in passing if h.clause_id == claim.clause_id)
-            citation = _materialize(
+            specs.append(dict(
                 indicator=indicator, clause=clause_by_id[claim.clause_id],
-                document=document, legal_form=legal_form, profile=profile,
-                bm25_score=hit.score, discovery_tag=discovery_tag,
-                review_label=claim.label, rationale_gen=rationale_gen,
-                last_amended=doc_last_amended, law_number=doc_law_number,
-                meta_note=doc_meta_note,
-            )
-            if citation is not None:
-                citations.append(citation)
+                bm25_score=hit.score, review_label=claim.label, **common,
+            ))
             continue
 
         # Multi-section precision gate (WS-5): keep the best section always, and a
@@ -509,21 +526,26 @@ def _citations_from_clauses(
             ]
 
         for hit in passing:
-            citation = _materialize(
-                indicator=indicator,
-                clause=clause_by_id[hit.clause_id],
-                document=document,
-                legal_form=legal_form,
-                profile=profile,
-                bm25_score=hit.score,
-                discovery_tag=discovery_tag,
-                rationale_gen=rationale_gen,
-                last_amended=doc_last_amended,
-                law_number=doc_law_number,
-                meta_note=doc_meta_note,
-            )
-            if citation is not None:
-                citations.append(citation)
+            specs.append(dict(
+                indicator=indicator, clause=clause_by_id[hit.clause_id],
+                bm25_score=hit.score, **common,
+            ))
+
+    # Execute the specs. Rationale is the only network-bound step; parallelize it
+    # when llm_workers > 1 and an LLM generator is actually in play (the template
+    # path is local). `map` preserves order, so citation order is unchanged.
+    use_pool = (
+        llm_workers > 1 and len(specs) > 1
+        and rationale_gen is not None and rationale_gen._client is not None
+    )
+    if use_pool:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(llm_workers, len(specs))) as ex:
+            results = list(ex.map(lambda s: _materialize(**s), specs))
+    else:
+        results = [_materialize(**s) for s in specs]
+    citations = [c for c in results if c is not None]
     return citations
 
 

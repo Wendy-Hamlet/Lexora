@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from typing import Any
 
 from lexora.config import load_config
@@ -63,20 +64,24 @@ class LlmClient:
             "0", "false", "no", "off",
         )
         # Token accounting (summed across attempts and retries) so a run can
-        # report cost. Reset by the caller between phases if desired.
+        # report cost. A lock keeps the counters exact when one client is shared
+        # across a thread pool (LLM-call-layer parallelism). Reset by the caller
+        # between phases if desired.
         self.calls = 0
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
+        self._account_lock = threading.Lock()
 
     def _account(self, resp) -> None:
         usage = getattr(resp, "usage", None)
         if usage is None:
             return
-        self.calls += 1
-        self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
-        self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
-        self.total_tokens += getattr(usage, "total_tokens", 0) or 0
+        with self._account_lock:
+            self.calls += 1
+            self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
+            self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
+            self.total_tokens += getattr(usage, "total_tokens", 0) or 0
 
     def _ensure_client(self):
         if self._client is None:
