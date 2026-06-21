@@ -27,7 +27,7 @@ from lexora.models.secondary import Presence, SecondarySignal
 
 # Import adapter modules for their import-time self-registration into
 # SECONDARY_SOURCES (S-1: UNCTAD; S-4: DLA Piper). Later phases add oecd / more.
-from lexora.collect.secondary import dlapiper, unctad  # noqa: E402,F401
+from lexora.collect.secondary import dlapiper, iclg, unctad  # noqa: E402,F401
 
 __all__ = [
     "SECONDARY_SOURCES",

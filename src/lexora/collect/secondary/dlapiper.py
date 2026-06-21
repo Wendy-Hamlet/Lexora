@@ -40,13 +40,22 @@ _LAW_RE = re.compile(
 )
 _JUNK = {"act", "the act", "amendment act", "privacy act amendment act"}
 
+# Tightened via an A/B over SG/AU/MY/TH/ID/PH/IN: subject-country-only + complete-title
+# + exclude-subsidiary-instruments removed the residual noise (TH "Royal Decree No. 2"
+# fragments, PH redundant act-number alias, the EU-GDPR comparison leak) with no
+# regression on the clean cases.
 _LLM_SYSTEM = (
-    "You extract the PRINCIPAL personal-data-protection / privacy statutes named in "
-    "the text. Rules: copy each name VERBATIM from the text including its year; "
-    "include amendment acts if named; EXCLUDE sectoral or unrelated laws mentioned "
-    "only in passing, guidelines, principles, and laws of OTHER jurisdictions cited "
-    "for comparison; use ONLY the provided text, no outside knowledge; if none, "
-    'return []. Respond as JSON: {"laws": ["...", "..."]}.'
+    "You extract the PRIMARY personal-data-protection / privacy statute(s) of the "
+    "country that is the SUBJECT of the text, plus their amendment Act(s). Output rules:\n"
+    "- Copy each title VERBATIM from the text, INCLUDING its year; each item must be a "
+    "COMPLETE statute title, never a truncated fragment or a numbered sub-item "
+    "(e.g. not 'Royal Decree No. 2').\n"
+    "- Return ONLY laws of the subject country. NEVER a law of another country or region "
+    "(e.g. the EU GDPR) even if it is mentioned for comparison or context.\n"
+    "- EXCLUDE implementing regulations, royal decrees, ministerial notifications, codes, "
+    "guidelines, principles, and sectoral laws mentioned only in passing.\n"
+    "- Use ONLY the provided text; no outside knowledge. If none, return [].\n"
+    'Respond as JSON: {"laws": ["...", "..."]}.'
 )
 
 

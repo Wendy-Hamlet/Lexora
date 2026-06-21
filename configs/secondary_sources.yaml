@@ -57,22 +57,25 @@ sources:
     tier: 3
     notes: "Services-trade restriction index; context for localization / cross-border, weak law-name signal."
 
-  # --- Tier 4: law-firm trackers (paywalled / anti-bot) -- S-4 ---------------
+  # --- Law-firm trackers (S-4) -----------------------------------------------
+  # ICLG: BUILT (free, server-rendered, names statutes incl. AU state/territory acts).
+  - key: iclg
+    name: "ICLG Data Protection Laws and Regulations"
+    url: "https://iclg.com/practice-areas/data-protection-laws-and-regulations"
+    pillars: [7]
+    indicators: ["P7-I1", "P7-I4"]
+    tier: 1
+    notes: "Per-jurisdiction chapters naming the statutes (covers SG/AU; NO Malaysia chapter -> 404)."
+
+  # DataGuidance: NOT BUILT — probed 2026-06-21, returns a ~6KB JS shell, real content
+  # behind a subscription/JS render. Not crawlable; manual-seed fallback only.
   - key: dataguidance
     name: "OneTrust DataGuidance"
     url: "https://www.dataguidance.com/"
     pillars: [7]
     indicators: ["P7-I1", "P7-I2", "P7-I4"]
     tier: 4
-    notes: "Comprehensive data-protection / cybersecurity comparator; paywalled -> manual-seed fallback."
-
-  - key: iclg
-    name: "ICLG Data Protection / Cybersecurity Laws and Regulations"
-    url: "https://iclg.com/practice-areas/data-protection-laws-and-regulations"
-    pillars: [7]
-    indicators: ["P7-I1", "P7-I2"]
-    tier: 4
-    notes: "Per-jurisdiction chapters naming the data-protection / cybersecurity statutes."
+    notes: "Paywalled JS app (no server-side content); not crawlable -> manual seed only."
 
   - key: dla_piper
     name: "DLA Piper Data Protection Laws of the World"
