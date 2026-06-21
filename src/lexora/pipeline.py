@@ -80,6 +80,10 @@ class MapResult:
     discovered: list[DiscoveryResult]
     documents: list[DemoArtifacts]
     citations: list[Citation]
+    # Secondary-source signals (WS-S) gathered for this economy, when --secondary
+    # is on. Non-citable discovery aid — carried so the runner can print the
+    # coverage cross-check; never exported as evidence.
+    secondary_signals: list = field(default_factory=list)
 
 
 def _map_use_dense() -> bool:
@@ -173,6 +177,7 @@ def run_pipeline_from_url(
     enforced_only: bool = True,
     rel_floor: float = 0.0,
     llm_workers: int = 1,
+    secondary_note_by_indicator: dict | None = None,
     **fetch_kwargs,
 ) -> DemoArtifacts:
     """Live fetch a URL and run the full pipeline, routing PDF vs HTML.
@@ -217,7 +222,7 @@ def run_pipeline_from_url(
         clauses, document, profile, indicators, legal_form, top_k, min_score, discovery_tag,
         verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
         document_text=document_text, enforced_only=enforced_only, rel_floor=rel_floor,
-        llm_workers=llm_workers,
+        llm_workers=llm_workers, secondary_note_by_indicator=secondary_note_by_indicator,
     )
     return DemoArtifacts(
         document=document, clauses=clauses, citations=citations, pages=pages, blocks=blocks
@@ -301,6 +306,7 @@ def run_pipeline_map(
     doc_workers: int = 1,
     fetch_min_interval: float = 0.0,
     serial_fetch: bool = False,
+    secondary_signals: list | None = None,
 ) -> MapResult:
     """Autonomous MULTI-instrument map (P0).
 
@@ -322,12 +328,26 @@ def run_pipeline_map(
     force_browser = portal.fetch_method is FetchMethod.playwright
     dest_dir = dest_dir or (Path("data") / "raw" / profile.iso_code.lower())
 
+    # Secondary-source consumers (WS-S, S-2): seed discovery with the primary-law
+    # names a tracker pointed to (USE 1), and prepare per-indicator provenance
+    # notes to stamp on matching citations (USE 3). Signals are a discovery aid —
+    # never evidence; the only conversions are the lossy seed/note helpers.
+    from lexora.collect.secondary import (
+        provenance_notes_by_indicator,
+        to_discovery_seeds,
+    )
+
+    secondary_signals = secondary_signals or []
+    seed_queries = to_discovery_seeds(secondary_signals)
+    secondary_note_by_indicator = provenance_notes_by_indicator(secondary_signals)
+
     hits = discover_for_indicators(
         portal, indicators, per_indicator_limit=per_indicator_limit,
         max_queries_per_indicator=max_queries_per_indicator, budget=budget,
         timeout=timeout, force_browser=force_browser,
         known_instruments=profile.known_instruments,
         known_instrument_ids=profile.known_instrument_ids,
+        extra_seed_queries=seed_queries,
     )
 
     def _process(hit) -> DemoArtifacts:
@@ -351,6 +371,7 @@ def run_pipeline_map(
             status=hit.status, enforced_only=enforced_only, rel_floor=rel_floor,
             llm_workers=llm_workers, min_interval=fetch_min_interval,
             serial_fetch=serial_fetch,
+            secondary_note_by_indicator=secondary_note_by_indicator,
         )
 
     # Document-level parallelism: process instruments concurrently. This is what
@@ -376,7 +397,10 @@ def run_pipeline_map(
             seen.add(key)
             citations.append(c)
 
-    return MapResult(discovered=hits, documents=documents, citations=citations)
+    return MapResult(
+        discovered=hits, documents=documents, citations=citations,
+        secondary_signals=list(secondary_signals),
+    )
 
 
 def _attribute_by_name(hit, profile: SourceProfile, indicators: list[RDTIIIndicator]) -> set[str]:
@@ -443,6 +467,7 @@ def _citations_from_clauses(
     enforced_only: bool = True,
     rel_floor: float = 0.0,
     llm_workers: int = 1,
+    secondary_note_by_indicator: dict | None = None,
 ) -> list[Citation]:
     """Shared core: per indicator, retrieve top-k clauses and materialize the
     ones that pass the verbatim validator.
@@ -497,7 +522,9 @@ def _citations_from_clauses(
     # filtering, the verifier verdict), then run the per-citation rationale calls
     # (the slow, I/O-bound part inside _materialize) — concurrently when asked.
     specs: list[dict] = []
+    sec_notes = secondary_note_by_indicator or {}
     for indicator in indicators:
+        secondary_note = sec_notes.get(indicator.submission_id, "")
         # Gate on the NORMALIZED score so `min_score` is a portable [0, 1]
         # relevance floor (raw BM25 is unbounded and corpus-dependent — a
         # fixed raw cutoff prunes nothing on a big document).
@@ -529,7 +556,8 @@ def _citations_from_clauses(
             hit = next(h for h in passing if h.clause_id == claim.clause_id)
             specs.append(dict(
                 indicator=indicator, clause=clause_by_id[claim.clause_id],
-                bm25_score=hit.score, review_label=claim.label, **common,
+                bm25_score=hit.score, review_label=claim.label,
+                secondary_note=secondary_note, **common,
             ))
             continue
 
@@ -545,7 +573,7 @@ def _citations_from_clauses(
         for hit in passing:
             specs.append(dict(
                 indicator=indicator, clause=clause_by_id[hit.clause_id],
-                bm25_score=hit.score, **common,
+                bm25_score=hit.score, secondary_note=secondary_note, **common,
             ))
 
     # Execute the specs. Rationale is the only network-bound step; parallelize it
@@ -580,6 +608,7 @@ def _materialize(
     last_amended: str = "",
     law_number: str = "",
     meta_note: str = "",
+    secondary_note: str = "",
 ) -> Citation | None:
     """One-clause-one-indicator: synthesize a verifier-shaped claim and run it
     through the same validator. The claim carries the official submission code
@@ -619,6 +648,9 @@ def _materialize(
     # Document-level own-knowledge channel (same for every row of this document).
     if meta_note:
         note_parts.append(meta_note)
+    # Secondary-source provenance (WS-S, USE 3): corroboration, never evidence.
+    if secondary_note:
+        note_parts.append(secondary_note)
     notes = " | ".join(note_parts)
     return build_citation(
         claim=claim,

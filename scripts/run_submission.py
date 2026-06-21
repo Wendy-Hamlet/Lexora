@@ -57,10 +57,18 @@ def run_one(
     doc_workers: int = 1,
     fetch_min_interval: float = 0.0,
     serial_fetch: bool = False,
+    use_secondary: bool = False,
 ) -> MapResult:
     """Run the production multi-instrument map for one economy."""
     profile = load_profile(JURIS / f"{iso.lower()}.yaml")
     indicators = load_indicators(INDICATORS)
+    secondary = []
+    if use_secondary:
+        from lexora.collect.secondary import gather_signals
+
+        secondary = gather_signals(iso, indicators)
+        print(f"  secondary sources [{iso}]: {len(secondary)} signal(s) from "
+              f"{len({s.source_name for s in secondary})} tracker(s)")
     verifier = make_verifier(use_llm=verify)
     if verify and verifier is None:
         print("warning: --verify requested but the LLM verifier is unavailable "
@@ -78,6 +86,7 @@ def run_one(
         budget=budget, timeout=timeout, verifier=verifier, rationale_gen=rationale_gen,
         meta_extractor=meta_extractor, llm_workers=llm_workers, doc_workers=doc_workers,
         fetch_min_interval=fetch_min_interval, serial_fetch=serial_fetch,
+        secondary_signals=secondary,
     )
     tokens = {"calls": 0, "prompt": 0, "completion": 0, "total": 0}
 
@@ -195,6 +204,11 @@ def main() -> None:
                          "rate-spacing, thread-enforced). Dodges request-rate anti-bot under "
                          "doc-level concurrency (e.g. AU serving an HTML challenge instead of "
                          "the PDF); post-fetch OCR/LLM still parallelize. 0 = off.")
+    ap.add_argument("--secondary", action="store_true",
+                    help="Use RDTII secondary sources (UNCTAD etc.) as a DISCOVERY AID: seed "
+                         "discovery with the laws they point to (recall), stamp matching "
+                         "citations with a 'corroborated by <source>' note (provenance), and "
+                         "print a coverage cross-check. Never cited as evidence.")
     ap.add_argument("--serial-fetch", action="store_true",
                     help="Fully serialize same-host DOWNLOADS (one request in flight per host) "
                          "while OCR/parse/map/LLM still run parallel across documents. Stronger "
@@ -226,6 +240,7 @@ def main() -> None:
 
     all_citations = []
     summaries = []
+    results_by_iso = {}
     tokens_total = {"calls": 0, "prompt": 0, "completion": 0, "total": 0}
 
     def _run(iso: str):
@@ -233,7 +248,7 @@ def main() -> None:
                        rationale_llm=args.rationale_llm, metadata_llm=args.metadata_llm,
                        timeout=args.timeout, llm_workers=args.llm_workers,
                        doc_workers=args.doc_workers, fetch_min_interval=args.fetch_min_interval,
-                       serial_fetch=args.serial_fetch)
+                       serial_fetch=args.serial_fetch, use_secondary=args.secondary)
 
     # Country-level parallelism: economies are independent, so run them concurrently.
     # Threads (not processes) because the heavy stages — network fetch, OCR
@@ -269,6 +284,7 @@ def main() -> None:
             continue
         result, tokens = payload
         all_citations.extend(result.citations)
+        results_by_iso[iso] = result
         summaries.append(summarize(iso, result))
         for k in tokens_total:
             tokens_total[k] += tokens[k]
@@ -308,6 +324,24 @@ def main() -> None:
             f"{tokens_total['calls']} call(s) "
             f"({tokens_total['prompt']} prompt + {tokens_total['completion']} completion)"
         )
+    if args.secondary:
+        from lexora.collect.secondary import indicator_gaps
+
+        print("\nSecondary-source coverage cross-check (tracker says a law exists, "
+              "we cited none):")
+        any_gap = False
+        for iso in isos:
+            result = results_by_iso.get(iso)
+            if result is None:
+                continue
+            covered = {c.indicator_id for c in result.citations}
+            gaps = indicator_gaps(result.secondary_signals, covered)
+            for g in gaps:
+                any_gap = True
+                print(f"  GAP {g.economy} {g.indicator_id}: {g.source_name}")
+        if not any_gap:
+            print("  none — every indicator a secondary source flags is also cited.")
+
     print(f"Wrote {n} citation row(s) -> {args.out} (submission CSV)")
     print(f"                          -> {jsonld_out} (JSON-LD)")
     print(f"                          -> {summary_out} (run summary)")

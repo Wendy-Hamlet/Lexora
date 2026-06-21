@@ -191,6 +191,82 @@ class CoverageGap:
     expected_law_name: str = ""
 
 
+def gather_signals(
+    economy: str,
+    indicators: Sequence[RDTIIIndicator],
+    *,
+    specs: Sequence[SecondarySourceSpec] | None = None,
+    **adapter_kwargs,
+) -> list[SecondarySignal]:
+    """Run every registered adapter applicable to the in-scope indicators for one
+    economy and concatenate their signals. The entry point S-2 wires into the run.
+
+    Sources whose adapter isn't built yet (no registry entry) or that cover none
+    of the in-scope indicators are skipped; an adapter that raises is skipped (a
+    flaky tracker never crashes a run). ``adapter_kwargs`` pass through (e.g.
+    ``data=`` to short-circuit a fetch in tests)."""
+    specs = list(specs) if specs is not None else load_secondary_sources()
+    wanted = {i.submission_id for i in indicators}
+    out: list[SecondarySignal] = []
+    for spec in specs:
+        if wanted and not (set(spec.indicators) & wanted):
+            continue
+        adapter = adapter_for(spec.key)
+        if adapter is None:
+            continue
+        try:
+            out.extend(adapter(economy, indicators, **adapter_kwargs))
+        except Exception:
+            continue
+    return out
+
+
+def provenance_notes_by_indicator(signals: Iterable[SecondarySignal]) -> dict[str, str]:
+    """USE 3 wiring: per-indicator provenance string from signals that corroborate
+    a law exists (yes/draft), one entry per distinct source. The pipeline appends
+    these to a citation's Notes — corroboration, never evidence."""
+    by_ind: dict[str, list[str]] = {}
+    seen: set[tuple[str, str]] = set()
+    for s in signals:
+        if s.presence not in (Presence.yes, Presence.draft):
+            continue
+        key = (s.indicator_id, s.source_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        by_ind.setdefault(s.indicator_id, []).append(to_provenance_note(s))
+    return {ind: "; ".join(notes) for ind, notes in by_ind.items()}
+
+
+def indicator_gaps(
+    signals: Iterable[SecondarySignal], covered_indicator_ids: Iterable[str]
+) -> list[CoverageGap]:
+    """USE 2 (indicator-level): a secondary source asserts a law EXISTS (yes) for an
+    indicator/economy our run produced NO citation for -> a recall gap to report.
+
+    This is the nameless-source variant of :func:`coverage_gaps` (UNCTAD reports
+    presence but not a law name, so the cross-check is at the indicator level)."""
+    covered = set(covered_indicator_ids)
+    gaps: list[CoverageGap] = []
+    seen: set[tuple[str, str, str]] = set()
+    for s in signals:
+        if s.presence is not Presence.yes or s.indicator_id in covered:
+            continue
+        key = (s.economy, s.indicator_id, s.source_name)
+        if key in seen:
+            continue
+        seen.add(key)
+        gaps.append(
+            CoverageGap(
+                economy=s.economy,
+                indicator_id=s.indicator_id,
+                source_name=s.source_name,
+                expected_law_name=s.primary_law_name.strip(),
+            )
+        )
+    return gaps
+
+
 def coverage_gaps(
     signals: Iterable[SecondarySignal], discovered_names: Iterable[str]
 ) -> list[CoverageGap]:
@@ -229,4 +305,7 @@ __all__ = [
     "to_provenance_note",
     "CoverageGap",
     "coverage_gaps",
+    "gather_signals",
+    "provenance_notes_by_indicator",
+    "indicator_gaps",
 ]

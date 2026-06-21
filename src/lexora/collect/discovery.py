@@ -625,6 +625,7 @@ def discover_for_indicators(
     known_instruments: list[str] | None = None,
     known_instrument_ids: dict[str, str] | None = None,
     use_semantic: bool = True,
+    extra_seed_queries: list[str] | None = None,
 ) -> list[DiscoveryResult]:
     """Discover a *working set* of instruments for a list of indicators.
 
@@ -664,6 +665,13 @@ def discover_for_indicators(
     else:
         for name in known_instruments or []:
             phrase_indicators.setdefault(name, set())
+
+    # Secondary-source recall booster (WS-S, USE 1): query the primary-law NAMES a
+    # secondary tracker pointed to but our concept/known queries might miss. No
+    # attribution (scored against all indicators, like a name query), and NOT added
+    # to known_instruments — so a seed keeps its natural KNOWN/NEW fuzzy tag.
+    for seed in extra_seed_queries or []:
+        phrase_indicators.setdefault(seed, set())
 
     # Browser portals (SG SSO) render every query; hold ONE Chromium session open
     # for the whole sweep so a burst of queries doesn't relaunch the browser each
