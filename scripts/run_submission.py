@@ -54,6 +54,7 @@ def run_one(
     metadata_llm: bool = False,
     timeout: float,
     llm_workers: int = 1,
+    doc_workers: int = 1,
 ) -> MapResult:
     """Run the production multi-instrument map for one economy."""
     profile = load_profile(JURIS / f"{iso.lower()}.yaml")
@@ -73,7 +74,7 @@ def run_one(
     result = run_pipeline_map(
         portal=profile.portals[0], profile=profile, indicators=indicators,
         budget=budget, timeout=timeout, verifier=verifier, rationale_gen=rationale_gen,
-        meta_extractor=meta_extractor, llm_workers=llm_workers,
+        meta_extractor=meta_extractor, llm_workers=llm_workers, doc_workers=doc_workers,
     )
     tokens = {"calls": 0, "prompt": 0, "completion": 0, "total": 0}
 
@@ -174,6 +175,12 @@ def main() -> None:
                          "document (LLM-call-layer parallelism). 1 = serial. Runtime-adjustable "
                          "per run. Stacks with --jobs (e.g. --jobs 3 --llm-workers 8 = up to 24 "
                          "concurrent requests; the endpoint handles >=32 with no rate limit).")
+    ap.add_argument("--doc-workers", type=int, default=1,
+                    help="Threads for processing instruments within an economy concurrently "
+                         "(document-level parallelism). This is what parallelizes the per-document "
+                         "metadata extraction (the serial floor of an LLM run), plus fetch/OCR/"
+                         "rationale across documents. 1 = serial. Stacks with --jobs and "
+                         "--llm-workers.")
     ap.add_argument("--dry-run", action="store_true", help="plan only, no network")
     args = ap.parse_args()
 
@@ -205,7 +212,8 @@ def main() -> None:
     def _run(iso: str):
         return run_one(iso, budget=args.budget, verify=args.verify,
                        rationale_llm=args.rationale_llm, metadata_llm=args.metadata_llm,
-                       timeout=args.timeout, llm_workers=args.llm_workers)
+                       timeout=args.timeout, llm_workers=args.llm_workers,
+                       doc_workers=args.doc_workers)
 
     # Country-level parallelism: economies are independent, so run them concurrently.
     # Threads (not processes) because the heavy stages — network fetch, OCR

@@ -298,6 +298,7 @@ def run_pipeline_map(
     meta_extractor: MetadataExtractor | None = None,
     enforced_only: bool = True,
     llm_workers: int = 1,
+    doc_workers: int = 1,
 ) -> MapResult:
     """Autonomous MULTI-instrument map (P0).
 
@@ -327,10 +328,7 @@ def run_pipeline_map(
         known_instrument_ids=profile.known_instrument_ids,
     )
 
-    documents: list[DemoArtifacts] = []
-    citations: list[Citation] = []
-    seen: set[tuple[str, str]] = set()
-    for hit in hits:
+    def _process(hit) -> DemoArtifacts:
         fulltext = resolve_fulltext(hit, force_browser=force_browser, timeout=timeout)
         target = fulltext or hit.url
         tag = DiscoveryTag.new if hit.discovery_tag == "NEW" else DiscoveryTag.known
@@ -341,7 +339,7 @@ def run_pipeline_map(
         # back to all indicators when nothing pins it down.
         wanted = set(hit.indicator_hits) or _attribute_by_name(hit, profile, indicators)
         ind_subset = [i for i in indicators if i.submission_id in wanted] or indicators
-        artifacts = run_pipeline_from_url(
+        return run_pipeline_from_url(
             url=target, profile=profile, indicators=ind_subset, portal_name=portal.name,
             source_type=portal.source_type, dest_dir=dest_dir, top_k=top_k,
             min_score=min_score, discovery_tag=tag, browser_fallback=force_browser,
@@ -351,7 +349,23 @@ def run_pipeline_map(
             status=hit.status, enforced_only=enforced_only, rel_floor=rel_floor,
             llm_workers=llm_workers,
         )
-        documents.append(artifacts)
+
+    # Document-level parallelism: process instruments concurrently. This is what
+    # parallelizes the per-document metadata extraction (one LLM call each, the
+    # serial floor of an LLM run) as well as fetch / OCR / rationale across docs.
+    # SG full-text resolves by URL construction (no browser render in the loop), so
+    # concurrent docs are safe. `map` preserves order; dedup runs sequentially after.
+    if doc_workers > 1 and len(hits) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(doc_workers, len(hits))) as ex:
+            documents = list(ex.map(_process, hits))
+    else:
+        documents = [_process(h) for h in hits]
+
+    citations: list[Citation] = []
+    seen: set[tuple[str, str]] = set()
+    for artifacts in documents:  # sequential dedup -> deterministic order
         for c in artifacts.citations:
             key = (c.indicator_id, c.clause_id)
             if key in seen:
