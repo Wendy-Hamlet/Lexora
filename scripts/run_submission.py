@@ -55,6 +55,7 @@ def run_one(
     timeout: float,
     llm_workers: int = 1,
     doc_workers: int = 1,
+    fetch_min_interval: float = 0.0,
 ) -> MapResult:
     """Run the production multi-instrument map for one economy."""
     profile = load_profile(JURIS / f"{iso.lower()}.yaml")
@@ -75,6 +76,7 @@ def run_one(
         portal=profile.portals[0], profile=profile, indicators=indicators,
         budget=budget, timeout=timeout, verifier=verifier, rationale_gen=rationale_gen,
         meta_extractor=meta_extractor, llm_workers=llm_workers, doc_workers=doc_workers,
+        fetch_min_interval=fetch_min_interval,
     )
     tokens = {"calls": 0, "prompt": 0, "completion": 0, "total": 0}
 
@@ -181,6 +183,11 @@ def main() -> None:
                          "metadata extraction (the serial floor of an LLM run), plus fetch/OCR/"
                          "rationale across documents. 1 = serial. Stacks with --jobs and "
                          "--llm-workers.")
+    ap.add_argument("--fetch-min-interval", type=float, default=0.0,
+                    help="Minimum seconds between fetch starts to the SAME host (per-host "
+                         "rate-spacing, thread-enforced). Dodges request-rate anti-bot under "
+                         "doc-level concurrency (e.g. AU serving an HTML challenge instead of "
+                         "the PDF); post-fetch OCR/LLM still parallelize. 0 = off.")
     ap.add_argument("--dry-run", action="store_true", help="plan only, no network")
     args = ap.parse_args()
 
@@ -213,7 +220,7 @@ def main() -> None:
         return run_one(iso, budget=args.budget, verify=args.verify,
                        rationale_llm=args.rationale_llm, metadata_llm=args.metadata_llm,
                        timeout=args.timeout, llm_workers=args.llm_workers,
-                       doc_workers=args.doc_workers)
+                       doc_workers=args.doc_workers, fetch_min_interval=args.fetch_min_interval)
 
     # Country-level parallelism: economies are independent, so run them concurrently.
     # Threads (not processes) because the heavy stages — network fetch, OCR

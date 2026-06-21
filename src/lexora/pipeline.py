@@ -299,6 +299,7 @@ def run_pipeline_map(
     enforced_only: bool = True,
     llm_workers: int = 1,
     doc_workers: int = 1,
+    fetch_min_interval: float = 0.0,
 ) -> MapResult:
     """Autonomous MULTI-instrument map (P0).
 
@@ -347,7 +348,7 @@ def run_pipeline_map(
             rationale_gen=rationale_gen, meta_extractor=meta_extractor,
             law_number=hit.law_number, last_amended=hit.last_amended,
             status=hit.status, enforced_only=enforced_only, rel_floor=rel_floor,
-            llm_workers=llm_workers,
+            llm_workers=llm_workers, min_interval=fetch_min_interval,
         )
 
     # Document-level parallelism: process instruments concurrently. This is what

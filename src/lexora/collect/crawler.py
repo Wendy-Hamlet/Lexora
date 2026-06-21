@@ -11,6 +11,7 @@ Playwright fallback for JS/anti-bot portals are reserved for the next slice.
 """
 from __future__ import annotations
 
+import threading
 import time
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -32,8 +33,22 @@ from lexora.models.source import (
 
 DEFAULT_UA = "Lexora/0.1 (+https://github.com/Wendy-Hamlet/Lexora)"
 
-# crude per-host politeness clock
+# Per-host politeness clock + per-host lock so `min_interval` is actually enforced
+# under a thread pool: concurrent same-host fetches queue on the host's lock and each
+# starts >= min_interval after the previous (rate-spacing that dodges request-rate
+# anti-bot, e.g. AU legislation.gov.au serving an HTML challenge page under bursts),
+# while different hosts keep their own locks and stay fully parallel.
 _LAST_HIT: dict[str, float] = {}
+_HOST_LOCKS: dict[str, threading.Lock] = {}
+_HOST_LOCKS_GUARD = threading.Lock()
+
+
+def _host_lock(host: str) -> threading.Lock:
+    with _HOST_LOCKS_GUARD:
+        lock = _HOST_LOCKS.get(host)
+        if lock is None:
+            lock = _HOST_LOCKS[host] = threading.Lock()
+        return lock
 
 
 @dataclass
@@ -98,13 +113,17 @@ def _browser_render(url: str, *, timeout: float):
 def _rate_limit(host: str, min_interval: float) -> None:
     if min_interval <= 0:
         return
-    now = time.monotonic()
-    last = _LAST_HIT.get(host)
-    if last is not None:
-        wait = min_interval - (now - last)
-        if wait > 0:
-            time.sleep(wait)
-    _LAST_HIT[host] = time.monotonic()
+    # Hold the host lock across the wait + timestamp update so concurrent threads to
+    # the SAME host serialize through the gate (request starts spaced by min_interval).
+    # The lock is released before the HTTP request itself, so post-gate work overlaps.
+    with _host_lock(host):
+        now = time.monotonic()
+        last = _LAST_HIT.get(host)
+        if last is not None:
+            wait = min_interval - (now - last)
+            if wait > 0:
+                time.sleep(wait)
+        _LAST_HIT[host] = time.monotonic()
 
 
 def fetch(
