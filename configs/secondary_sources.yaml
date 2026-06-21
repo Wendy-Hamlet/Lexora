@@ -1,0 +1,83 @@
+# RDTII secondary-source catalogue (WS-S).
+#
+# Secondary sources are third-party trackers/databases that the ESCAP RDTII 2.1
+# Guide says "should only serve to guide researchers to the primary sources".
+# They are a DISCOVERY AID and cross-check ONLY — never scored, never cited.
+#
+# `indicators` lists the in-scope RDTII submission_ids the guide attaches each
+# source to (see the per-indicator "useful secondary sources include ..." notes
+# in ESCAP-RDTII-2.1-guide.pdf). `tier` orders the build effort:
+#   1 = free + easiest to automate (UNCTAD HTML country tables)
+#   3 = downloadable but index-not-law-name (OECD / World Bank STRI, P6)
+#   4 = paywalled / anti-bot law-firm trackers (manual-seed fallback)
+#
+# S-0 ships this catalogue; adapters that actually fetch each source land in
+# S-1 (UNCTAD) / S-3 (STRI) / S-4 (law firms).
+
+sources:
+  # --- Tier 1: UNCTAD (free, HTML country tables) -- S-1 ---------------------
+  - key: unctad_data_protection
+    name: "UNCTAD Data Protection and Privacy Legislation Worldwide"
+    url: "https://unctad.org/page/data-protection-and-privacy-legislation-worldwide"
+    pillars: [7]
+    indicators: ["P7-I1", "P7-I4"]
+    tier: 1
+    notes: "Per-country Yes/No/Draft on comprehensive data-protection law; names the act where given."
+
+  - key: unctad_cyberlaw
+    name: "UNCTAD Global Cyberlaw Tracker"
+    url: "https://unctad.org/page/global-cyberlaw-tracker"
+    pillars: [7]
+    indicators: ["P7-I1", "P7-I2"]
+    tier: 1
+    notes: "Coverage of e-transactions, consumer protection, privacy and cybercrime laws per economy."
+
+  - key: unctad_cybercrime
+    name: "UNCTAD Cybercrime Legislation Worldwide"
+    url: "https://unctad.org/page/cybercrime-legislation-worldwide"
+    pillars: [7]
+    indicators: ["P7-I2", "P7-I3", "P7-I5"]
+    tier: 1
+    notes: "Cybercrime law presence; procedural powers often carry retention / government-access provisions."
+
+  # --- Tier 3: OECD / World Bank STRI (downloadable index, P6) -- S-3 --------
+  - key: oecd_dstri
+    name: "OECD Digital Services Trade Restrictiveness Index (Digital STRI)"
+    url: "https://goingdigital.oecd.org/en/indicator/73"
+    pillars: [6]
+    indicators: ["P6-I1", "P6-I2", "P6-I3", "P6-I4"]
+    tier: 3
+    notes: "Index, not a law name; informs presence of cross-border / localization restrictions for P6."
+
+  - key: worldbank_wto_stri
+    name: "World Bank-WTO Services Trade Restrictions Index (STRI)"
+    url: "https://www.worldbank.org/en/research/brief/services-trade-restrictions-database"
+    pillars: [6]
+    indicators: ["P6-I1", "P6-I2", "P6-I4"]
+    tier: 3
+    notes: "Services-trade restriction index; context for localization / cross-border, weak law-name signal."
+
+  # --- Tier 4: law-firm trackers (paywalled / anti-bot) -- S-4 ---------------
+  - key: dataguidance
+    name: "OneTrust DataGuidance"
+    url: "https://www.dataguidance.com/"
+    pillars: [7]
+    indicators: ["P7-I1", "P7-I2", "P7-I4"]
+    tier: 4
+    notes: "Comprehensive data-protection / cybersecurity comparator; paywalled -> manual-seed fallback."
+
+  - key: iclg
+    name: "ICLG Data Protection / Cybersecurity Laws and Regulations"
+    url: "https://iclg.com/practice-areas/data-protection-laws-and-regulations"
+    pillars: [7]
+    indicators: ["P7-I1", "P7-I2"]
+    tier: 4
+    notes: "Per-jurisdiction chapters naming the data-protection / cybersecurity statutes."
+
+  - key: dla_piper
+    name: "DLA Piper Data Protection Laws of the World"
+    url: "https://www.dlapiperdataprotection.com/"
+    pillars: [7]
+    indicators: ["P7-I1", "P7-I4"]
+    tier: 4
+    notes: "Per-country data-protection law summaries naming the governing act."
