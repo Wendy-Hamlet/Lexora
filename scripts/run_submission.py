@@ -56,6 +56,7 @@ def run_one(
     llm_workers: int = 1,
     doc_workers: int = 1,
     fetch_min_interval: float = 0.0,
+    serial_fetch: bool = False,
 ) -> MapResult:
     """Run the production multi-instrument map for one economy."""
     profile = load_profile(JURIS / f"{iso.lower()}.yaml")
@@ -71,12 +72,12 @@ def run_one(
     meta_extractor = make_metadata_extractor(use_llm=metadata_llm)
     if metadata_llm and meta_extractor._client is None:
         print("warning: --metadata-llm requested but the LLM backend is unavailable; "
-              "using portal metadata + curated anchor only.")
+              "using portal structured metadata only.")
     result = run_pipeline_map(
         portal=profile.portals[0], profile=profile, indicators=indicators,
         budget=budget, timeout=timeout, verifier=verifier, rationale_gen=rationale_gen,
         meta_extractor=meta_extractor, llm_workers=llm_workers, doc_workers=doc_workers,
-        fetch_min_interval=fetch_min_interval,
+        fetch_min_interval=fetch_min_interval, serial_fetch=serial_fetch,
     )
     tokens = {"calls": 0, "prompt": 0, "completion": 0, "total": 0}
 
@@ -128,6 +129,11 @@ def summarize(iso: str, result: MapResult) -> dict:
     capability is about finding laws), while the citation counts describe the CSV
     rows actually emitted and how many indicators they cover."""
     fetched_ok = sum(1 for d in result.documents if 200 <= d.document.http_status < 300)
+    # Real yield: documents that actually parsed into clauses. `fetched_ok` (2xx count)
+    # is MISLEADING under anti-bot — AU serves an HTTP-200 HTML challenge impersonating
+    # the PDF (0 clauses), so the 2xx count overstates what the run can map. Track the
+    # metric that reflects real output to judge the serial-fetch / throttle fix.
+    docs_with_clauses = sum(1 for d in result.documents if d.clauses)
     new_instruments = sum(1 for r in result.discovered if r.discovery_tag == "NEW")
     known_instruments = sum(1 for r in result.discovered if r.discovery_tag == "KNOWN")
     indicators_covered = sorted({c.indicator_id for c in result.citations})
@@ -141,6 +147,7 @@ def summarize(iso: str, result: MapResult) -> dict:
         "new_instruments": new_instruments,
         "known_instruments": known_instruments,
         "fetched_ok": fetched_ok,
+        "docs_with_clauses": docs_with_clauses,
         "citations": len(result.citations),
         "indicators_covered": indicators_covered,
         "n_indicators_covered": len(indicators_covered),
@@ -188,6 +195,11 @@ def main() -> None:
                          "rate-spacing, thread-enforced). Dodges request-rate anti-bot under "
                          "doc-level concurrency (e.g. AU serving an HTML challenge instead of "
                          "the PDF); post-fetch OCR/LLM still parallelize. 0 = off.")
+    ap.add_argument("--serial-fetch", action="store_true",
+                    help="Fully serialize same-host DOWNLOADS (one request in flight per host) "
+                         "while OCR/parse/map/LLM still run parallel across documents. Stronger "
+                         "than --fetch-min-interval against cumulative anti-bot (no request burst "
+                         "at all); different economies (hosts) stay parallel. Use with --doc-workers.")
     ap.add_argument("--dry-run", action="store_true", help="plan only, no network")
     args = ap.parse_args()
 
@@ -220,7 +232,8 @@ def main() -> None:
         return run_one(iso, budget=args.budget, verify=args.verify,
                        rationale_llm=args.rationale_llm, metadata_llm=args.metadata_llm,
                        timeout=args.timeout, llm_workers=args.llm_workers,
-                       doc_workers=args.doc_workers, fetch_min_interval=args.fetch_min_interval)
+                       doc_workers=args.doc_workers, fetch_min_interval=args.fetch_min_interval,
+                       serial_fetch=args.serial_fetch)
 
     # Country-level parallelism: economies are independent, so run them concurrently.
     # Threads (not processes) because the heavy stages — network fetch, OCR
@@ -278,17 +291,17 @@ def main() -> None:
 
     print(f"\nRound-1 submission run (budget {args.budget}"
           f"{', verifier ON' if args.verify else ''})")
-    print(f"{'economy':<12}{'instr':<7}{'NEW':<5}{'KNOWN':<7}{'fetched':<9}"
+    print(f"{'economy':<12}{'instr':<7}{'NEW':<5}{'KNOWN':<7}{'fetched':<9}{'real':<6}"
           f"{'cites':<7}{'inds':<6}{'review'}")
-    print("-" * 64)
+    print("-" * 70)
     for s in summaries:
         if s.get("error"):
             print(f"{s['economy']:<12}ERROR: {s['error']}")
             continue
         print(f"{s['economy']:<12}{s['instruments']:<7}{s['new_instruments']:<5}"
-              f"{s['known_instruments']:<7}{s['fetched_ok']:<9}{s['citations']:<7}"
-              f"{s['n_indicators_covered']:<6}{s['review_rows']}")
-    print("-" * 64)
+              f"{s['known_instruments']:<7}{s['fetched_ok']:<9}{s['docs_with_clauses']:<6}"
+              f"{s['citations']:<7}{s['n_indicators_covered']:<6}{s['review_rows']}")
+    print("-" * 70)
     if tokens_total["calls"]:
         print(
             f"LLM token total (all economies): {tokens_total['total']} tokens across "

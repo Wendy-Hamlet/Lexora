@@ -110,6 +110,18 @@ def _browser_render(url: str, *, timeout: float):
         return None
 
 
+def _space(host: str, min_interval: float) -> None:
+    """Sleep so this call starts >= ``min_interval`` after the previous same-host
+    hit. Lock-free spacing core — the CALLER must already hold ``_host_lock(host)``."""
+    if min_interval <= 0:
+        return
+    last = _LAST_HIT.get(host)
+    if last is not None:
+        wait = min_interval - (time.monotonic() - last)
+        if wait > 0:
+            time.sleep(wait)
+
+
 def _rate_limit(host: str, min_interval: float) -> None:
     if min_interval <= 0:
         return
@@ -117,12 +129,7 @@ def _rate_limit(host: str, min_interval: float) -> None:
     # the SAME host serialize through the gate (request starts spaced by min_interval).
     # The lock is released before the HTTP request itself, so post-gate work overlaps.
     with _host_lock(host):
-        now = time.monotonic()
-        last = _LAST_HIT.get(host)
-        if last is not None:
-            wait = min_interval - (now - last)
-            if wait > 0:
-                time.sleep(wait)
+        _space(host, min_interval)
         _LAST_HIT[host] = time.monotonic()
 
 
@@ -142,6 +149,7 @@ def fetch(
     retries: int = 2,
     respect_robots: bool = False,
     min_interval: float = 0.0,
+    serial_fetch: bool = False,
     browser_fallback: bool = False,
     client: httpx.Client | None = None,
 ) -> FetchResult:
@@ -155,18 +163,23 @@ def fetch(
     e.g. Singapore SSO), the URL is re-fetched with a headless browser and the
     rendered DOM replaces the body — provided Playwright is installed. If it is
     not, the original 403 is returned unchanged (graceful degradation).
+
+    ``serial_fetch`` holds the per-host lock across the whole download (not just the
+    spacing gate) so concurrent same-host fetches run ONE AT A TIME — no request
+    burst for a rate-anti-bot to react to (AU legislation.gov.au) — while different
+    hosts and ALL post-download work (OCR / parse / map / LLM) still run in parallel.
     """
     if respect_robots and not robots_allows(url, user_agent):
         raise PermissionError(f"robots.txt disallows fetching {url}")
 
     host = urlparse(url).netloc
-    _rate_limit(host, min_interval)
 
     owns_client = client is None
     client = client or httpx.Client(
         follow_redirects=True, timeout=timeout, headers={"User-Agent": user_agent}
     )
-    try:
+
+    def _get() -> httpx.Response:
         last_exc: Exception | None = None
         response = None
         for attempt in range(retries + 1):
@@ -180,6 +193,21 @@ def fetch(
                 time.sleep(0.5 * (attempt + 1))
         if response is None:
             raise last_exc or httpx.TransportError(f"failed to fetch {url}")
+        return response
+
+    try:
+        if serial_fetch:
+            # Hold the host lock across the download itself: one same-host request in
+            # flight at a time (spacing still applied inside the lock).
+            with _host_lock(host):
+                _space(host, min_interval)
+                try:
+                    response = _get()
+                finally:
+                    _LAST_HIT[host] = time.monotonic()
+        else:
+            _rate_limit(host, min_interval)
+            response = _get()
     finally:
         if owns_client:
             client.close()

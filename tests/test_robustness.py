@@ -104,8 +104,9 @@ def test_summarize_counts_instruments_citations_and_review():
             SimpleNamespace(discovery_tag="NEW"),
         ],
         documents=[
-            SimpleNamespace(document=SimpleNamespace(http_status=200)),
-            SimpleNamespace(document=SimpleNamespace(http_status=403)),
+            SimpleNamespace(document=SimpleNamespace(http_status=200), clauses=["c1", "c2"]),
+            SimpleNamespace(document=SimpleNamespace(http_status=200), clauses=[]),  # 2xx but anti-bot decoy: 0 clauses
+            SimpleNamespace(document=SimpleNamespace(http_status=403), clauses=[]),
         ],
         citations=[
             SimpleNamespace(indicator_id="P6-I4", review_status=SimpleNamespace(value="VERIFIED")),
@@ -118,7 +119,8 @@ def test_summarize_counts_instruments_citations_and_review():
     assert s["instruments"] == 3
     assert s["new_instruments"] == 2
     assert s["known_instruments"] == 1
-    assert s["fetched_ok"] == 1          # only the 200 counts
+    assert s["fetched_ok"] == 2          # both 200s count (incl. the anti-bot decoy)
+    assert s["docs_with_clauses"] == 1   # real yield: only the doc that parsed clauses
     assert s["citations"] == 3
     assert s["indicators_covered"] == ["P6-I4", "P7-I1"]  # distinct + sorted
     assert s["n_indicators_covered"] == 2

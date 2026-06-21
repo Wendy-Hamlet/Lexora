@@ -46,3 +46,61 @@ def test_zero_interval_is_a_noop():
     crawler._rate_limit("x.example", 0.0)
     assert (time.monotonic() - t0) < 0.05
     assert "x.example" not in crawler._LAST_HIT  # nothing recorded when off
+
+
+class _CountingClient:
+    """Fake httpx client that tracks how many GETs to one host run concurrently."""
+
+    def __init__(self, registry):
+        self._reg = registry
+
+    def get(self, url):
+        reg = self._reg
+        with reg["guard"]:
+            reg["in_flight"] += 1
+            reg["max"] = max(reg["max"], reg["in_flight"])
+        time.sleep(0.05)  # simulate a download in progress
+        with reg["guard"]:
+            reg["in_flight"] -= 1
+
+        class _Resp:
+            status_code = 200
+            headers = {"content-type": "application/pdf"}
+            content = b"%PDF-1.4 body"
+
+        _Resp.url = url
+        return _Resp()
+
+    def close(self):
+        pass
+
+
+def _hammer(serial: bool):
+    import threading
+
+    reg = {"in_flight": 0, "max": 0, "guard": threading.Lock()}
+
+    def _one(_):
+        crawler.fetch(
+            "https://au.example/doc.pdf", jurisdiction="AU", portal_name="p",
+            source_type=crawler.SourceType.primary, serial_fetch=serial,
+            client=_CountingClient(reg),
+        )
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        list(ex.map(_one, range(4)))
+    return reg["max"]
+
+
+def test_serial_fetch_serializes_the_download_itself():
+    """serial_fetch=True holds the per-host lock across the HTTP GET, so concurrent
+    same-host downloads never overlap (no request burst for anti-bot to react to)."""
+    _reset()
+    assert _hammer(serial=True) == 1
+
+
+def test_non_serial_fetch_allows_concurrent_downloads():
+    """Default does NOT gate the download — concurrent same-host GETs overlap (the
+    regime that bursts AU into its anti-bot challenge)."""
+    _reset()
+    assert _hammer(serial=False) > 1
