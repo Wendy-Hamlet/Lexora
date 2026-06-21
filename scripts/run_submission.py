@@ -161,6 +161,13 @@ def main() -> None:
                     help="Probe each citation's Source URL for reachability and annotate "
                          "dead links in Notes (extra network I/O; off by default)")
     ap.add_argument("--out", type=Path, default=OUT_CSV)
+    ap.add_argument("--jobs", type=int, default=0,
+                    help="Economies to run in parallel (country-level parallelism). "
+                         "0 = auto (all requested economies at once); 1 = serial. "
+                         "Each economy is independent (own portal / dest_dir / LLM clients); "
+                         "OCR (onnxruntime) and network/LLM I/O release the GIL, so threads "
+                         "give real speedup. SG is the only browser portal, so no cross-economy "
+                         "browser contention.")
     ap.add_argument("--dry-run", action="store_true", help="plan only, no network")
     args = ap.parse_args()
 
@@ -188,15 +195,45 @@ def main() -> None:
     all_citations = []
     summaries = []
     tokens_total = {"calls": 0, "prompt": 0, "completion": 0, "total": 0}
-    for iso in isos:
-        try:
-            result, tokens = run_one(iso, budget=args.budget, verify=args.verify,
-                                     rationale_llm=args.rationale_llm, metadata_llm=args.metadata_llm,
-                                     timeout=args.timeout)
-        except Exception as exc:  # one economy failing must not lose the others
+
+    def _run(iso: str):
+        return run_one(iso, budget=args.budget, verify=args.verify,
+                       rationale_llm=args.rationale_llm, metadata_llm=args.metadata_llm,
+                       timeout=args.timeout)
+
+    # Country-level parallelism: economies are independent, so run them concurrently.
+    # Threads (not processes) because the heavy stages — network fetch, OCR
+    # (onnxruntime releases the GIL), LLM calls — are I/O- or C++-bound; this dodges
+    # Windows spawn/pickling and lets workers share one process. Results collected
+    # per-iso so one economy failing can't lose the others, then walked in input
+    # order for a stable summary table.
+    jobs = args.jobs if args.jobs > 0 else len(isos)
+    outcomes: dict[str, tuple[str, object]] = {}
+    if jobs > 1 and len(isos) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        print(f"Running {len(isos)} economies with {min(jobs, len(isos))} parallel worker(s)...")
+        with ThreadPoolExecutor(max_workers=min(jobs, len(isos))) as ex:
+            futs = {ex.submit(_run, iso): iso for iso in isos}
+            for fut, iso in futs.items():
+                try:
+                    outcomes[iso] = ("ok", fut.result())
+                except Exception as exc:  # one economy failing must not lose the others
+                    outcomes[iso] = ("err", exc)
+    else:
+        for iso in isos:
+            try:
+                outcomes[iso] = ("ok", _run(iso))
+            except Exception as exc:
+                outcomes[iso] = ("err", exc)
+
+    for iso in isos:  # input order -> stable summary table
+        kind, payload = outcomes[iso]
+        if kind == "err":
             summaries.append({"iso": iso, "economy": ISO_TO_COUNTRY.get(iso, iso),
-                              "error": f"{type(exc).__name__}: {exc}"})
+                              "error": f"{type(payload).__name__}: {payload}"})
             continue
+        result, tokens = payload
         all_citations.extend(result.citations)
         summaries.append(summarize(iso, result))
         for k in tokens_total:
