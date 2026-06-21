@@ -196,15 +196,16 @@ def gather_signals(
     indicators: Sequence[RDTIIIndicator],
     *,
     specs: Sequence[SecondarySourceSpec] | None = None,
-    **adapter_kwargs,
 ) -> list[SecondarySignal]:
     """Run every registered adapter applicable to the in-scope indicators for one
-    economy and concatenate their signals. The entry point S-2 wires into the run.
+    economy and concatenate their signals. The live entry point S-2 wires into the
+    run — each adapter fetches (and caches) its own data.
 
     Sources whose adapter isn't built yet (no registry entry) or that cover none
     of the in-scope indicators are skipped; an adapter that raises is skipped (a
-    flaky tracker never crashes a run). ``adapter_kwargs`` pass through (e.g.
-    ``data=`` to short-circuit a fetch in tests)."""
+    flaky tracker never crashes a run). No per-adapter kwargs are forwarded here:
+    adapters have heterogeneous fetch hooks (UNCTAD ``data=`` is a dict, DLA Piper
+    ``data=`` is text), so injection is done per-adapter in unit tests, not here."""
     specs = list(specs) if specs is not None else load_secondary_sources()
     wanted = {i.submission_id for i in indicators}
     out: list[SecondarySignal] = []
@@ -215,7 +216,7 @@ def gather_signals(
         if adapter is None:
             continue
         try:
-            out.extend(adapter(economy, indicators, **adapter_kwargs))
+            out.extend(adapter(economy, indicators))
         except Exception:
             continue
     return out

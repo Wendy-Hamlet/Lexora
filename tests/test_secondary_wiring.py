@@ -13,10 +13,13 @@ import lexora.collect.discovery as disc
 from lexora.collect.secondary import (
     Presence,
     SecondarySignal,
+    SecondarySourceSpec,
     gather_signals,
     indicator_gaps,
     provenance_notes_by_indicator,
+    register_source,
 )
+from lexora.collect.secondary import base as sb
 from lexora.indicators import load_indicators
 from lexora.models.clause import CanonicalSpan, Clause
 from lexora.models.indicator import RDTIIIndicator
@@ -31,7 +34,18 @@ from lexora.pipeline import _citations_from_clauses
 
 REPO = Path(__file__).resolve().parent.parent
 INDS = load_indicators(REPO / "configs" / "rdtii_indicators.yaml")
-FIX = {"SG": [1, 3, 1, 1, 1]}  # privacy=yes, cybercrime=yes
+
+
+import pytest
+
+
+@pytest.fixture
+def tmp_cleanup_keys():
+    """Collect registry keys to remove after the test so fakes don't leak."""
+    keys: list[str] = []
+    yield keys
+    for k in keys:
+        sb.SECONDARY_SOURCES.pop(k, None)
 
 
 def _sig(**kw) -> SecondarySignal:
@@ -43,19 +57,32 @@ def _sig(**kw) -> SecondarySignal:
 
 # --- gather (entry point) ---------------------------------------------------
 
-def test_gather_signals_runs_registered_adapters():
-    sigs = gather_signals("SG", INDS, data=FIX)  # data= forwarded to UNCTAD adapters
-    assert sigs, "UNCTAD adapters should yield signals"
-    assert {s.source_name for s in sigs}  # at least one tracker
-    p7i1 = [s for s in sigs if s.indicator_id == "P7-I1"]
-    assert p7i1 and all(s.presence is Presence.yes for s in p7i1)
+def test_gather_runs_applicable_adapters_and_filters(tmp_cleanup_keys):
+    @register_source("fake_track")
+    def _fake(economy, indicators):
+        return [SecondarySignal(economy=economy, indicator_id="P7-I1",
+                                source_name="FAKE", presence=Presence.yes)]
+    tmp_cleanup_keys.append("fake_track")
+
+    in_scope = SecondarySourceSpec(key="fake_track", name="FAKE", indicators=("P7-I1",))
+    out_scope = SecondarySourceSpec(key="fake_track", name="FAKE", indicators=("P6-I5",))  # not in INDS
+
+    sigs = gather_signals("SG", INDS, specs=[in_scope])
+    assert [s.source_name for s in sigs] == ["FAKE"]
+    # a source covering only out-of-scope indicators is skipped
+    assert gather_signals("SG", INDS, specs=[out_scope]) == []
 
 
-def test_gather_skips_sources_with_no_adapter():
-    # OECD / law-firm sources are in the config but have no adapter yet -> skipped,
-    # no crash, only UNCTAD signals come back.
-    sigs = gather_signals("SG", INDS, data=FIX)
-    assert all(s.source_name.startswith("UNCTAD") for s in sigs)
+def test_gather_skips_unbuilt_and_failing_sources(tmp_cleanup_keys):
+    @register_source("boom")
+    def _boom(economy, indicators):
+        raise RuntimeError("flaky tracker")
+    tmp_cleanup_keys.append("boom")
+
+    ok = SecondarySourceSpec(key="boom", name="B", indicators=("P7-I1",))
+    no_adapter = SecondarySourceSpec(key="never_registered", name="N", indicators=("P7-I1",))
+    # a raising adapter and an unbuilt source both degrade to nothing, no crash
+    assert gather_signals("SG", INDS, specs=[ok, no_adapter]) == []
 
 
 # --- USE 3 provenance -------------------------------------------------------
