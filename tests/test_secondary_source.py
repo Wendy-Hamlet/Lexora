@@ -109,9 +109,10 @@ def test_register_and_lookup_adapter():
         sb.SECONDARY_SOURCES.pop("fake_src", None)  # don't leak into other tests
 
 
-def test_registry_is_empty_in_s0():
-    """S-0 ships machinery only — no concrete source adapter registered yet."""
-    assert sb.SECONDARY_SOURCES == {}
+def test_unctad_adapters_self_register():
+    """Importing the package registers the S-1 UNCTAD adapters."""
+    for key in ("unctad_data_protection", "unctad_cyberlaw", "unctad_cybercrime"):
+        assert adapter_for(key) is not None
 
 
 # --- disk cache -------------------------------------------------------------

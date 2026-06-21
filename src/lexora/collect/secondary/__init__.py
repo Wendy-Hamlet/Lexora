@@ -22,6 +22,10 @@ from lexora.collect.secondary.base import (
 )
 from lexora.models.secondary import Presence, SecondarySignal
 
+# Import adapter modules for their import-time self-registration into
+# SECONDARY_SOURCES (S-1: UNCTAD). Later phases add oecd / lawfirm here.
+from lexora.collect.secondary import unctad  # noqa: E402,F401
+
 __all__ = [
     "SECONDARY_SOURCES",
     "CoverageGap",
