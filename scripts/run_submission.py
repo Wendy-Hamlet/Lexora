@@ -74,6 +74,22 @@ def run_one(
         budget=budget, timeout=timeout, verifier=verifier, rationale_gen=rationale_gen,
         meta_extractor=meta_extractor,
     )
+    tokens = {"calls": 0, "prompt": 0, "completion": 0, "total": 0}
+
+    def _account(label: str, client) -> None:
+        """Print per-channel token usage and fold it into this economy's total."""
+        if client is None or not getattr(client, "calls", 0):
+            return
+        print(
+            f"  LLM {label} tokens [{iso}]: {client.calls} call(s), "
+            f"{client.total_tokens} tokens "
+            f"({client.prompt_tokens} prompt + {client.completion_tokens} completion)"
+        )
+        tokens["calls"] += client.calls
+        tokens["prompt"] += client.prompt_tokens
+        tokens["completion"] += client.completion_tokens
+        tokens["total"] += client.total_tokens
+
     if meta_extractor._client is not None:
         print(
             f"  LLM metadata usage [{iso}]: {meta_extractor.extracted} doc(s) extracted, "
@@ -81,6 +97,7 @@ def run_one(
             + (f" ({meta_extractor.error_count} backend error(s))"
                if meta_extractor.error_count else "")
         )
+        _account("metadata", meta_extractor._client)
     if rationale_gen._client is not None:
         print(
             f"  LLM rationale usage [{iso}]: {rationale_gen.llm_used} authored, "
@@ -88,6 +105,7 @@ def run_one(
             + (f" ({rationale_gen.error_count} backend error(s))"
                if rationale_gen.error_count else "")
         )
+        _account("rationale", rationale_gen._client)
     if verifier is not None and getattr(verifier, "error_count", 0):
         print(
             f"warning: LLM verifier backend errors for {iso}: "
@@ -95,14 +113,8 @@ def run_one(
             f"(last error: {verifier.last_error_type or 'unknown'}); "
             "run continued without fabricating citations."
         )
-    client = getattr(verifier, "_client", None) if verifier is not None else None
-    if client is not None and getattr(client, "calls", 0):
-        print(
-            f"  LLM verifier usage [{iso}]: {client.calls} call(s), "
-            f"{client.total_tokens} tokens "
-            f"({client.prompt_tokens} prompt + {client.completion_tokens} completion)"
-        )
-    return result
+    _account("verifier", getattr(verifier, "_client", None) if verifier is not None else None)
+    return result, tokens
 
 
 def summarize(iso: str, result: MapResult) -> dict:
@@ -175,17 +187,20 @@ def main() -> None:
 
     all_citations = []
     summaries = []
+    tokens_total = {"calls": 0, "prompt": 0, "completion": 0, "total": 0}
     for iso in isos:
         try:
-            result = run_one(iso, budget=args.budget, verify=args.verify,
-                             rationale_llm=args.rationale_llm, metadata_llm=args.metadata_llm,
-                             timeout=args.timeout)
+            result, tokens = run_one(iso, budget=args.budget, verify=args.verify,
+                                     rationale_llm=args.rationale_llm, metadata_llm=args.metadata_llm,
+                                     timeout=args.timeout)
         except Exception as exc:  # one economy failing must not lose the others
             summaries.append({"iso": iso, "economy": ISO_TO_COUNTRY.get(iso, iso),
                               "error": f"{type(exc).__name__}: {exc}"})
             continue
         all_citations.extend(result.citations)
         summaries.append(summarize(iso, result))
+        for k in tokens_total:
+            tokens_total[k] += tokens[k]
 
     dead_links = 0
     if args.check_links and all_citations:
@@ -216,6 +231,12 @@ def main() -> None:
               f"{s['known_instruments']:<7}{s['fetched_ok']:<9}{s['citations']:<7}"
               f"{s['n_indicators_covered']:<6}{s['review_rows']}")
     print("-" * 64)
+    if tokens_total["calls"]:
+        print(
+            f"LLM token total (all economies): {tokens_total['total']} tokens across "
+            f"{tokens_total['calls']} call(s) "
+            f"({tokens_total['prompt']} prompt + {tokens_total['completion']} completion)"
+        )
     print(f"Wrote {n} citation row(s) -> {args.out} (submission CSV)")
     print(f"                          -> {jsonld_out} (JSON-LD)")
     print(f"                          -> {summary_out} (run summary)")

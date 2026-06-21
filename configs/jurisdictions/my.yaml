@@ -23,14 +23,6 @@ known_instrument_ids:
   "563": "Computer Crimes Act 1997"
   "588": "Communications and Multimedia Act 1998"
 
-# Curated, source-verified (RDTII Legal Inventory). last_amended = most recent year
-# in the Timeframe; law_number = the Malaysian Act number (also in known_instrument_ids).
-instrument_metadata:
-  "Personal Data Protection Act 2010": {last_amended: "2024", law_number: "Act 709"}
-  "Cyber Security Act 2024": {last_amended: "2024", law_number: "Act 854"}
-  "Computer Crimes Act 1997": {last_amended: "2006", law_number: "Act 563"}
-  "Communications and Multimedia Act 1998": {last_amended: "2005", law_number: "Act 588"}
-
 keywords_by_indicator:
   "6.1":
     en: ["transfer of personal data out of Malaysia", "Personal Data Protection Act", "Act 709"]

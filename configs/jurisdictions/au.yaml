@@ -15,16 +15,6 @@ known_instruments:
   - "Telecommunications (Interception and Access) Act 1979"
   - "My Health Records Act 2012"
 
-# Curated anchor / offline fallback (the AU OData connector supplies these live for
-# any act, incl. NEW). last_amended = most recent year in the RDTII Legal Inventory
-# Timeframe; law_number = official act number (register `number`/`year` fields),
-# matching the connector's "No. N of YYYY" format.
-instrument_metadata:
-  "Privacy Act 1988": {last_amended: "2024", law_number: "No. 119 of 1988"}
-  "Security of Critical Infrastructure Act 2018": {last_amended: "2023", law_number: "No. 29 of 2018"}
-  "Telecommunications (Interception and Access) Act 1979": {last_amended: "2024", law_number: "No. 114 of 1979"}
-  "My Health Records Act 2012": {last_amended: "2024", law_number: "No. 63 of 2012"}
-
 keywords_by_indicator:
   "6.1":
     en: ["held or processed outside national borders", "My Health Records Act", "must not be held"]

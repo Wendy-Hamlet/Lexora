@@ -377,64 +377,33 @@ def _attribute_by_name(hit, profile: SourceProfile, indicators: list[RDTIIIndica
     return wanted
 
 
-def _resolve_instrument_meta(title: str | None, profile: SourceProfile) -> tuple[str, str]:
-    """Return ``(last_amended, law_number)`` for the document's instrument, or
-    ``("", "")`` when nothing matches (graceful — the columns stay blank).
-
-    Backfills the two submission columns the fetched document does not carry, from
-    the curated ``instrument_metadata`` (configs/jurisdictions/<iso>.yaml). Matches
-    the document title fuzzily; for portals whose titles are filenames (MY Fess) it
-    also resolves via a known Act number that appears in the title."""
-    meta_map = profile.instrument_metadata
-    if not title or not meta_map:
-        return "", ""
-    from rapidfuzz import fuzz
-
-    title_l = title.lower()
-    best_name, best_score = None, 0.0
-    for name in meta_map:
-        score = fuzz.token_set_ratio(name.lower(), title_l)
-        if score > best_score:
-            best_name, best_score = name, score
-    if best_name is not None and best_score >= 85:
-        meta = meta_map[best_name]
-        return meta.last_amended, meta.law_number
-    # Filename-title fallback: a known Act number embedded in the title.
-    for number, name in profile.known_instrument_ids.items():
-        if number and number in title and name in meta_map:
-            meta = meta_map[name]
-            return meta.last_amended, meta.law_number
-    return "", ""
-
-
 def _resolve_doc_metadata(
     document: RawDocument,
     document_text: str,
     profile: SourceProfile,
     meta_extractor: MetadataExtractor | None,
-) -> tuple[str, str]:
-    """Resolve ``(last_amended, law_number)`` for a document, once, by precedence:
+) -> tuple[str, str, str]:
+    """Resolve ``(last_amended, law_number, review_note)`` for a document, once, by
+    precedence:
 
     1. structured portal metadata captured at fetch time (most reliable; generalizes
        to NEW laws — e.g. the AU register's act number);
-    2. the generic LLM extractor over the document text (source-verified) — the
-       generalizer for portals without a structured connector;
-    3. the curated, source-verified anchor for the known flagship instruments.
+    2. the generic LLM extractor over the document text (source-verified, hybrid
+       windowing — see :func:`lexora.cite.metadata._document_window`). A field the
+       model cannot derive from the text comes back sentinelled (blank).
 
     Each tier only fills a field still missing, so the highest-confidence source wins
-    and a citation always gets the best value available (or blank)."""
+    and a citation always gets the best value available (or blank). ``review_note``
+    is the extractor's own-knowledge channel (review-only, never an answer)."""
     last_amended, law_number = document.last_amended, document.law_number
+    review_note = ""
     if not (last_amended and law_number) and meta_extractor is not None:
-        ex_amended, ex_number = meta_extractor.extract(
+        ex_amended, ex_number, review_note = meta_extractor.extract(
             document_text, document.jurisdiction, document.title or ""
         )
         last_amended = last_amended or ex_amended
         law_number = law_number or ex_number
-    if not (last_amended and law_number):
-        anchor_amended, anchor_number = _resolve_instrument_meta(document.title, profile)
-        last_amended = last_amended or anchor_amended
-        law_number = law_number or anchor_number
-    return last_amended, law_number
+    return last_amended, law_number, review_note
 
 
 def _citations_from_clauses(
@@ -485,7 +454,7 @@ def _citations_from_clauses(
     index: BM25Index = build_index(clauses)
     clause_by_id = {c.clause_id: c for c in clauses}
     # Document-level metadata (Law Number / Last Amended) resolved ONCE per document.
-    doc_last_amended, doc_law_number = _resolve_doc_metadata(
+    doc_last_amended, doc_law_number, doc_meta_note = _resolve_doc_metadata(
         document, document_text, profile, meta_extractor
     )
     for indicator in indicators:
@@ -524,6 +493,7 @@ def _citations_from_clauses(
                 bm25_score=hit.score, discovery_tag=discovery_tag,
                 review_label=claim.label, rationale_gen=rationale_gen,
                 last_amended=doc_last_amended, law_number=doc_law_number,
+                meta_note=doc_meta_note,
             )
             if citation is not None:
                 citations.append(citation)
@@ -550,6 +520,7 @@ def _citations_from_clauses(
                 rationale_gen=rationale_gen,
                 last_amended=doc_last_amended,
                 law_number=doc_law_number,
+                meta_note=doc_meta_note,
             )
             if citation is not None:
                 citations.append(citation)
@@ -569,6 +540,7 @@ def _materialize(
     rationale_gen: RationaleGenerator | None = None,
     last_amended: str = "",
     law_number: str = "",
+    meta_note: str = "",
 ) -> Citation | None:
     """One-clause-one-indicator: synthesize a verifier-shaped claim and run it
     through the same validator. The claim carries the official submission code
@@ -593,15 +565,22 @@ def _materialize(
     )
     if status is ReviewStatus.hallucinated_or_unsupported:
         return None
-    notes = ""
+    note_parts: list[str] = []
     if status is ReviewStatus.verified and review_label is ClaimLabel.uncertain:
         status = ReviewStatus.conflict_review
-        notes = "LLM verifier flagged the mapping as uncertain."
-    rationale = (
-        rationale_gen.generate(indicator, profile, clause, clause.structural_path)
-        if rationale_gen is not None
-        else template_rationale(indicator, profile, clause, clause.structural_path)
-    )
+        note_parts.append("LLM verifier flagged the mapping as uncertain.")
+    if rationale_gen is not None:
+        rationale, rationale_note = rationale_gen.generate(
+            indicator, profile, clause, clause.structural_path
+        )
+        if rationale_note:
+            note_parts.append(rationale_note)
+    else:
+        rationale = template_rationale(indicator, profile, clause, clause.structural_path)
+    # Document-level own-knowledge channel (same for every row of this document).
+    if meta_note:
+        note_parts.append(meta_note)
+    notes = " | ".join(note_parts)
     return build_citation(
         claim=claim,
         span=clause.span,

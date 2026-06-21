@@ -38,6 +38,11 @@ _SYSTEM = (
     "none is clearly on-point. When unsure, prefer abstaining or \"uncertain\".\n"
     "- You may ONLY pick from the given clause_id values. Never invent an id.\n"
     "- Do NOT write or quote any clause text. Return identifiers only.\n"
+    "- Base your judgement ONLY on the provided clause text and indicator "
+    "definition, not on your own background knowledge. If your reasoning relies on "
+    "anything outside the provided text, say so explicitly in 'rationale' so an "
+    "analyst can review it — it must not change which clause you would pick from the "
+    "text alone.\n"
     "Respond with a single JSON object: "
     '{"clause_id": <string|null>, "label": "match"|"uncertain"|"no_match", '
     '"confidence": <0.0-1.0>, "rationale": <short string>}.'

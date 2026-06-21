@@ -47,13 +47,14 @@ def _clause(text: str = _TEXT) -> Clause:
 
 
 class _FakeClient:
-    def __init__(self, rationale: str) -> None:
+    def __init__(self, rationale: str, notes: str = "") -> None:
         self._r = rationale
+        self._notes = notes
         self.calls = 0
 
     def chat(self, system, user, json_schema=None):  # noqa: ANN001
         self.calls += 1
-        return {"rationale": self._r}
+        return {"rationale": self._r, "notes": self._notes}
 
 
 class _BoomClient:
@@ -87,17 +88,29 @@ def test_template_never_exceeds_limit_with_many_long_phrases():
 
 def test_inert_generator_returns_template():
     gen = RationaleGenerator(client=None)
-    assert gen.generate(_indicator(), _profile(), _clause(), "S. 26") == \
-        template_rationale(_indicator(), _profile(), _clause(), "S. 26")
+    text, note = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
+    assert text == template_rationale(_indicator(), _profile(), _clause(), "S. 26")
+    assert note == ""  # template path has no own-knowledge channel
     assert make_rationale_generator(use_llm=False)._client is None
 
 
 def test_llm_rationale_used_when_clean():
     gen = RationaleGenerator(_FakeClient(
         "Section 26 conditions overseas personal-data transfers on comparable protection, mapping to P6-I4."))
-    out = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
+    out, _note = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
     assert out.startswith("Section 26 conditions overseas")
     assert gen.llm_used == 1 and gen.fallbacks == 0
+
+
+def test_own_knowledge_note_is_tagged_and_kept_out_of_rationale():
+    gen = RationaleGenerator(_FakeClient(
+        "Section 26 conditions overseas transfers on comparable protection, mapping to P6-I4.",
+        notes="This section was amended in 2020 (not in the provided text).",
+    ))
+    out, note = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
+    assert "amended in 2020" not in out                 # background stays out of the answer
+    assert "amended in 2020" in note                     # ...but is preserved for review
+    assert "own knowledge" in note.lower() and "NOT used as answer" in note
 
 
 def test_llm_output_copying_provision_is_rejected():
@@ -105,20 +118,20 @@ def test_llm_output_copying_provision_is_rejected():
     leak = "It says an organisation must not transfer personal data to a country or territory outside Singapore."
     assert copies_provision(leak, _TEXT)
     gen = RationaleGenerator(_FakeClient(leak))
-    out = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
+    out, _note = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
     assert out == template_rationale(_indicator(), _profile(), _clause(), "S. 26")
     assert gen.fallbacks == 1 and gen.llm_used == 0
 
 
 def test_llm_overlength_output_falls_back():
     gen = RationaleGenerator(_FakeClient("x " * 200))  # > 300 chars
-    out = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
+    out, _note = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
     assert len(out) <= RATIONALE_MAX_CHARS
     assert gen.fallbacks == 1
 
 
 def test_llm_backend_error_falls_back_and_counts():
     gen = RationaleGenerator(_BoomClient())
-    out = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
+    out, _note = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
     assert out == template_rationale(_indicator(), _profile(), _clause(), "S. 26")
     assert gen.error_count == 1 and gen.last_error_type == "RuntimeError"

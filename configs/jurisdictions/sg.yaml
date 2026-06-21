@@ -15,14 +15,6 @@ known_instruments:
   - "Computer Misuse Act"
   - "Criminal Procedure Code"
 
-# Curated, source-verified (RDTII Legal Inventory). last_amended = most recent year
-# in the Timeframe; SG law numbers are absent from the inventory, so left blank.
-instrument_metadata:
-  "Personal Data Protection Act 2012": {last_amended: "2021"}
-  "Cybersecurity Act 2018": {last_amended: "2018"}
-  "Computer Misuse Act": {last_amended: "2021"}
-  "Criminal Procedure Code": {last_amended: "2024"}
-
 keywords_by_indicator:
   "6.1":
     en: ["transfer outside Singapore", "local processing", "ban on transfer"]

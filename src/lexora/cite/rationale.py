@@ -89,16 +89,23 @@ _SYSTEM = (
     "sentence (max 280 characters) explaining WHY the provision maps to that "
     "indicator. Requirements: (1) reference the section/article number; (2) name "
     "the regulatory mechanism in your own words; (3) make the indicator linkage "
-    "explicit. Hard rule: do NOT quote or copy the provision's wording verbatim — "
-    "paraphrase the mechanism only. "
-    'Output a JSON object: {"rationale": "..."}.'
+    "explicit. Hard rules: do NOT quote or copy the provision's wording verbatim — "
+    "paraphrase the mechanism only. Base the rationale ONLY on the provided "
+    "provision text and indicator definition; do NOT introduce facts from your own "
+    "background knowledge into the rationale.\n"
+    "Separate channel for your own knowledge: if you have relevant background "
+    "knowledge worth flagging (e.g. the provision was later amended, or context not "
+    "in the text), put it in 'notes' for analyst review only — it must NOT appear in "
+    "the rationale and is NEVER used as the answer.\n"
+    'Output a JSON object: {"rationale": "...", "notes": "..."}.'
 )
 
 _RESPONSE_SCHEMA = {
     "type": "object",
-    "properties": {"rationale": {"type": "string"}},
+    "properties": {"rationale": {"type": "string"}, "notes": {"type": "string"}},
     "required": ["rationale"],
 }
+_REVIEW_PREFIX = "LLM rationale (own knowledge, NOT used as answer):"
 _CLAUSE_TEXT_CAP = 1200
 
 
@@ -122,10 +129,14 @@ class RationaleGenerator:
         profile: SourceProfile,
         clause: Clause,
         article_path: str,
-    ) -> str:
+    ) -> tuple[str, str]:
+        """Return ``(rationale, review_note)``. ``rationale`` is the answer (LLM or
+        template fallback); ``review_note`` carries the model's own-knowledge
+        channel for analyst review (empty on the template path) and is never the
+        answer."""
         template = template_rationale(indicator, profile, clause, article_path)
         if self._client is None:
-            return template
+            return template, ""
         try:
             data = self._client.chat(
                 _SYSTEM,
@@ -136,18 +147,20 @@ class RationaleGenerator:
             self.error_count += 1
             self.last_error_type = type(exc).__name__
             self.fallbacks += 1
-            return template
+            return template, ""
 
         rationale = (data.get("rationale") or "").strip()
+        review_note = (data.get("notes") or "").strip()
+        review_note = f"{_REVIEW_PREFIX} {review_note}" if review_note else ""
         if (
             not rationale
             or len(rationale) > RATIONALE_MAX_CHARS
             or copies_provision(rationale, clause.span.text)
         ):
             self.fallbacks += 1
-            return template
+            return template, review_note
         self.llm_used += 1
-        return rationale
+        return rationale, review_note
 
     @staticmethod
     def _user_prompt(

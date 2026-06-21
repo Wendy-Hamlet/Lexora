@@ -70,19 +70,6 @@ class PortalSpec(BaseModel):
     notes: str | None = None
 
 
-class InstrumentMeta(BaseModel):
-    """Curated, source-verified metadata for one known instrument.
-
-    Backfills the submission columns a fetched document does not itself carry —
-    ``Last Amended`` (year of the most recent amendment) and ``Law Number / Ref``.
-    Values are hand-entered from the official RDTII datasets (Legal Inventory /
-    Round 1 Database), never inferred by the tool, so they stay auditable. Left
-    blank when no authoritative source gives the value."""
-
-    last_amended: str = ""
-    law_number: str = ""
-
-
 class SourceProfile(BaseModel):
     """A jurisdiction configuration loaded from configs/jurisdictions/<iso>.yaml."""
 
@@ -103,10 +90,6 @@ class SourceProfile(BaseModel):
     # KNOWN by identity even when the result's title is a filename that defeats
     # fuzzy name matching (MY Fess document records).
     known_instrument_ids: dict[str, str] = Field(default_factory=dict)
-    # Per-instrument curated metadata (last_amended / law_number), keyed by the
-    # canonical instrument name (same strings as ``known_instruments``). Backfills
-    # submission columns the document does not carry; see :class:`InstrumentMeta`.
-    instrument_metadata: dict[str, InstrumentMeta] = Field(default_factory=dict)
     portals: list[PortalSpec] = Field(default_factory=list)
 
 
@@ -130,7 +113,7 @@ class RawDocument(BaseModel):
     # Structured metadata captured from the portal at fetch time (register API /
     # page label), when available. Carried so the citation layer can populate the
     # Law Number / Last Amended columns from the source itself, generalizing to
-    # NEW laws. Empty -> the citation layer falls back to the curated anchor.
+    # NEW laws. Empty -> the citation layer falls back to the LLM metadata extractor.
     law_number: str = ""
     last_amended: str = ""
     # Lifecycle status captured from the portal channel at fetch time (e.g. the AU
