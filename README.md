@@ -1,27 +1,97 @@
-# Lexora
+# Lexora — AI Tool for Digital Trade Regulatory Analysis
 
-> A Verifiable AI System for Mapping Digital-Trade Regulations to the RDTII Framework.
+UN Global Hackathon on AI for Digital Trade Regulatory Analysis
+Team: **Verbatim Trade** | Round: 1
+Last updated: 2026-06-22
+
+> A verifiable AI system for mapping digital-trade regulations to the UN ESCAP **RDTII 2.1** framework.
 >
-> **No canonical span, no claim.**
+> **No canonical span, no claim.** — every machine-emitted claim is a verbatim quote bound to a specific document, page, and structural URI, and is validated before it reaches a human.
 
-Lexora is an open-source (Apache 2.0) pipeline that ingests national digital-trade
-regulations across the Asia-Pacific and maps them onto the UN ESCAP **RDTII 2.1**
-indicators, with minimum coverage of **Pillar 6 (Cross-Border Data Policies)** and
-**Pillar 7 (Domestic Data Protection & Privacy)**.
+---
 
-Built for the [UN ESCAP × KMITL Global Hackathon on AI for Digital Trade Regulatory Analysis](https://unitescap.medium.com/global-hackathon-on-using-ai-for-digital-trade-regulatory-analysis-3c6213ddffa3) (2026).
+## What This Tool Does
 
-## Why
+Lexora automates the two tasks the RDTII requires for its **Step 1** (evidence
+production). It does **not** assign scores — scoring is a downstream human step.
 
-Existing legal-AI tools fail on three fronts:
+**Task 1 — Automated Evidence Discovery.** Given an economy and a regulatory topic,
+Lexora crawls the official government legal portal (no URL is handed in), ranks the
+candidates, fetches the full-text PDF/HTML (including scanned/image PDFs via OCR), and
+extracts clean, structured, verbatim text.
 
-1. They bias toward EU/US common-law sources and miss APAC civil-law and hybrid systems.
-2. They **paraphrase** rather than quote, producing citations that cannot be audited.
-3. They are commercial closed-source tools that developing-country regulators cannot adopt.
+**Task 2 — Intelligent Mapping & Citation.** The structured text is mapped to specific
+RDTII indicator IDs. Each matched provision is recorded with an exact article-level
+citation, a verbatim snippet, a `mapping_rationale`, and a Discovery Tag marking whether
+it was found independently (**NEW**) or matched a known example (**KNOWN**).
 
-Lexora is built around a single non-negotiable design rule: **every machine-emitted
-claim is a verbatim quote bound to a specific document, page, and structural URI,
-and is validated before it reaches a human.**
+**Mandatory scope:** Pillar 6 (Cross-Border Data Policies) and Pillar 7 (Domestic Data
+Protection & Privacy) — 9 in-scope regulatory indicators (P6-I1…I4, P7-I1…I5; P6-I5 is a
+non-regulatory indicator and is auto-excluded).
+**Economies covered (Round 1):** Singapore, Australia, Malaysia.
+
+---
+
+## Quick Start
+
+⚠ **Required for Round 1.** A reviewer with basic Python should be able to run this in
+under 10 minutes.
+
+```bash
+# 1. Clone
+git clone https://github.com/Wendy-Hamlet/Lexora.git
+cd Lexora
+
+# 2. Environment (Python 3.10+)
+python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
+pip install -e ".[dev,embeddings,ocr]"
+
+# 3. Configure the LLM endpoint (any OpenAI-compatible server)
+cp .env.example .env        # then edit .env — see "Swapping the LLM" below
+
+# 4. Run the autonomous submission pipeline for one economy
+LEXORA_LIVE=1 LEXORA_OCR=1 python scripts/run_submission.py -j sg --budget 20
+```
+
+**Output:** `outputs/submission_round1.csv` (official 13-column schema) +
+`outputs/submission_round1.jsonld` + `outputs/submission_round1.summary.json`.
+
+> **Always set `LEXORA_OCR=1` for real runs.** OCR is gated off by default; without it,
+> scanned-only statutes (e.g. Malaysia's gazette PDFs) silently extract 0 clauses.
+
+---
+
+## Full Usage
+
+```bash
+# All three Round-1 economies into one official CSV (+ JSON-LD + summary)
+LEXORA_LIVE=1 LEXORA_OCR=1 python scripts/run_submission.py -j all --budget 20 --secondary
+
+# Faster (parallelism knobs; the safe fast config is --jobs 3 --llm-workers 8)
+LEXORA_LIVE=1 LEXORA_OCR=1 python scripts/run_submission.py -j all --jobs 3 --llm-workers 8
+
+# Optional LLM lanes (need an OpenAI-compatible endpoint configured in .env)
+... --rationale-llm        # LLM-written mapping rationale (quote text still copied verbatim)
+... --metadata-llm         # LLM-assisted Last-Amended / Law-Number metadata
+... --verify-cells         # per-(clause×indicator) verifier (tightening only; currently over-strict, off by default)
+
+# Inspect discovery only (search → rank, no mapping)
+lexora discover -j sg
+
+# Manual fallbacks (bypass the crawler)
+lexora demo -j sg --url <pdf-or-html-url> --browser     # live-fetch one URL
+lexora demo -j sg --pdf path/to/act.pdf --source-url <url>   # local PDF
+
+# Evals
+python scripts/eval_discovery.py     # anti-overfitting discovery eval
+python scripts/eval_mapping.py       # section-level mapping hit@k (BM25 vs fused A/B)
+```
+
+Optional extras: `pip install -e ".[browser]" && playwright install chromium` (Singapore
+SSO, which 403s plain HTTP). Network-touching tests are offline by default
+(`httpx.MockTransport`); run the live ones with `LEXORA_LIVE=1 pytest -m live`.
+
+---
 
 ## Architecture — six stages
 
@@ -29,129 +99,141 @@ and is validated before it reaches a human.**
 ┌──────────┐   ┌──────────┐   ┌────────────┐   ┌──────────┐   ┌────────┐   ┌─────────┐
 │ collect  │ → │ extract  │ → │ structure  │ → │ classify │ → │  cite  │ → │ export  │
 └──────────┘   └──────────┘   └────────────┘   └──────────┘   └────────┘   └─────────┘
-   crawler       OCR/HTML/PDF   article tree    retrieval +     verbatim     JSON-LD,
-   + hashes     + confidence    (no Akoma N.)   LLM verifier   quote check    CSV, UI
+  crawl +        OCR/HTML/PDF   article/§ tree   BM25 retrieval  verbatim     CSV (13-col),
+  discovery     + offsets       (schedule-aware) + LLM verifier  quote check  JSON-LD
 ```
 
-See [`docs/architecture.md`](docs/architecture.md) for the full design and
+| Stage | Package | Description |
+| :---- | :---- | :---- |
+| Collect | `src/lexora/collect/` | Portal crawler, autonomous discovery + ranking, per-portal strategies (SG SSO browser, AU OData, MY Fess), hashing; `collect/secondary/` = third-party trackers used only to *guide* discovery, never cited |
+| Extract | `src/lexora/extract/` | HTML / PDF text / OCR (RapidOCR), verbatim char-offset invariant |
+| Structure | `src/lexora/structure/` | Format-general legal parser (dotted SG/MY, spaced AU, civil-law articles), schedule-aware |
+| Classify | `src/lexora/classify/` | Clause retrieval (BM25 default, dense opt-in) + constrained LLM verifier |
+| Cite | `src/lexora/cite/` | Citation builder, verbatim validator, mapping rationale, metadata |
+| Export | `src/lexora/export/` | Official 13-column CSV + JSON-LD |
+
+See [`docs/architecture.md`](docs/architecture.md) and
 [`docs/anti_hallucination.md`](docs/anti_hallucination.md) for the verbatim contract.
 
-## Status
+---
 
-**MVP under active development for Hackathon 2026.**
+## Swapping the LLM (No Vendor Lock-in)
 
-- [x] Repository scaffold + canonical data models
-- [x] Jurisdiction profile schema + 3 Round 1 economy profiles (Singapore, Australia, Malaysia)
-- [x] RDTII Pillar 6 + 7 indicator definitions (9 regulatory indicators, official codes P6-I1…P7-I5)
-- [x] Citation validator (verbatim contract)
-- [x] Slice 0 end-to-end pipeline (collect → … → cite → export) on a local PDF
-- [x] Submission CSV matching the official OUTPUT_TEMPLATE schema
-- [x] **Live portal crawling** — autonomous discovery layer (search → rank → resolve), per-portal strategies (SG SSO via headless browser, AU OData API, MY Fess/Solr proxy)
-- [x] **Two-stage full-text resolution** — landing page → real full-text PDF for SG / AU / MY
-- [x] **Format-general structure parser** — dotted (SG/MY) + spaced (AU) numbering, auto-detected
-- [x] **End-to-end autonomous mapping** (`lexora map -j <iso>`) producing verbatim citations for SG / AU / MY
-- [x] **Anti-overfitting discovery eval** — multi-query (name vs indicator phrasing); NAME 6/6, INDICATOR 5/5 (all rank #1)
-- [x] **Dense/semantic layer** (optional, fastembed) — AU concept→title crosswalk (gives the name-only AU portal its first NEW discovery), SG/MY candidate re-rank, clause-level BM25+dense RRF fusion
-- [x] **Regulator-portal connectors** — secondary-source guidance corpus beyond the statute portals (SG PDPC advisory guidelines, MY PDP sectoral codes of practice, AU OAIC APP guidelines + PIA), as NEW evidence
-- [x] **Statutory-seed discovery + identity fix** — domain-qualified concept phrases reach sectoral content-signal statutes (Companies / Income Tax / Employment Acts) whose titles carry no signal; KNOWN/NEW identity now matches the instrument name only, so an Act that merely *cites* the PDPA is no longer mis-tagged KNOWN
-- [x] **Constrained LLM verifier** (open-weights, served) on top of the verbatim validator — a *tightening-only* gate: of the BM25-passing clauses it picks at most one that genuinely supports the indicator or abstains (cutting wrong-indicator mappings), routes "uncertain" to human review, and returns clause IDs only (never quote text). Optional + off by default (`lexora map --verify`, any OpenAI-compatible endpoint); degrades to BM25 + verbatim when no server is configured
-- [x] **Mapping-quality eval + retrieval tuning** (`scripts/eval_mapping.py`) — section-level gold (`indicator → correct section`) for the flagship statutes of all three economies (dump-verified); reports hit@1 / hit@3 with a BM25-vs-fusion **A/B**. The eval drove two evidenced fixes to clause retrieval: drop non-operative boilerplate sections, and **anchor rank-1 to BM25** (dense was demoting BM25's correct top hit with vocabulary-dense Schedule/definition clauses). Result across SG/AU/MY: **hit@1 1/7 → 2/7 and hit@3 3/7** — the new fusion Pareto-dominates both plain RRF and BM25-only
-- [x] **Crawl robustness + full submission run** — SG SSO renders are validated for instrument links and re-rendered with exponential backoff when the portal returns its rate-limited empty shell; MY Fess / AU OData GETs retry on dropped-TLS transport errors. `scripts/run_submission.py` runs the autonomous map for SG/AU/MY end to end into one official 13-column submission CSV (+ JSON-LD + run summary), each row carrying its NEW/KNOWN tag — the Round-1 deliverable prototype
-- [ ] OCR pipeline + confidence triage
-- [ ] Review UI (side-by-side audit)
+Lexora talks to **any OpenAI-compatible endpoint** — swap the model by changing `.env`
+only, no code change. The LLM is optional: with no endpoint configured, the pipeline
+degrades gracefully to BM25 + the verbatim validator.
 
-Round 1 submission: 2026-07-20 · 20 shortlisted: 2026-07-31 · live e-pitch: 2026-08-03 · 5 finalists: 2026-08-05 · Bangkok finale: Oct 2026.
-
-## Quick start
-
-Requires Python 3.10+.
-
-```bash
-git clone https://github.com/Wendy-Hamlet/Lexora.git
-cd Lexora
-python -m venv .venv && source .venv/bin/activate   # or .venv\Scripts\activate on Windows
-pip install -e ".[dev]"
-pytest
-lexora --help
-
-# Optional: headless-browser fetch (needed for Singapore SSO, which 403s plain HTTP)
-pip install -e ".[browser]"
-playwright install chromium
-
-# Optional: dense/semantic layer (AU concept→title crosswalk, candidate re-rank,
-# clause BM25+dense fusion). fastembed downloads a small ONNX model on first use.
-pip install -e ".[embeddings]"
-
-# Optional: constrained LLM verifier (tightening gate over verbatim). Works with
-# any OpenAI-compatible server (vLLM / Ollama / OpenAI); set LEXORA_LLM_BASE_URL,
-# LEXORA_LLM_MODEL, LEXORA_LLM_API_KEY. Off unless `lexora map --verify` is passed.
-pip install -e ".[llm]"
+```ini
+# .env — OpenAI / vLLM / llama.cpp / Ollama all expose an OpenAI-compatible /v1
+LEXORA_LLM_BASE_URL=http://localhost:11434/v1     # Ollama; or https://api.openai.com/v1
+LEXORA_LLM_MODEL=llama3                            # or gpt-4o, Qwen2.5-7B-Instruct, …
+LEXORA_LLM_API_KEY=not-needed-for-local            # real key for cloud
 ```
 
-## Usage
+The client is abstracted in `src/lexora/classify/llm_client.py`.
 
-The mandatory live crawl is fully autonomous — no URL is handed in; Lexora
-searches each portal, ranks the candidates, fetches the full-text PDF and maps
-it to the RDTII indicators.
+## Swapping the OCR Engine
 
-```bash
-# Inspect the discovery + ranking on a portal (search → rank, no mapping)
-lexora discover -j sg
+| Engine | Config | Notes |
+| :---- | :---- | :---- |
+| RapidOCR (ONNX) | `LEXORA_OCR_ENGINE=rapidocr` (default) | Bundled, CPU-fast, stable on Windows + py3.13 |
+| PaddleOCR | `LEXORA_OCR_ENGINE=paddleocr` | GPU-server path (`paddlepaddle-gpu`) |
 
-# End-to-end autonomous mapping: discover → resolve full text → cite → export
-lexora map -j my            # Malaysia  (Fess/Solr full-text)
-lexora map -j sg            # Singapore (SSO via headless browser)
-lexora map -j au            # Australia (OData API)
-lexora map -j sg --verify   # + LLM verifier: tighten mappings, flag uncertain
-# → writes outputs/map.csv (official submission schema) + outputs/map.jsonld
+OCR is enabled with `LEXORA_OCR=1` and language-configured with `LEXORA_OCR_LANG`.
 
-# Manual fallbacks
-lexora demo -j sg --url <pdf-or-html-url> --browser   # live-fetch one URL
-lexora demo -j sg --pdf path/to/act.pdf --source-url <url>   # local PDF
+---
 
-# Anti-overfitting discovery evaluation
-python scripts/eval_discovery.py    # → outputs/eval_discovery.json
-```
+## Output Format
 
-Network-touching tests are offline by default (`httpx.MockTransport`); run the
-live ones with `LEXORA_LIVE=1 pytest -m live`.
+### CSV — official 13 columns, exact order (judges validate programmatically)
+
+`economy`, `law_name`, `law_number_ref`, `last_amended`, `indicator_id`, `article`,
+`discovery_tag`, `location_reference`, `verbatim_snippet`, `mapping_rationale`,
+`source_url`, `confidence`, `notes`.
+
+### JSON-LD
+
+`run_submission.py` also emits a JSON-LD dump of every citation and a `.summary.json` run
+report. *(The official 6-field technical JSON sidecar — `ocr_quality_cer`,
+`processing_time`, `model_version`, `raw_context`, `provisions[]`, `source_pdf_path` — is
+in progress; see Known Limitations.)*
+
+---
 
 ## Project layout
 
 ```
 Lexora/
-├── src/lexora/             # Python package
-│   ├── models/             # Pydantic data contracts (citation, clause, source, indicator)
-│   ├── collect/            # Stage 1 — crawler, discovery + ranking, per-portal strategies, headless browser, hashing
-│   ├── extract/            # Stage 2 — HTML / PDF text / OCR
-│   ├── structure/          # Stage 3 — article/section/paragraph parser
-│   ├── classify/           # Stage 4 — retrieval + constrained LLM verifier
-│   ├── cite/               # Stage 5 — citation builder + verbatim validator
-│   ├── export/             # Stage 6 — JSON-LD / CSV
-│   ├── storage/            # SQLite/PostgreSQL + object store
-│   └── api/                # FastAPI app
+├── src/lexora/
+│   ├── models/        # Pydantic data contracts (citation, clause, source, indicator, secondary)
+│   ├── collect/       # Stage 1 — crawler, discovery, per-portal strategies, secondary/ trackers
+│   ├── extract/       # Stage 2 — HTML / PDF text / OCR
+│   ├── structure/     # Stage 3 — legal parser
+│   ├── classify/      # Stage 4 — retrieval + LLM verifier + boundary rules + lifecycle
+│   ├── cite/          # Stage 5 — citation builder, validator, rationale, metadata
+│   ├── export/        # Stage 6 — CSV / JSON-LD
+│   ├── storage/ api/  # SQLite + object store; FastAPI app
+│   └── config.py      # env-driven runtime config (LexoraConfig)
 ├── configs/
-│   ├── jurisdictions/      # one YAML per economy (sg, au, my, …)
-│   └── rdtii_indicators.yaml
-├── docs/                   # architecture, memo, schemas
-├── tests/
-├── scripts/
-└── data/                   # gitignored — raw + canonical document store
+│   ├── jurisdictions/        # one YAML per economy (sg, au, my, _template)
+│   ├── rdtii_indicators.yaml # 9 in-scope P6/P7 indicators
+│   ├── secondary_sources.yaml
+│   └── eval/                 # gold inventory, mapping gold, intrinsic parser fixtures
+├── scripts/           # run_submission.py (Round-1 entry), run_pipeline.py, eval_*.py
+├── docs/              # architecture, anti_hallucination, citation_schema, jurisdiction_profile
+└── tests/
 ```
 
-## Demo scope
-
-Round 1 covers the **three mandatory economies** (Singapore, Australia, Malaysia)
-and RDTII Pillars 6 and 7. Final-round economies (Thailand, China, India,
-Indonesia, Russian Federation, Lao PDR, Mongolia, Timor-Leste) are added by
-writing one YAML profile under `configs/jurisdictions/` — see
+Add a new economy by writing one YAML under `configs/jurisdictions/` — see
 [`docs/jurisdiction_profile.md`](docs/jurisdiction_profile.md).
 
-## License
+---
 
-Apache 2.0 — see [`LICENSE`](LICENSE). All required runtime dependencies are
-permissively licensed.
+## Known Limitations
+
+Honest by design — these guide where to be cautious.
+
+- **OCR is opt-in:** real runs **must** set `LEXORA_OCR=1`, or scanned-only statutes drop
+  to 0 clauses with no flag. Submission runs set it explicitly.
+- **Official 6-field JSON sidecar:** CSV + JSON-LD ship now; the official technical JSON
+  copy (CER, processing time, raw context, …) is being finalized.
+- **Per-cell LLM verifier (`--verify-cells`):** kills the "empty-attribution law scored
+  against all 9 indicators" false positives, but is currently over-strict (drops some
+  correct cells) — **off by default**, pending calibration.
+- **Australia portal anti-bot:** `legislation.gov.au` applies cumulative per-IP throttling
+  and can serve an HTML decoy under load; mitigated with per-host throttle + `--serial-fetch`.
+- **Confidence is relative, not calibrated:** treat scores below 0.80 as review-flagged.
+- **Secondary sources are never citable:** third-party trackers only *guide* discovery
+  (USE 1/2/3); they never become a citation.
+
+---
+
+## Running the Test Suite
+
+```bash
+pytest                       # offline; ~325 tests
+LEXORA_LIVE=1 pytest -m live # live portal tests
+```
+
+---
 
 ## Team
 
 Team **Verbatim Trade** — Bohan LIU, Chiheng JIN, Wenxiang SHI, Yiying TANG, Zijie Oscar WEI.
+
+## License
+
+Apache 2.0 — see [`LICENSE`](LICENSE). All required runtime dependencies are permissively
+licensed.
+
+## Key Dates
+
+| Date | Milestone |
+| :---- | :---- |
+| **20 July 2026** | **Round 1 submission deadline** |
+| 31 July 2026 | 20 teams shortlisted |
+| 3 August 2026 | Live online pitch |
+| 5 August 2026 | 5 finalists announced |
+| October 2026 | Grand Finale — Bangkok |
+
+Built for the [UN ESCAP × KMITL Global Hackathon on AI for Digital Trade Regulatory Analysis](https://unitescap.medium.com/global-hackathon-on-using-ai-for-digital-trade-regulatory-analysis-3c6213ddffa3) (2026).
