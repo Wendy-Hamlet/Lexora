@@ -40,13 +40,13 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "src"))
 
-from lexora.cite.metadata import make_metadata_extractor          # noqa: E402
-from lexora.cite.rationale import make_rationale_generator        # noqa: E402
-from lexora.classify.verifier import make_verifier                # noqa: E402
-from lexora.collect.profile_loader import load_profile            # noqa: E402
-from lexora.config import load_config                             # noqa: E402
-from lexora.indicators import load_indicators                    # noqa: E402
-from lexora.pipeline import run_demo_pipeline                     # noqa: E402
+from lexora.cite.metadata import make_metadata_extractor  # noqa: E402
+from lexora.cite.rationale import make_rationale_generator  # noqa: E402
+from lexora.classify.verifier import make_verifier  # noqa: E402
+from lexora.collect.profile_loader import load_profile  # noqa: E402
+from lexora.config import load_config  # noqa: E402
+from lexora.indicators import load_indicators  # noqa: E402
+from lexora.pipeline import run_demo_pipeline  # noqa: E402
 
 INDICATORS = REPO / "configs" / "rdtii_indicators.yaml"
 JURIS = REPO / "configs" / "jurisdictions"

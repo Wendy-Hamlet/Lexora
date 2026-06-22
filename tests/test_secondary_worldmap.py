@@ -10,11 +10,11 @@ from pathlib import Path
 
 from lexora.collect.secondary import load_secondary_sources
 from lexora.collect.secondary.worldmap import (
+    _fetch_section_text,
     country_section_text,
     parse_country_sections,
     world_map_encryption,
 )
-from lexora.collect.secondary.worldmap import _fetch_section_text
 from lexora.indicators import load_indicators
 from lexora.models.secondary import Presence
 

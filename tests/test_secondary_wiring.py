@@ -9,6 +9,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
+import pytest
+
 import lexora.collect.discovery as disc
 from lexora.collect.secondary import (
     Presence,
@@ -34,9 +36,6 @@ from lexora.pipeline import _citations_from_clauses
 
 REPO = Path(__file__).resolve().parent.parent
 INDS = load_indicators(REPO / "configs" / "rdtii_indicators.yaml")
-
-
-import pytest
 
 
 @pytest.fixture

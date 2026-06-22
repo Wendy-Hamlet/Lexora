@@ -109,7 +109,6 @@ def rubric_block() -> str:
 
 
 def worksheet(country: str, insts: dict, urls: dict) -> str:
-    iso = ISO[country]
     n_cells = sum(len(v) for v in insts.values())
     out = []
     out.append(f"# Gold review — {country} (P6 & P7 instrument→indicator labels)\n")
@@ -145,7 +144,7 @@ def worksheet(country: str, insts: dict, urls: dict) -> str:
             out.append(f"- **{iid} — {RUBRIC_NAME[iid]}**")
             out.append("  - `VERDICT=` (KEEP / DROP)")
             out.append("  - `NOTE=`")
-        out.append(f"- Missing indicators this instrument also scores on? `ADD=`\n")
+        out.append("- Missing indicators this instrument also scores on? `ADD=`\n")
     out.append("---\n")
     out.append(
         "When done, save this file with your entries and send it back. We re-collect "

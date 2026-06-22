@@ -160,11 +160,14 @@ def main(argv=None):
             exp = _expected(sv)
             rv = c["verdict"]
             if exp == "EITHER":
-                match = "ambiguous"; ambiguous += 1
+                match = "ambiguous"
+                ambiguous += 1
             elif exp == rv:
-                match = "agree"; agree += 1
+                match = "agree"
+                agree += 1
             else:
-                match = "DISAGREE"; disagree += 1
+                match = "DISAGREE"
+                disagree += 1
             w.writerow([c["economy"], c["instrument"], c["indicator"], sv, exp, rv, match])
 
     print(f"parsed {len(all_cells)} cells | answered {len(answered)} "
@@ -176,7 +179,7 @@ def main(argv=None):
     print(f"self-screen agreement (decisive cells only): {rate}  "
           f"[+{ambiguous} ambiguous (SUSPECT)] -> {apath.relative_to(ROOT)}")
     if disagree:
-        print(f"  DISAGREE cells (our screen vs reviewer) — review these:")
+        print("  DISAGREE cells (our screen vs reviewer) — review these:")
     if unanswered:
         print(f"NOTE: {len(unanswered)} cells still blank — worksheet incomplete?")
     for wmsg in warnings:

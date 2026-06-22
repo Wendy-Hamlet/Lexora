@@ -6,6 +6,17 @@ law-firm trackers) are added in later phases and self-register via
 """
 from __future__ import annotations
 
+# Import adapter modules for their import-time self-registration into
+# SECONDARY_SOURCES (S-1 UNCTAD; S-3 STRI snapshot; S-4 DLA Piper + ICLG;
+# WS-S extra free sources: Linklaters + World Map of Encryption).
+from lexora.collect.secondary import (  # noqa: E402,F401
+    dlapiper,
+    iclg,
+    linklaters,
+    stri,
+    unctad,
+    worldmap,
+)
 from lexora.collect.secondary.base import (
     SECONDARY_SOURCES,
     CoverageGap,
@@ -24,18 +35,6 @@ from lexora.collect.secondary.base import (
     to_provenance_note,
 )
 from lexora.models.secondary import Presence, SecondarySignal
-
-# Import adapter modules for their import-time self-registration into
-# SECONDARY_SOURCES (S-1 UNCTAD; S-3 STRI snapshot; S-4 DLA Piper + ICLG;
-# WS-S extra free sources: Linklaters + World Map of Encryption).
-from lexora.collect.secondary import (  # noqa: E402,F401
-    dlapiper,
-    iclg,
-    linklaters,
-    stri,
-    unctad,
-    worldmap,
-)
 
 __all__ = [
     "SECONDARY_SOURCES",
