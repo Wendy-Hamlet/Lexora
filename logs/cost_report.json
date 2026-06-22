@@ -1,0 +1,40 @@
+{
+  "document": "b430f48c50878d20b73b19969126eb42f407f6a333d1b523b6ebcb1f460202d6.pdf",
+  "economy": "Malaysia",
+  "pillar": 6,
+  "measured_on": "2026-06-22",
+  "pages": 100,
+  "characters": 149373,
+  "ocr": {
+    "engine": "rapidocr",
+    "pages": 100,
+    "scanned": true,
+    "cost_usd": 0.0
+  },
+  "embedding": {
+    "model": "BAAI/bge-m3",
+    "tokens": 0,
+    "note": "dense channel OFF by default (BM25 retrieval)",
+    "cost_usd": 0.0
+  },
+  "crawling": {
+    "engine": "self-hosted (requests/browser)",
+    "cost_usd": 0.0
+  },
+  "llm": {
+    "model": "gpt-5.4",
+    "calls": 27,
+    "input_tokens": 24548,
+    "output_tokens": 3722,
+    "price_in_per_1m_usd": 0.5,
+    "price_out_per_1m_usd": 1.5,
+    "rate_note": "reference commercial rate; our own endpoint is not billed per token",
+    "cost_usd": 0.0179
+  },
+  "total_cost_usd": 0.0179,
+  "total_cost_usd_open_weight_swap": 0.0,
+  "open_weight_note": "Llama-class + Tesseract, all self-hosted -> $0 API (compute only)",
+  "citations": 9,
+  "processing_time_seconds": 150.3,
+  "llm_used": true
+}

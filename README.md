@@ -153,10 +153,67 @@ OCR is enabled with `LEXORA_OCR=1` and language-configured with `LEXORA_OCR_LANG
 
 ### JSON-LD
 
-`run_submission.py` also emits a JSON-LD dump of every citation and a `.summary.json` run
-report. *(The official 6-field technical JSON sidecar — `ocr_quality_cer`,
-`processing_time`, `model_version`, `raw_context`, `provisions[]`, `source_pdf_path` — is
-in progress; see Known Limitations.)*
+`run_submission.py` also emits a JSON-LD dump of every citation, the official 6-field
+technical JSON sidecar (`export/json_exporter.py` — `source_pdf_path`, `pdf_is_scanned`,
+`ocr_quality_cer`, `processing_time_seconds`, `model_version`, `retrieval_method`,
+`raw_context_before/after`, one flat object per provision so JSON rows == CSV rows), and a
+`.summary.json` run report.
+
+---
+
+## Actual Cost Per Document
+
+*Required by the hackathon rubric for UN sustainability assessment. **Measured from a real
+run, not estimated** — token counts come from the live LLM client accounting, page counts
+from the parsed PDF, time from a wall-clock around the run.*
+
+Our stack is almost entirely **self-hosted**, so its marginal API cost is ~$0; the LLM is
+the only metered API. Reproduce on any local PDF:
+
+```bash
+PYTHONPATH=src python tools/cost_logger.py \
+  --pdf data/raw/my/<hash>.pdf --economy my --pillar 6
+# writes logs/cost_report.json + prints the table below
+```
+
+### Measured results
+
+| Component | Engine used | Measured cost |
+| :---- | :---- | :---- |
+| OCR | RapidOCR (bundled ONNX, local CPU) | $0.0000 |
+| Embedding | BAAI/bge-m3 (local; dense channel off by default) | $0.0000 |
+| LLM mapping | gpt-5.4 (metadata + rationale + per-cell verify) | $0.0179 |
+| Crawling | self-hosted (requests / browser) | $0.0000 |
+| **Total (current stack)** |  | **$0.018 per document** |
+| **Total (open-weight swap)** | Llama-class + Tesseract (all self-hosted) | **$0.000 per document** |
+
+**Measured on:** 2026-06-22 · **Benchmark document:** Malaysia PDPA 2010 (Act 709), 100 pages,
+~149k characters, scanned (OCR ran on all 100 pages) · **Token counts:** Input 24,548 · Output
+3,722 (27 LLM calls) · **Wall-clock:** 150.3 s per document.
+
+Only the per-token **rate** is a parameter — measured tokens × rate. The figure above prices
+the LLM at a reference commercial rate ($0.50 / $1.50 per 1M input/output tokens); **our own
+endpoint is not billed per token** (500M tokens/day, no per-call charge), so our *actual*
+marginal cost is ~$0. Everything except the LLM is self-hosted, so the open-weight swap is
+**$0 API per document** (compute only).
+
+### Cost log excerpt (`logs/cost_report.json`)
+
+```json
+{
+  "document": "MY_PDPA_Act709_100pages.pdf",
+  "measured_on": "2026-06-22",
+  "pages": 100,
+  "ocr":       { "engine": "rapidocr",   "pages": 100, "scanned": true, "cost_usd": 0.0 },
+  "embedding": { "model": "BAAI/bge-m3", "tokens": 0, "cost_usd": 0.0 },
+  "llm":       { "model": "gpt-5.4", "calls": 27, "input_tokens": 24548,
+                 "output_tokens": 3722, "cost_usd": 0.0179 },
+  "total_cost_usd": 0.0179,
+  "total_cost_usd_open_weight_swap": 0.0,
+  "citations": 9,
+  "processing_time_seconds": 150.3
+}
+```
 
 ---
 
@@ -194,12 +251,11 @@ Add a new economy by writing one YAML under `configs/jurisdictions/` — see
 Honest by design — these guide where to be cautious.
 
 - **OCR is opt-in:** real runs **must** set `LEXORA_OCR=1`, or scanned-only statutes drop
-  to 0 clauses with no flag. Submission runs set it explicitly.
-- **Official 6-field JSON sidecar:** CSV + JSON-LD ship now; the official technical JSON
-  copy (CER, processing time, raw context, …) is being finalized.
+  to 0 clauses with no flag. Submission runs set it on by default.
 - **Per-cell LLM verifier (`--verify-cells`):** kills the "empty-attribution law scored
-  against all 9 indicators" false positives, but is currently over-strict (drops some
-  correct cells) — **off by default**, pending calibration.
+  against all 9 indicators" false positives. Calibrated (MY A/B: 209→46 citations, precision
+  0.45→0.90 at unchanged recall) but kept **off by default** until the instrument→indicator
+  gold is lawyer-validated, since its absolute precision/coverage is scored against that gold.
 - **Australia portal anti-bot:** `legislation.gov.au` applies cumulative per-IP throttling
   and can serve an HTML decoy under load; mitigated with per-host throttle + `--serial-fetch`.
 - **Confidence is relative, not calibrated:** treat scores below 0.80 as review-flagged.
