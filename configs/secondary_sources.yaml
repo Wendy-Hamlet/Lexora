@@ -24,8 +24,9 @@
 #   3 = downloadable/embedded but index-not-law-name, or JS payload to parse (STRI; Linklaters)
 #   4 = paywalled / 404 / anti-bot — manual-seed fallback only (DLA Piper, Lexology, Baker McKenzie, DataGuidance)
 #
-# BUILT adapters: unctad_* (S-1), oecd_dstri (S-3 snapshot), iclg + dla_piper (S-4).
-# The rest are registered here for coverage cross-check; adapters land by tier order.
+# BUILT adapters: unctad_* (S-1), oecd_dstri (S-3 snapshot), iclg + dla_piper (S-4),
+# world_map_encryption + linklaters (free, server-rendered). NOT BUILT (paywalled /
+# 404 / gated -> manual-seed fallback): lexology, baker_mckenzie, dataguidance.
 
 sources:
   # --- Tier 1: UNCTAD (free, HTML country tables, ONE shared CyberlawData.js) -- S-1
@@ -98,16 +99,17 @@ sources:
     tier: 4
     notes: "Listed by the guide for both Pillar 6 and Pillar 7. Paywalled JS app (no server-side content); not crawlable -> manual seed only."
 
-  # Linklaters "Data Protected": NOT BUILT — probed 2026-06-22, HTTP 200 / 556KB Next.js;
-  # __NEXT_DATA__ (479KB) carries a jurisdiction list (AU/SG seen) but not full law text,
-  # which sits on per-jurisdiction routes. Parseable via __NEXT_DATA__ + per-route fetch.
+  # Linklaters "Data Protected": BUILT 2026-06-22. Per-jurisdiction page
+  # /data-protected---<slug> server-renders the principal act (SG: PDPA 2012, AU:
+  # Privacy Act 1988). Adapter extracts the act -> P7-I1/P7-I4 with a jurisdiction
+  # cross-check (the ---malaysia body is mis-served as EU/Malta -> dropped, no signal).
   - key: linklaters
     name: "Linklaters Data Protected"
     url: "https://www.linklaters.com/en/insights/data-protected"
     pillars: [6, 7]
     indicators: ["P6-I1", "P6-I2", "P6-I3", "P6-I4", "P7-I1", "P7-I2", "P7-I3", "P7-I4", "P7-I5"]
     tier: 3
-    notes: "Listed by the guide for Pillar 6 + Pillar 7. Next.js: __NEXT_DATA__ holds the jurisdiction index; full text on per-jurisdiction routes -> needs a route-walk parser (tier 3)."
+    notes: "Listed by the guide for Pillar 6 + Pillar 7. BUILT: per-jurisdiction page parse -> P7-I1/P7-I4, with an expected-country cross-check that drops mis-served bodies (e.g. ---malaysia renders EU/Malta). SG/AU clean; MY yields nothing."
 
   # Lexology / "Getting the Deal Through" (GTDT): NOT BUILT — probed 2026-06-22, HTTP 404
   # on the public GTDT path; content is paywalled. Manual-seed fallback only.
@@ -129,14 +131,14 @@ sources:
     tier: 4
     notes: "Named by the guide specifically under P7-I2 (cybersecurity). Gated resource hub (404 on probed entry points) -> manual seed only."
 
-  # World Map of Encryption Laws and Policies (Global Partners Digital): NOT BUILT —
-  # probed 2026-06-22, HTTP 200 / 1.75MB, NO JS framework, all countries + statute names
-  # server-rendered on one page (AU/SG/MY present; Transactions/Communications/Crimes Act
-  # hits). Most viable new source: single fetch + per-country section parser (tier 2).
+  # World Map of Encryption Laws and Policies (Global Partners Digital): BUILT 2026-06-22.
+  # One server-rendered page; <h4 class="h2">Country</h4> blocks split per country, prose
+  # names the encryption / lawful-access laws. Adapter -> P7-I5, and (unlike the indices)
+  # NAMES laws so it feeds USE-1 discovery seeds.
   - key: world_map_encryption
     name: "World Map of Encryption Laws and Policies"
     url: "https://www.gp-digital.org/world-map-of-encryption/"
     pillars: [7]
     indicators: ["P7-I5"]
     tier: 2
-    notes: "Named by the guide under P7-I5 (government access to data). Server-rendered single page, all countries inline with statute names -> one fetch + section parser. NB: it can NAME laws, so a future adapter could feed USE-1 discovery seeds (unlike the index sources)."
+    notes: "Named by the guide under P7-I5 (government access to data). BUILT: single fetch + per-country section parser -> P7-I5 signals carrying law names (USE-1 seeds)."
