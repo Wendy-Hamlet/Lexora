@@ -1,10 +1,13 @@
-"""STRI adapters (WS-S, S-3) — OECD Digital STRI + World Bank-WTO STRI.
+"""STRI adapter (WS-S, S-3) — OECD Digital STRI.
 
-These indices are not cleanly machine-fetchable (OECD's viz API is an opaque
-interleaved columnar blob; the WB-WTO STRI sits behind the WTO I-TIP SPA with no
-bulk download), and they change only ~annually, so they are served from a curated,
-human-verified snapshot (``configs/secondary_stri_snapshot.yaml``) rather than a
-live scrape — the robust choice agreed for S-3.
+The OECD STRI is the Pillar 6 secondary index named by the RDTII guide (p.49).
+(The World Bank-WTO STRI was dropped on 2026-06-22: the guide places it under
+Pillars 2/3/5 — FDI/procurement/telecom — which are out of our P6/P7 scope.)
+
+This index is not cleanly machine-fetchable (OECD's viz API is an opaque
+interleaved columnar blob) and changes only ~annually, so it is served from a
+curated, human-verified snapshot (``configs/secondary_stri_snapshot.yaml``)
+rather than a live scrape — the robust choice agreed for S-3.
 
 Being indices (not law-name pointers), an STRI value informs P6 at the coarse
 "restrictions exist here" level: value > 0 -> presence='yes' (a P6 corroboration
@@ -86,11 +89,4 @@ def oecd_dstri(economy: str, indicators: Sequence[RDTIIIndicator], *, snapshot: 
     return _emit("oecd_dstri", economy, indicators, snapshot=snapshot)
 
 
-@register_source("worldbank_wto_stri")
-def worldbank_wto_stri(economy: str, indicators: Sequence[RDTIIIndicator], *, snapshot: dict | None = None,
-                       **_) -> list[SecondarySignal]:
-    """World Bank-WTO STRI (SG/AU/MY) -> P6 restriction-presence signals."""
-    return _emit("worldbank_wto_stri", economy, indicators, snapshot=snapshot)
-
-
-__all__ = ["oecd_dstri", "worldbank_wto_stri", "load_stri_snapshot"]
+__all__ = ["oecd_dstri", "load_stri_snapshot"]

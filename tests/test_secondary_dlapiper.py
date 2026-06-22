@@ -97,8 +97,11 @@ def test_empty_text_yields_nothing():
     assert dla_piper_data_protection("SG", INDS, data="", use_llm=False) == []
 
 
-def test_config_lists_dla_piper_with_matching_indicators():
+def test_config_lists_dla_piper_with_subset_indicators():
+    # Config `indicators` is the guide's attachment (DLA Piper: Pillar 6 + Pillar 7);
+    # the adapter extracts the governing act -> a subset (P7-I1/P7-I4).
     by_key = {s.key: s for s in load_secondary_sources()}
     assert "dla_piper" in by_key
     sigs = dla_piper_data_protection("SG", INDS, data=_SG_TEXT, use_llm=False)
-    assert {s.indicator_id for s in sigs} == set(by_key["dla_piper"].indicators)
+    emitted = {s.indicator_id for s in sigs}
+    assert emitted and emitted <= set(by_key["dla_piper"].indicators)

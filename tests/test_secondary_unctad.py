@@ -59,10 +59,12 @@ def test_cyberlaw_reads_both_columns():
     assert sigs["P7-I2"].presence is Presence.yes  # MY cybercrime = 1
 
 
-def test_cybercrime_column_maps_to_three_indicators():
+def test_cybercrime_column_maps_to_cybersecurity_only():
+    # Guide names UNCTAD Cybercrime Legislation Worldwide specifically under P7-I2;
+    # the old P7-I3/P7-I5 inference was dropped 2026-06-22 (presence != evidence).
     sigs = _by_ind(unctad_cybercrime("AU", INDS, data=FIX))
-    assert set(sigs) == {"P7-I2", "P7-I3", "P7-I5"}
-    assert all(s.presence is Presence.yes for s in sigs.values())  # AU cybercrime = 1
+    assert set(sigs) == {"P7-I2"}
+    assert sigs["P7-I2"].presence is Presence.yes  # AU cybercrime = 1
 
 
 def test_unknown_presence_code_maps_to_unknown():
@@ -71,18 +73,20 @@ def test_unknown_presence_code_maps_to_unknown():
 
 
 def test_respects_in_scope_indicator_filter():
-    only_retention = [i for i in INDS if i.submission_id == "P7-I3"]
-    sigs = unctad_cybercrime("AU", only_retention, data=FIX)
-    assert {s.indicator_id for s in sigs} == {"P7-I3"}
+    only_cyber = [i for i in INDS if i.submission_id == "P7-I2"]
+    sigs = unctad_cybercrime("AU", only_cyber, data=FIX)
+    assert {s.indicator_id for s in sigs} == {"P7-I2"}
 
 
 def test_economy_absent_from_dataset_yields_nothing():
     assert unctad_data_protection("ZZ", INDS, data=FIX) == []
 
 
-def test_adapter_indicator_ids_match_config():
-    """Guard against drift between configs/secondary_sources.yaml and the adapters:
-    what each adapter emits (full row, all indicators) == the config's `indicators`."""
+def test_adapter_indicators_are_subset_of_config():
+    """Guard against drift: config `indicators` is the guide's attachment for the
+    source; an adapter emits the SUBSET it can actually read from the dataset (e.g.
+    the Cyberlaw Tracker is attached Pillar-7-wide but only carries privacy +
+    cybercrime columns). So emitted must be a non-empty subset of config."""
     by_key = {s.key: s for s in load_secondary_sources()}
     adapters = {
         "unctad_data_protection": unctad_data_protection,
@@ -91,4 +95,4 @@ def test_adapter_indicator_ids_match_config():
     }
     for key, adapter in adapters.items():
         emitted = {s.indicator_id for s in adapter("SG", INDS, data=FIX)}
-        assert emitted == set(by_key[key].indicators), key
+        assert emitted and emitted <= set(by_key[key].indicators), key

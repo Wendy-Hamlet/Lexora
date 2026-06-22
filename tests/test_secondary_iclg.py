@@ -46,8 +46,11 @@ def test_empty_text_yields_nothing():
     assert iclg_data_protection("SG", INDS, data="", use_llm=False) == []
 
 
-def test_config_lists_iclg_with_matching_indicators():
+def test_config_lists_iclg_with_subset_indicators():
+    # Config `indicators` is the guide's attachment (ICLG across Pillar 7); the
+    # data-protection adapter extracts the governing act -> a subset (P7-I1/P7-I4).
     by_key = {s.key: s for s in load_secondary_sources()}
     assert "iclg" in by_key
     sigs = iclg_data_protection("SG", INDS, data=_SG, use_llm=False)
-    assert {s.indicator_id for s in sigs} == set(by_key["iclg"].indicators)
+    emitted = {s.indicator_id for s in sigs}
+    assert emitted and emitted <= set(by_key["iclg"].indicators)

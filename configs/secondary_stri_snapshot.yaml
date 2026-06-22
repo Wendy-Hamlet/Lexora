@@ -1,10 +1,13 @@
-# Curated STRI snapshot (WS-S, S-3) — OECD Digital STRI + World Bank-WTO STRI.
+# Curated STRI snapshot (WS-S, S-3) — OECD Digital STRI (the P6 secondary index).
 #
-# WHY A SNAPSHOT: these indices update ~annually and are NOT cleanly machine-fetchable
-# — the OECD "goingdigital" viz API serves an opaque interleaved columnar blob (a single
+# The World Bank-WTO STRI was removed on 2026-06-22: the RDTII guide places it under
+# Pillars 2/3/5 (FDI/procurement/telecom), which are out of our P6/P7 scope. Pillar 6
+# (p.49) names the OECD STRI database, so only OECD remains here.
+#
+# WHY A SNAPSHOT: the index updates ~annually and is NOT cleanly machine-fetchable —
+# the OECD "goingdigital" viz API serves an opaque interleaved columnar blob (a single
 # country/year/breakdown decodes to many conflicting values, so auto-extraction is
-# unreliable), and the World Bank-WTO STRI lives only behind the WTO I-TIP services SPA
-# (no bulk download). So values here are HUMAN-VERIFIED from the official portals.
+# unreliable). So values here are HUMAN-VERIFIED from the official portal.
 #
 # HOW TO FILL: read the figure from the source_url, then set `value` + `as_of` (year of
 # the figure) + confirm `source_url`. NEVER fabricate — leave `value: null` and the
@@ -12,8 +15,7 @@
 # exist -> a presence='yes' P6 signal (feeds the coverage cross-check + provenance only;
 # NOT a discovery seed — an index carries no law name). value == 0 -> presence='no'.
 #
-# OECD covers AU only (SG/MY are non-members, absent from OECD STRI); the World Bank-WTO
-# STRI covers all three.
+# OECD covers AU only (SG/MY are non-members, absent from OECD STRI).
 
 snapshots:
   - source_key: oecd_dstri
@@ -23,12 +25,3 @@ snapshots:
     economies:
       AU: { value: null, as_of: "", source_url: "https://goingdigital.oecd.org/en/indicator/73" }
       # SG, MY: not covered by OECD STRI (non-members) -> intentionally absent.
-
-  - source_key: worldbank_wto_stri
-    source_name: "World Bank-WTO Services Trade Restrictions Index"
-    scale: "0-100 (higher = more restrictive)"
-    indicators: ["P6-I1", "P6-I2", "P6-I4"]
-    economies:
-      SG: { value: null, as_of: "", source_url: "https://i-tip.wto.org/services/" }
-      AU: { value: null, as_of: "", source_url: "https://i-tip.wto.org/services/" }
-      MY: { value: null, as_of: "", source_url: "https://i-tip.wto.org/services/" }

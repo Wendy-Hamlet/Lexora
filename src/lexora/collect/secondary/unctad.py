@@ -165,11 +165,15 @@ def unctad_cyberlaw(
 def unctad_cybercrime(
     economy: str, indicators: Sequence[RDTIIIndicator], **kw
 ) -> list[SecondarySignal]:
-    """Cybercrime column -> cybersecurity framework (P7-I2); cybercrime procedural
-    powers also commonly carry retention (P7-I3) and government-access (P7-I5)."""
+    """Cybercrime column -> dedicated cybersecurity framework (P7-I2).
+
+    The guide names UNCTAD Cybercrime Legislation Worldwide specifically under P7-I2.
+    Cybercrime statutes often carry retention (P7-I3) and government-access (P7-I5)
+    provisions, but the tracker reports presence only — presence alone is not
+    evidence of those, so we no longer claim P7-I3/P7-I5 (reconciled 2026-06-22)."""
     return _emit(
         economy,
-        {_COL_CYBERCRIME: ("P7-I2", "P7-I3", "P7-I5")},
+        {_COL_CYBERCRIME: ("P7-I2",)},
         "UNCTAD Cybercrime Legislation Worldwide",
         indicators,
         **kw,
