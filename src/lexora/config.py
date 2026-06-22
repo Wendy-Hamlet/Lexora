@@ -115,6 +115,7 @@ class LexoraConfig:
     llm_model: str
     llm_max_tokens: int
     llm_max_retries: int
+    llm_user_agent: str
     embedding_model: str
     ocr_lang: str
     ocr_citable_threshold: float
@@ -158,6 +159,7 @@ def load_config() -> LexoraConfig:
                 "OPENAI_MAX_RETRIES",
             )
         ),
+        llm_user_agent=_env(layers, "LEXORA_LLM_USER_AGENT", ""),
         embedding_model=_env(
             layers, "LEXORA_EMBEDDING_MODEL", _DEFAULTS["LEXORA_EMBEDDING_MODEL"]
         ),

@@ -54,6 +54,11 @@ class LlmClient:
         self.model = cfg.llm_model
         self.max_tokens = cfg.llm_max_tokens
         self.max_retries = cfg.llm_max_retries
+        # Optional User-Agent override. Some hosted OpenAI-compatible gateways sit
+        # behind Cloudflare, which rejects the SDK's default UA with HTTP 403
+        # "error code: 1010". Set LEXORA_LLM_USER_AGENT to a browser UA to pass.
+        # Empty = leave the SDK default (no change for normal endpoints).
+        self.user_agent = cfg.llm_user_agent
         self.timeout = timeout
         self._client = None
         # Some endpoints accept response_format=json_object but return empty
@@ -87,8 +92,12 @@ class LlmClient:
         if self._client is None:
             from openai import OpenAI
 
+            default_headers = (
+                {"User-Agent": self.user_agent} if self.user_agent else None
+            )
             self._client = OpenAI(
-                base_url=self.base_url, api_key=self.api_key, timeout=self.timeout
+                base_url=self.base_url, api_key=self.api_key, timeout=self.timeout,
+                default_headers=default_headers,
             )
         return self._client
 
