@@ -544,7 +544,21 @@ def _citations_from_clauses(
         if not passing:
             continue
 
-        if verifier is not None:
+        if verifier is not None and getattr(verifier, "mode", "pick_one") == "per_cell":
+            # Universal precision lane: judge EVERY (clause × indicator) cell
+            # keep/drop, then fall through to the normal multi-section emit path
+            # with only the kept clauses. Kills the "broad statute scored against
+            # all 9 indicators floods on shared vocabulary" failure mode (e.g. a
+            # criminal-procedure clause wrongly surfaced for P6 localization). A
+            # None verdict means the backend errored -> keep all (never worse than
+            # the un-verified baseline); an empty keep-set is a real "drop all".
+            candidates = [clause_by_id[h.clause_id] for h in passing]
+            kept = verifier.judge_each(indicator, candidates)
+            if kept is not None:
+                passing = [h for h in passing if h.clause_id in kept]
+            if not passing:
+                continue
+        elif verifier is not None:
             # One LLM judgement per indicator over its candidate clauses; it may
             # pick one (match/uncertain) or abstain. The score scale is unchanged
             # — confidence stays BM25-derived; the verdict only gates inclusion

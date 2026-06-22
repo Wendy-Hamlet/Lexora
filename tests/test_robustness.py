@@ -134,7 +134,7 @@ def test_run_one_warns_when_verify_requested_but_verifier_unavailable(monkeypatc
         lambda _path: SimpleNamespace(portals=[SimpleNamespace()]),
     )
     monkeypatch.setattr(rs, "load_indicators", lambda _path: [])
-    monkeypatch.setattr(rs, "make_verifier", lambda use_llm: None)
+    monkeypatch.setattr(rs, "make_verifier", lambda use_llm, **kw: None)
 
     def fake_run_pipeline_map(**kwargs):
         assert kwargs["verifier"] is None

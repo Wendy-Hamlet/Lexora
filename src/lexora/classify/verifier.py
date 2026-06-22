@@ -49,13 +49,87 @@ _SYSTEM = (
 )
 
 
-class Verifier:
-    """Wraps an LLM client to judge (indicator, candidate clauses)."""
+_PER_CELL_SYSTEM = (
+    "You are a legal-mapping auditor for the UN ESCAP RDTII framework. You are "
+    "given ONE regulatory indicator and several candidate statutory clauses already "
+    "retrieved for it by a keyword/semantic search. For EACH clause, decide whether "
+    "the provision SUBSTANTIVELY establishes or governs THIS indicator's measure — "
+    "not merely that it shares vocabulary or mentions a related term in passing.\n"
+    "Rules:\n"
+    "- KEEP a clause only if the provision itself is on-point for THIS specific "
+    "indicator. DROP a clause that is about a different subject (e.g. a criminal "
+    "offence, a bare definition, a cross-reference to another Act, a procedural power "
+    "unrelated to the indicator) even if it shares words with the indicator.\n"
+    "- The keep list may be empty (drop all) or contain several clause_ids.\n"
+    "- You may ONLY return clause_id values from the given list. Never invent an id.\n"
+    "- Do NOT write or quote any clause text. Return identifiers only.\n"
+    "- Base your judgement ONLY on the provided clause text and indicator definition, "
+    "not on outside knowledge. If your reasoning relies on anything outside the text, "
+    "say so in 'rationale'.\n"
+    'Respond with a single JSON object: {"keep": [<clause_id>, ...], '
+    '"rationale": <short string>}.'
+)
 
-    def __init__(self, client) -> None:
+_PER_CELL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "keep": {"type": "array", "items": {"type": "string"}},
+        "rationale": {"type": "string"},
+    },
+    "required": ["keep"],
+}
+
+
+class Verifier:
+    """Wraps an LLM client to judge (indicator, candidate clauses).
+
+    ``mode`` selects the verdict shape:
+
+    * ``"pick_one"`` (default, legacy ``--verify``): choose ≤1 supporting clause
+      per indicator or abstain — :meth:`verify`.
+    * ``"per_cell"`` (``--verify-cells``): judge EVERY (clause × indicator) cell
+      keep/drop and return the kept subset — :meth:`judge_each`. This is the
+      universal precision lane that kills the "broad statute floods all 9
+      indicators on shared vocabulary" failure mode.
+    """
+
+    def __init__(self, client, *, mode: str = "pick_one") -> None:
         self._client = client
+        self.mode = mode
         self.error_count = 0
         self.last_error_type: str | None = None
+
+    def judge_each(
+        self,
+        indicator: RDTIIIndicator,
+        candidates: list[Clause],
+    ) -> set[str] | None:
+        """Per-cell keep/drop: return the set of clause_ids that substantively
+        support ``indicator``.
+
+        Tightening only — the result is always a SUBSET of the candidate ids
+        (hallucinated ids are dropped). An empty set is a real "drop all" verdict.
+        Returns ``None`` ONLY on a backend error / unparseable reply, which the
+        caller treats as "keep all" (fall back to the un-verified baseline) so an
+        endpoint outage can never silently delete citations — separating
+        error-drop from a true no-match abstention.
+        """
+        if not candidates:
+            return set()
+        by_id = {c.clause_id: c for c in candidates}
+        try:
+            data = self._client.chat(
+                _PER_CELL_SYSTEM, self._user_prompt(indicator, candidates),
+                json_schema=_PER_CELL_SCHEMA,
+            )
+        except Exception as exc:
+            self.error_count += 1
+            self.last_error_type = type(exc).__name__
+            return None  # error -> caller keeps all (never worse than baseline)
+        keep = data.get("keep") if isinstance(data, dict) else None
+        if not isinstance(keep, list):
+            return None  # unparseable -> treat as error, keep all
+        return {str(cid) for cid in keep if str(cid) in by_id}
 
     def verify(
         self,
@@ -132,10 +206,11 @@ _RESPONSE_SCHEMA = {
 }
 
 
-def make_verifier(use_llm: bool = False) -> Verifier | None:
+def make_verifier(use_llm: bool = False, *, mode: str = "pick_one") -> Verifier | None:
     """Construct a :class:`Verifier`, or ``None`` when the LLM gate is off.
 
-    ``use_llm`` is the explicit opt-in (the ``--verify`` flag / caller choice).
+    ``use_llm`` is the explicit opt-in (the ``--verify`` / ``--verify-cells`` flag).
+    ``mode`` is ``"pick_one"`` (legacy) or ``"per_cell"`` (universal precision lane).
     Even when requested, returns ``None`` if the ``openai`` SDK is not installed,
     so callers can wire it unconditionally and the run degrades gracefully.
     """
@@ -146,7 +221,7 @@ def make_verifier(use_llm: bool = False) -> Verifier | None:
     if not llm_client.is_available():
         return None
     try:
-        return Verifier(llm_client.LlmClient())
+        return Verifier(llm_client.LlmClient(), mode=mode)
     except Exception:
         return None
 

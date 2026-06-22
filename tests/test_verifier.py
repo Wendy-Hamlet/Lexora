@@ -151,6 +151,57 @@ def test_pipeline_verifier_match_publishes_verified():
     assert cites[0].review_status is ReviewStatus.verified
 
 
+# --- per-cell verifier (universal precision lane) ---------------------------
+
+def test_judge_each_keeps_returned_subset_only():
+    # model keeps c1, and names a hallucinated id which is dropped (tightening).
+    client = FakeClient({"keep": ["c1", "c99"], "rationale": "c1 on-point"})
+    kept = Verifier(client, mode="per_cell").judge_each(_ind(), _candidates())
+    assert kept == {"c1"}  # subset of candidates only; hallucinated c99 dropped
+
+
+def test_judge_each_empty_keep_is_a_real_drop_all():
+    client = FakeClient({"keep": [], "rationale": "none on-point"})
+    assert Verifier(client, mode="per_cell").judge_each(_ind(), _candidates()) == set()
+
+
+def test_judge_each_backend_error_returns_none_for_keep_all():
+    # None is the sentinel the pipeline reads as "keep all" (never worse than baseline).
+    client = FakeClient(RuntimeError("endpoint down"))
+    v = Verifier(client, mode="per_cell")
+    assert v.judge_each(_ind(), _candidates()) is None
+    assert v.error_count == 1
+
+
+def test_make_verifier_per_cell_mode():
+    # (offline) just the mode plumbing — no client constructed when use_llm=False.
+    assert make_verifier(use_llm=False, mode="per_cell") is None
+
+
+def test_pipeline_per_cell_drops_off_topic_keeps_on_topic():
+    from lexora.pipeline import _citations_from_clauses
+
+    # c1 (retention) is on-topic for 7.3; c2 (forms) is off-topic -> dropped.
+    verifier = Verifier(FakeClient({"keep": ["c1"]}), mode="per_cell")
+    cites = _citations_from_clauses(
+        _candidates(), _doc(), _profile(), [_ind()], "statute", top_k=2, min_score=0.0,
+        verifier=verifier,
+    )
+    assert {c.clause_id for c in cites} == {"c1"}  # off-topic c2 tightened out
+
+
+def test_pipeline_per_cell_error_keeps_all_not_drops():
+    from lexora.pipeline import _citations_from_clauses
+
+    # backend error -> judge_each None -> keep ALL passing (baseline), never delete.
+    verifier = Verifier(FakeClient(RuntimeError("down")), mode="per_cell")
+    cites = _citations_from_clauses(
+        _candidates(), _doc(), _profile(), [_ind()], "statute", top_k=2, min_score=0.0,
+        verifier=verifier,
+    )
+    assert {c.clause_id for c in cites} == {"c1", "c2"}  # both kept on error
+
+
 def test_pipeline_verifier_uncertain_routes_to_conflict_review():
     from lexora.pipeline import _citations_from_clauses
 

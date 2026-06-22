@@ -58,6 +58,7 @@ def run_one(
     fetch_min_interval: float = 0.0,
     serial_fetch: bool = False,
     use_secondary: bool = False,
+    verify_cells: bool = False,
 ) -> MapResult:
     """Run the production multi-instrument map for one economy."""
     profile = load_profile(JURIS / f"{iso.lower()}.yaml")
@@ -69,8 +70,11 @@ def run_one(
         secondary = gather_signals(iso, indicators)
         print(f"  secondary sources [{iso}]: {len(secondary)} signal(s) from "
               f"{len({s.source_name for s in secondary})} tracker(s)")
-    verifier = make_verifier(use_llm=verify)
-    if verify and verifier is None:
+    # --verify-cells (per-cell universal precision lane) takes precedence over the
+    # legacy pick-one --verify.
+    verifier = make_verifier(use_llm=verify or verify_cells,
+                             mode="per_cell" if verify_cells else "pick_one")
+    if (verify or verify_cells) and verifier is None:
         print("warning: --verify requested but the LLM verifier is unavailable "
               "(install the [llm] extra); continuing with BM25 + verbatim only.")
     rationale_gen = make_rationale_generator(use_llm=rationale_llm)
@@ -170,7 +174,13 @@ def main() -> None:
     ap.add_argument("--budget", type=int, default=20, help="Max instruments per economy")
     ap.add_argument("--timeout", type=float, default=60.0)
     ap.add_argument("--verify", action="store_true",
-                    help="Tighten mappings with the LLM verifier (needs LEXORA_LLM_* endpoint)")
+                    help="Tighten mappings with the legacy pick-one LLM verifier "
+                         "(≤1 clause/indicator/doc; needs LEXORA_LLM_* endpoint)")
+    ap.add_argument("--verify-cells", action="store_true",
+                    help="Universal per-cell LLM verifier: judge EVERY (clause × "
+                         "indicator) keep/drop to kill the broad-statute-floods-all-9 "
+                         "false positives. On endpoint error a cell is KEPT (never "
+                         "worse than baseline). Needs LEXORA_LLM_* endpoint.")
     ap.add_argument("--rationale-llm", action="store_true",
                     help="Author the Mapping Rationale column with the LLM (template fallback "
                          "+ verbatim-copy guard; needs LEXORA_LLM_* endpoint)")
@@ -248,7 +258,8 @@ def main() -> None:
                        rationale_llm=args.rationale_llm, metadata_llm=args.metadata_llm,
                        timeout=args.timeout, llm_workers=args.llm_workers,
                        doc_workers=args.doc_workers, fetch_min_interval=args.fetch_min_interval,
-                       serial_fetch=args.serial_fetch, use_secondary=args.secondary)
+                       serial_fetch=args.serial_fetch, use_secondary=args.secondary,
+                       verify_cells=args.verify_cells)
 
     # Country-level parallelism: economies are independent, so run them concurrently.
     # Threads (not processes) because the heavy stages — network fetch, OCR
