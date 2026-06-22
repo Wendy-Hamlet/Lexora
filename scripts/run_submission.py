@@ -33,6 +33,7 @@ from lexora.classify.verifier import make_verifier  # noqa: E402
 from lexora.collect.profile_loader import load_profile  # noqa: E402
 from lexora.config import load_config  # noqa: E402
 from lexora.export.csv_exporter import to_csv  # noqa: E402
+from lexora.export.json_exporter import to_submission_json  # noqa: E402
 from lexora.export.jsonld_exporter import to_jsonld  # noqa: E402
 from lexora.indicators import load_indicators  # noqa: E402
 from lexora.pipeline import MapResult, run_pipeline_map  # noqa: E402
@@ -224,8 +225,20 @@ def main() -> None:
                          "while OCR/parse/map/LLM still run parallel across documents. Stronger "
                          "than --fetch-min-interval against cumulative anti-bot (no request burst "
                          "at all); different economies (hosts) stay parallel. Use with --doc-workers.")
+    ap.add_argument("--no-ocr", action="store_true",
+                    help="disable OCR. OCR is ON by default for submission runs so "
+                         "scanned-only statutes (e.g. MY gazette PDFs) are not silently "
+                         "dropped to 0 clauses; pass this only to reproduce the text-layer-"
+                         "only behaviour.")
     ap.add_argument("--dry-run", action="store_true", help="plan only, no network")
     args = ap.parse_args()
+
+    # OCR defaults ON for submission (kill the silent-scan-drop footgun). An explicit
+    # LEXORA_OCR in the environment still wins; --no-ocr forces it off.
+    if args.no_ocr:
+        os.environ.pop("LEXORA_OCR", None)
+    elif "LEXORA_OCR" not in os.environ:
+        os.environ["LEXORA_OCR"] = "1"
 
     isos = ["sg", "au", "my"] if args.jurisdiction == "all" else [args.jurisdiction.lower()]
 
@@ -242,13 +255,15 @@ def main() -> None:
             else:
                 cfg = load_config()
                 print(f"  -> LLM verifier ON (model: {cfg.llm_model})")
-        print(f"  -> would write {args.out} (+ .jsonld) and {args.out.with_suffix('.summary.json')}")
+        print(f"  -> OCR {'OFF (--no-ocr)' if args.no_ocr else 'ON (default)'}")
+        print(f"  -> would write {args.out} (+ .json sidecar, .jsonld, .summary.json)")
         return
 
     if not os.environ.get("LEXORA_LIVE"):
         print("note: set LEXORA_LIVE=1 to run the live submission crawl (or use --dry-run).")
 
     all_citations = []
+    all_documents = []
     summaries = []
     results_by_iso = {}
     tokens_total = {"calls": 0, "prompt": 0, "completion": 0, "total": 0}
@@ -295,6 +310,7 @@ def main() -> None:
             continue
         result, tokens = payload
         all_citations.extend(result.citations)
+        all_documents.extend(result.documents)
         results_by_iso[iso] = result
         summaries.append(summarize(iso, result))
         for k in tokens_total:
@@ -313,6 +329,14 @@ def main() -> None:
     n = to_csv(all_citations, args.out)
     jsonld_out = args.out.with_suffix(".jsonld")
     to_jsonld(all_citations, jsonld_out)
+    # Official "CSV + JSON" deliverable: the technical sidecar (per-provision OCR
+    # audit, timing, model version, raw context). Mirrors the CSV rows.
+    cfg = load_config()
+    use_dense = os.environ.get("LEXORA_MAP_DENSE", "").lower() in ("1", "true", "yes", "on")
+    json_out = args.out.with_suffix(".json")
+    n_json = to_submission_json(
+        all_documents, json_out, model_version=f"llm:{cfg.llm_model}", use_dense=use_dense,
+    )
     summary_out = args.out.with_suffix(".summary.json")
     summary_out.write_text(json.dumps(summaries, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -354,6 +378,7 @@ def main() -> None:
             print("  none — every indicator a secondary source flags is also cited.")
 
     print(f"Wrote {n} citation row(s) -> {args.out} (submission CSV)")
+    print(f"                          -> {json_out} ({n_json}-provision JSON sidecar)")
     print(f"                          -> {jsonld_out} (JSON-LD)")
     print(f"                          -> {summary_out} (run summary)")
 

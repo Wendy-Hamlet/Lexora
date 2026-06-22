@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import math
 import os
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,6 +70,15 @@ class DemoArtifacts:
     citations: list[Citation]
     pages: list[PdfPage] = field(default_factory=list)
     blocks: list[HtmlBlock] = field(default_factory=list)
+    # WS-2 per-document technical metadata for the JSON sidecar. `document_text` is
+    # the canonical concatenated text (used to slice raw before/after context per
+    # provision); the OCR fields come from `_maybe_ocr_fill`; `processing_time_seconds`
+    # is set by the caller that times the per-document work (`run_pipeline_map`).
+    document_text: str = ""
+    pdf_is_scanned: bool = False
+    ocr_quality_cer: float | None = None
+    ocr_engine: str = ""
+    processing_time_seconds: float | None = None
 
 
 @dataclass
@@ -99,21 +109,40 @@ def _map_use_dense() -> bool:
     return os.environ.get("LEXORA_MAP_DENSE", "").lower() in ("1", "true", "yes", "on")
 
 
-def _maybe_ocr_fill(pages: list[PdfPage], source: Path | bytes) -> list[PdfPage]:
+def _maybe_ocr_fill(
+    pages: list[PdfPage], source: Path | bytes
+) -> tuple[list[PdfPage], dict]:
     """Fill image-only page slots with OCR when ``LEXORA_OCR`` is set.
 
     Inert by default (like the LLM verifier): a scanned PDF still yields blank
     pages unless OCR is explicitly enabled, so offline tests and the default path
     never import the OCR backend. When any page lacks a text layer, OCR fills it
-    and the global char offsets are recomputed so verbatim spans stay valid."""
+    and the global char offsets are recomputed so verbatim spans stay valid.
+
+    Returns ``(pages, ocr_meta)``. ``ocr_meta`` records the document-level OCR audit
+    trail for the WS-2 JSON sidecar — ``scanned`` (any image-only page was filled),
+    ``ocr_quality_cer`` (mean page-level OCR confidence over the filled pages; see
+    note below) and the engine name. ``scanned=False``/``ocr_quality_cer=None`` when
+    OCR did not run, so a dropped scan is no longer invisible (the §3 audit gap).
+
+    NOTE — ``ocr_quality_cer`` currently carries the mean OCR *confidence* (0..1,
+    higher is better), NOT a reference-based Character Error Rate (we have no
+    ground-truth transcript to score against). Kept under the official field name
+    for schema compatibility; the JSON sidecar annotates this. This is a flagged
+    point to revisit (see progress report §6)."""
+    meta: dict = {"scanned": False, "ocr_quality_cer": None, "ocr_engine": ""}
     if not os.environ.get("LEXORA_OCR"):
-        return pages
+        return pages, meta
     if all(p.has_text_layer for p in pages):
-        return pages
+        return pages, meta
     from lexora.extract.ocr_extractor import ocr_fill_pages
 
-    filled, _conf = ocr_fill_pages(pages, source)
-    return filled
+    filled, page_conf = ocr_fill_pages(pages, source)
+    if page_conf:
+        meta["scanned"] = True
+        meta["ocr_quality_cer"] = round(sum(page_conf.values()) / len(page_conf), 4)
+        meta["ocr_engine"] = os.environ.get("LEXORA_OCR_ENGINE", "rapidocr").lower()
+    return filled, meta
 
 
 def run_demo_pipeline(
@@ -145,14 +174,19 @@ def run_demo_pipeline(
         title=title,
     )
     pages = extract_pdf_text(pdf_path)
-    pages = _maybe_ocr_fill(pages, pdf_path)
+    pages, ocr_meta = _maybe_ocr_fill(pages, pdf_path)
     clauses = parse_structure(document.document_id, pages)
+    document_text = "\n\n".join(p.text for p in pages)
     citations = _citations_from_clauses(
         clauses, document, profile, indicators, legal_form, top_k, min_score,
         verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
-        document_text="\n\n".join(p.text for p in pages), enforced_only=enforced_only,
+        document_text=document_text, enforced_only=enforced_only,
     )
-    return DemoArtifacts(document=document, clauses=clauses, citations=citations, pages=pages)
+    return DemoArtifacts(
+        document=document, clauses=clauses, citations=citations, pages=pages,
+        document_text=document_text, pdf_is_scanned=ocr_meta["scanned"],
+        ocr_quality_cer=ocr_meta["ocr_quality_cer"], ocr_engine=ocr_meta["ocr_engine"],
+    )
 
 
 def run_pipeline_from_url(
@@ -205,10 +239,11 @@ def run_pipeline_from_url(
     blocks: list[HtmlBlock] = []
     clauses: list[Clause] = []
 
+    ocr_meta: dict = {"scanned": False, "ocr_quality_cer": None, "ocr_engine": ""}
     if 200 <= document.http_status < 300:
         if result.is_pdf():
             pages = extract_pdf_bytes(result.body)
-            pages = _maybe_ocr_fill(pages, result.body)
+            pages, ocr_meta = _maybe_ocr_fill(pages, result.body)
             clauses = parse_structure(document.document_id, pages)
         elif result.is_html():
             blocks = extract_html(result.body, url)
@@ -225,7 +260,9 @@ def run_pipeline_from_url(
         llm_workers=llm_workers, secondary_note_by_indicator=secondary_note_by_indicator,
     )
     return DemoArtifacts(
-        document=document, clauses=clauses, citations=citations, pages=pages, blocks=blocks
+        document=document, clauses=clauses, citations=citations, pages=pages, blocks=blocks,
+        document_text=document_text, pdf_is_scanned=ocr_meta["scanned"],
+        ocr_quality_cer=ocr_meta["ocr_quality_cer"], ocr_engine=ocr_meta["ocr_engine"],
     )
 
 
@@ -351,6 +388,7 @@ def run_pipeline_map(
     )
 
     def _process(hit) -> DemoArtifacts:
+        t0 = time.perf_counter()
         fulltext = resolve_fulltext(hit, force_browser=force_browser, timeout=timeout)
         target = fulltext or hit.url
         tag = DiscoveryTag.new if hit.discovery_tag == "NEW" else DiscoveryTag.known
@@ -361,7 +399,7 @@ def run_pipeline_map(
         # back to all indicators when nothing pins it down.
         wanted = set(hit.indicator_hits) or _attribute_by_name(hit, profile, indicators)
         ind_subset = [i for i in indicators if i.submission_id in wanted] or indicators
-        return run_pipeline_from_url(
+        artifacts = run_pipeline_from_url(
             url=target, profile=profile, indicators=ind_subset, portal_name=portal.name,
             source_type=portal.source_type, dest_dir=dest_dir, top_k=top_k,
             min_score=min_score, discovery_tag=tag, browser_fallback=force_browser,
@@ -373,6 +411,8 @@ def run_pipeline_map(
             serial_fetch=serial_fetch,
             secondary_note_by_indicator=secondary_note_by_indicator,
         )
+        artifacts.processing_time_seconds = round(time.perf_counter() - t0, 3)
+        return artifacts
 
     # Document-level parallelism: process instruments concurrently. This is what
     # parallelizes the per-document metadata extraction (one LLM call each, the
