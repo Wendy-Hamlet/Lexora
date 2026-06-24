@@ -12,7 +12,7 @@ _DEFAULTS = {
     "LEXORA_LLM_API_KEY": "not-needed",
     "LEXORA_LLM_MODEL": "Qwen/Qwen2.5-7B-Instruct",
     "LEXORA_LLM_MAX_TOKENS": "512",
-    "LEXORA_LLM_MAX_RETRIES": "2",
+    "LEXORA_LLM_MAX_RETRIES": "5",
     "LEXORA_EMBEDDING_MODEL": "BAAI/bge-m3",
     "LEXORA_OCR_LANG": "eng",
     "LEXORA_OCR_CITABLE_THRESHOLD": "0.85",

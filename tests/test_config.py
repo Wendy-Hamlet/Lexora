@@ -32,7 +32,7 @@ def test_load_config_reads_dotenv_and_openai_aliases(tmp_path, monkeypatch):
     assert cfg.llm_api_key == "test-key"
     assert cfg.llm_model == "example-model"
     assert cfg.llm_max_tokens == 512
-    assert cfg.llm_max_retries == 2
+    assert cfg.llm_max_retries == 5
 
 
 def test_process_environment_overrides_dotenv(tmp_path, monkeypatch):
@@ -90,7 +90,7 @@ def test_explicit_env_file_loads_sibling_example_defaults(tmp_path, monkeypatch)
     assert cfg.llm_api_key == "explicit-key"
     assert cfg.llm_model == "sibling-example-model"
     assert cfg.llm_max_tokens == 512
-    assert cfg.llm_max_retries == 2
+    assert cfg.llm_max_retries == 5
 
 
 def test_env_example_only_supplies_llm_model_not_runtime_defaults(tmp_path, monkeypatch):
@@ -118,7 +118,7 @@ def test_env_example_only_supplies_llm_model_not_runtime_defaults(tmp_path, monk
     assert cfg.llm_api_key == "not-needed"
     assert cfg.llm_model == "example-model"
     assert cfg.llm_max_tokens == 512
-    assert cfg.llm_max_retries == 2
+    assert cfg.llm_max_retries == 5
     assert cfg.ocr_lang == "eng"
 
 

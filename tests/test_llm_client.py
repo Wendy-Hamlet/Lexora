@@ -135,6 +135,77 @@ def test_chat_raises_when_endpoint_returns_no_parseable_json():
         client.chat("Return json.", "Return json.", json_schema={"type": "object"})
 
 
+def test_chat_retries_api_exception_then_succeeds(monkeypatch):
+    # A transient API exception (5xx / network) must be retried, not surfaced, as
+    # long as a later attempt returns a parseable object.
+    monkeypatch.setenv("LEXORA_LLM_JSON_MODE", "0")
+    fake = _FakeOpenAI()
+    calls = {"n": 0}
+
+    def _create(**kwargs):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise RuntimeError("503 service unavailable")
+        return _Response('{"ok": true}')
+
+    fake.chat.completions.create = _create
+    client = LlmClient()
+    client._client = fake
+
+    assert client.chat("Return json.", "Return json.",
+                       json_schema={"type": "object"}) == {"ok": True}
+    assert calls["n"] == 3  # two failures retried, third succeeded
+
+
+def test_chat_raises_after_exhausting_retries_on_api_exception(monkeypatch):
+    monkeypatch.setenv("LEXORA_LLM_JSON_MODE", "0")
+    fake = _FakeOpenAI()
+
+    def _create(**kwargs):
+        raise RuntimeError("503 service unavailable")
+
+    fake.chat.completions.create = _create
+    client = LlmClient()
+    client._client = fake
+
+    with pytest.raises(LlmResponseError):
+        client.chat("Return json.", "Return json.", json_schema={"type": "object"})
+
+
+def test_chat_escalates_temperature_across_retries(monkeypatch):
+    # The JSON-mode attempt and the first plain attempt both stay at temp 0 (best
+    # quality); later identical-prompt retries ramp the temperature so a model
+    # that deterministically emitted bad JSON at temp 0 gets a fresh sample.
+    monkeypatch.setenv("LEXORA_LLM_JSON_MODE", "1")
+    # plain attempts pop these in turn (the json-mode attempt returns "" and does
+    # not pop); two empties then a valid object -> success on the 3rd plain call.
+    fake = _FakeOpenAI(fallback_content=["", "", '{"ok": true}'])
+    client = LlmClient()
+    client._client = fake
+
+    assert client.chat("Return json.", "Return json.",
+                       json_schema={"type": "object"}) == {"ok": True}
+    temps = [c["temperature"] for c in fake.chat.completions.calls]
+    assert temps[0] == 0.0  # json-mode attempt
+    assert temps[1] == 0.0  # first plain attempt
+    assert temps[2] > 0.0   # later retry nudges temperature up
+
+
+def test_plain_chat_still_surfaces_api_exception():
+    # Non-schema calls keep the old contract: the API error propagates.
+    fake = _FakeOpenAI()
+
+    def _create(**kwargs):
+        raise RuntimeError("boom")
+
+    fake.chat.completions.create = _create
+    client = LlmClient()
+    client._client = fake
+
+    with pytest.raises(RuntimeError):
+        client.chat("hi", "there")
+
+
 @pytest.mark.parametrize(
     ("content", "expected"),
     [

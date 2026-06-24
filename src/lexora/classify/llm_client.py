@@ -21,6 +21,7 @@ import json
 import os
 import re
 import threading
+import time
 from typing import Any
 
 from lexora.config import load_config
@@ -68,6 +69,16 @@ class LlmClient:
         self.use_json_mode = os.environ.get("LEXORA_LLM_JSON_MODE", "1").lower() not in (
             "0", "false", "no", "off",
         )
+        # Backoff (seconds) slept between failed retry attempts, doubled each
+        # attempt and capped. Default 0 = retry immediately (our endpoint is not
+        # rate-limited, and temperature escalation — not waiting — is what breaks
+        # a deterministic bad-JSON reply). Set LEXORA_LLM_RETRY_BACKOFF>0 for a
+        # rate-limited endpoint where spacing the retries helps.
+        try:
+            self.retry_backoff = float(os.environ.get("LEXORA_LLM_RETRY_BACKOFF", "0"))
+        except ValueError:
+            self.retry_backoff = 0.0
+        self.retry_backoff_cap = 8.0
         # Token accounting (summed across attempts and retries) so a run can
         # report cost. A lock keeps the counters exact when one client is shared
         # across a thread pool (LLM-call-layer parallelism). Reset by the caller
@@ -104,66 +115,99 @@ class LlmClient:
     def chat(self, system: str, user: str, json_schema: dict | None = None) -> dict:
         """Send a chat completion and return the parsed JSON object.
 
-        ``temperature=0`` for determinism. When ``json_schema`` is given, the
-        client first asks the server for JSON-object output
-        (``response_format``). Some OpenAI-compatible endpoints reject or ignore
-        that mode, so the client retries once without ``response_format`` while
-        keeping the prompt constrained to JSON. If the structured response is
-        still empty or not parseable, :class:`LlmResponseError` is raised so the
-        verifier can count and report a backend response error instead of
-        silently treating it as a valid abstention.
+        When ``json_schema`` is given the call is retried up to
+        ``llm_max_retries`` times until a parseable JSON object comes back, and
+        only then does :class:`LlmResponseError` propagate so the caller can
+        DEGRADE (the verifier to keep-all, the rationale to its template, the
+        metadata extractor to portal-only) instead of silently treating a flaky
+        backend reply as a real verdict. A retry is triggered by any of: an API
+        exception (5xx / network / a 400 rejecting ``response_format``), an empty
+        response, or unparseable content.
+
+        Retries escalate to actually break a *deterministic* bad reply rather
+        than re-issue the identical request: the first attempt asks for JSON mode
+        (if enabled, ``temperature=0``); the first plain attempt drops JSON mode
+        (still ``temperature=0`` for best quality); later plain attempts nudge the
+        temperature up (0.2 → 0.6) so a model that deterministically emitted
+        malformed JSON at temp 0 gets a fresh sample. ``LEXORA_LLM_RETRY_BACKOFF``
+        optionally spaces the attempts for a rate-limited endpoint.
         """
         client = self._ensure_client()
         if json_schema is not None and "json" not in system:
             system = f"{system}\nRespond with a valid json object."
         if json_schema is not None and "json" not in user:
             user = f"{user}\nReturn valid json."
-        attempts: list[bool] = []
-        if json_schema is not None:
-            if self.use_json_mode:
-                attempts.append(True)
-            attempts.extend([False] * max(1, self.max_retries))
-        else:
-            attempts.append(False)
+        plan = self._attempt_plan(json_schema)
         content = ""
-        parse_error: Exception | None = None
-        for json_mode in attempts:
-            kwargs = self._chat_kwargs(system, user, json_mode=json_mode)
+        last_error: Exception | None = None
+        for i, (json_mode, temperature) in enumerate(plan):
+            kwargs = self._chat_kwargs(system, user, json_mode=json_mode,
+                                       temperature=temperature)
             try:
                 resp = client.chat.completions.create(**kwargs)
             except Exception as exc:
-                if json_schema is None or getattr(exc, "status_code", None) != 400:
+                # Plain (non-schema) calls preserve the old contract: surface the
+                # API error to the caller. Schema calls retry the whole request.
+                if json_schema is None:
                     raise
-                parse_error = exc
+                last_error = exc
+                self._backoff(i, len(plan))
                 continue
             self._account(resp)
             content = resp.choices[0].message.content or ""
-            if not content and json_schema is not None:
-                continue
             if json_schema is None:
                 break
+            if not content:
+                last_error = LlmResponseError("empty response content")
+                self._backoff(i, len(plan))
+                continue
             try:
                 return _parse_json_object(content)
             except (json.JSONDecodeError, TypeError, ValueError) as exc:
-                parse_error = exc
+                last_error = exc
+                self._backoff(i, len(plan))
                 continue
-        if json_schema is not None and not content:
-            raise LlmResponseError("empty response content") from parse_error
-        try:
-            return _parse_json_object(content)
-        except (json.JSONDecodeError, TypeError, ValueError) as exc:
-            if json_schema is not None:
-                raise LlmResponseError("response content is not valid JSON") from exc
-            return {}
+        if json_schema is None:
+            try:
+                return _parse_json_object(content)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                return {}
+        raise LlmResponseError(
+            f"no parseable response after {len(plan)} attempt(s)"
+        ) from last_error
 
-    def _chat_kwargs(self, system: str, user: str, *, json_mode: bool) -> dict[str, Any]:
+    def _attempt_plan(self, json_schema: dict | None) -> list[tuple[bool, float]]:
+        """Ordered (json_mode, temperature) attempts for one :meth:`chat` call.
+
+        Plain calls get a single attempt. Schema calls get an optional JSON-mode
+        attempt followed by ``max(1, llm_max_retries)`` plain attempts whose
+        temperature ramps after the first so retries are not identical repeats.
+        """
+        if json_schema is None:
+            return [(False, 0.0)]
+        plan: list[tuple[bool, float]] = []
+        if self.use_json_mode:
+            plan.append((True, 0.0))
+        n_plain = max(1, self.max_retries)
+        for k in range(n_plain):
+            temperature = 0.0 if k == 0 else min(0.2 * k, 0.6)
+            plan.append((False, temperature))
+        return plan
+
+    def _backoff(self, attempt: int, total: int) -> None:
+        """Sleep before the next retry (no sleep after the final attempt)."""
+        if self.retry_backoff > 0 and attempt < total - 1:
+            time.sleep(min(self.retry_backoff * (2 ** attempt), self.retry_backoff_cap))
+
+    def _chat_kwargs(self, system: str, user: str, *, json_mode: bool,
+                     temperature: float = 0.0) -> dict[str, Any]:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
             ],
-            "temperature": 0.0,
+            "temperature": temperature,
             "max_completion_tokens": self.max_tokens,
         }
         if json_mode:
