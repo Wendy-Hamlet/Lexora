@@ -28,6 +28,32 @@ pillars:
       - submission_id: "P6-I1"
         rdtii_id: "6.1"
         name: "Ban and local processing requirements"
+        long_definition: >
+          This indicator asks whether there is a ban on data transfer and/or a local
+          processing requirement (the two are classified under the same indicator). A
+          'ban on data transfers' prohibits, per se, the cross-border transfer of data.
+          A 'local processing requirement' mandates that businesses process certain data
+          domestically, where processing covers collection, organization, structuring,
+          storage, adaptation, use, disclosure and dissemination. BOUNDARY vs 6.4
+          (conditional flow): if a law COMPLETELY prohibits transfer abroad it is a ban
+          (6.1); if a law prohibits transfer BUT the data MAY be transferred once certain
+          conditions/requirements are met (e.g. the data subject's consent, an
+          adequacy/comparable-protection test, a destination approved by the Minister),
+          it is a conditional flow regime (6.4), NOT 6.1 — even when phrased as "must not
+          transfer ... except ...". 6.1 also captures the case where data must be
+          processed locally. BOUNDARY vs 6.2: a measure that requires BOTH local
+          processing and local storage is recorded under BOTH 6.1 and 6.2 (e.g. Australia
+          health records stored and processed locally); local processing (6.1) is more
+          demanding than local storage (6.2). Examples: Australia (health records stored
+          and processed locally); Korea (financial providers using cloud must locally
+          process credit and unique identification information); Thailand (credit
+          information company/controller/processor must control or process information
+          locally). A measure applied to Government data is not scored. Score 1 when a
+          ban and/or local processing requirement covers personal data or applies
+          horizontally across sectors (or there are two or more such requirements on
+          non-personal/specific data, or applied to more than one economy); 0.5 when it
+          applies to non-personal data, a specific set of data, or one economy; 0 when
+          data may be transferred freely without any requirement.
         description: >
           Whether the law bans the cross-border transfer of data or requires
           data to be processed locally. Exception: data localisation measures
@@ -53,6 +79,28 @@ pillars:
       - submission_id: "P6-I2"
         rdtii_id: "6.2"
         name: "Local storage requirements"
+        long_definition: >
+          This indicator asks whether there is a local storage requirement. A 'local
+          storage requirement' mandates that a COPY of certain data be stored within the
+          economy; businesses CAN still transfer data across borders as long as a copy is
+          kept within the economy. BOUNDARY vs 6.3 (infrastructure): local storage only
+          requires that data be stored within the economy and does NOT require the
+          provider to build or own a data centre — the provider may rent or use an
+          existing local facility or server; an infrastructure requirement (6.3), by
+          contrast, requires establishing or using dedicated local physical
+          infrastructure. BOUNDARY vs 6.1: where a law requires BOTH local processing and
+          local storage, the measure is recorded under BOTH 6.1 and 6.2 (e.g. Australia
+          health records). BOUNDARY vs 7.3 (minimum retention): local storage is about
+          LOCATION (data must be stored locally), whereas retention is about DURATION
+          (firms may keep data at any location, even abroad); the two are usually found in
+          different laws. Examples: Australia (health records stored locally); Malawi
+          (health-related data); New Zealand (registered entities store tax records
+          locally); Türkiye (large social-network providers store user data within the
+          economy). A measure applied to Government data is not scored. Score 1 when the
+          requirement covers personal data or applies horizontally across sectors (or
+          there are two or more such requirements on non-personal/specific data); 0.5 when
+          it applies to non-personal data or a specific set of data; 0 when data may be
+          transferred freely without any requirement.
         description: >
           Whether the law requires data to be stored within the territory.
           Exception: data localisation measures applied to government data are
@@ -77,6 +125,29 @@ pillars:
       - submission_id: "P6-I3"
         rdtii_id: "6.3"
         name: "Infrastructure requirements"
+        long_definition: >
+          This indicator asks whether there is an infrastructure requirement. An
+          'infrastructure requirement' mandates the ESTABLISHMENT or use of a dedicated
+          LOCAL data centre or server as a CONDITION to provide certain services using
+          data — i.e. the provider is bound to build, own or use dedicated local physical
+          infrastructure as a precondition for offering services. It captures requirements
+          that act as a PRIMARY BARRIER to data movement (explicitly mandating
+          establishing a data centre or other local data-storage infrastructure as a
+          condition for service). BOUNDARY vs 6.2 (local storage): storage only requires
+          that data be stored within the economy and the provider may rent or use an
+          existing facility, whereas infrastructure requires dedicated local
+          infrastructure to be established or used. The indicator does NOT cover:
+          operational or technical requirements that apply to an ALREADY-ESTABLISHED data
+          centre (e.g. that the data centre ensure data privacy); nor
+          licensing/registration requirements to establish a data centre (those may fall
+          under indicator 9.4, out of P6 scope). If a country does not mandate
+          establishing infrastructure for data-transfer purposes but has other
+          data-centre requirements, the score is 0. Examples: Chile (contingency data
+          processing centre within the country); Mongolia (servers processing
+          sensitive/biometric/genetic data physically located within the economy);
+          Kazakhstan (local centralized management system for networks); Viet Nam
+          (maintain at least one local server). Score 1 when there is at least one
+          infrastructure requirement; otherwise 0. Government data is not scored.
         description: >
           Whether transferring data abroad is subject to an infrastructure
           requirement or the need to establish a data centre locally.
@@ -97,6 +168,29 @@ pillars:
       - submission_id: "P6-I4"
         rdtii_id: "6.4"
         name: "Conditional flow regimes"
+        long_definition: >
+          This indicator asks whether an economy adds OTHER CONDITIONS for cross-border
+          data transfer — conditions a business must satisfy to transfer data across
+          borders. Even if a business satisfies any local storage or processing
+          requirement, it cannot transfer data unless it ALSO satisfies these conditions,
+          which prevent transfer to economies where the level of data protection is not
+          adequate or equivalent. BOUNDARY vs 6.1 (ban): a clause phrased as "must not
+          transfer ... EXCEPT <condition>" is 6.4 (conditional), NOT a ban — a ban (6.1)
+          means transfer is impossible per se, while 6.4 means transfer is PERMITTED once
+          a condition is met. The condition varies by the deciding entity: no condition
+          (free flow with accountability); the data subject consents; the business
+          evaluates adequacy/equivalence; or the Government determines adequacy / grants
+          approval. Examples: Brazil (prior authorization 60 days in advance for cloud
+          abroad); Palau (notify the Ministry and obtain individual consent); Korea
+          (permission from the Minister for geographical/survey data); Singapore PDPA
+          (transfer must comply with PDPA obligations; the recipient must obtain consent
+          and provide a comparable standard of protection); Uzbekistan (transfer allowed
+          if the foreign state provides adequate protection, the data subject consents,
+          public order/citizens' rights are protected, or a treaty requires it). Score 1
+          if the regime covers personal data (whether horizontal or sector-specific) or
+          applies horizontally across all sectors; 0.5 when it applies to non-personal
+          data and/or a specific set of data; 0 when there is no condition. Government
+          data is not scored.
         description: >
           Whether the law imposes conditions on cross-border data transfer
           (e.g. adequacy, appropriate safeguards, comparable protection, or
@@ -124,6 +218,18 @@ pillars:
       - submission_id: "P7-I1"
         rdtii_id: "7.1"
         name: "Lack of comprehensive legal framework for data protection"
+        long_definition: >
+          This indicator asks whether an economy has adopted a COMPREHENSIVE data
+          protection legal framework that applies to personal data ACROSS SECTORS. The
+          criteria for 'comprehensive' are: broad, cross-sectoral (horizontal)
+          applicability AND detailed provisions on the scope and application of the rights
+          and obligations of data subjects — e.g. rights to access, rectification, erasure
+          and data portability, covering data collection, processing and cross-border
+          transfer. A framework that applies only to specific sectors (finance, health,
+          telecommunications, etc.) is a 'sectoral law'. Score 1 if the economy LACKS a
+          data protection legal framework; 0.5 if a framework exists only for specific
+          sectors (sectoral law); 0 if there is a comprehensive horizontal data protection
+          legal framework.
         description: >
           Whether the economy has a comprehensive (horizontal, cross-sectoral)
           personal data protection legal framework.
@@ -146,6 +252,18 @@ pillars:
       - submission_id: "P7-I2"
         rdtii_id: "7.2"
         name: "Lack of dedicated legal framework for cybersecurity"
+        long_definition: >
+          This indicator asks whether an economy has adopted a DEDICATED cybersecurity
+          legal framework. 'Dedicated' means cybersecurity-specific laws that are broadly
+          applicable (horizontal) or cybersecurity-focused laws applicable to specific
+          sectors (sectoral); such a framework strengthens enforcement against cybercrime
+          offences and covers the monitoring, detection, prevention, mitigation and
+          management of incidents. A 'non-dedicated' framework is where an economy does
+          NOT implement specific cybersecurity laws but relies on OTHER laws to govern
+          cybercrime threats. Score 1 if the economy lacks a cybersecurity legal
+          framework; 0.5 for a non-dedicated framework and/or a dedicated cybersecurity
+          law for specific sectors only; 0 if a dedicated horizontal cybersecurity
+          framework applies to all sectors.
         description: >
           Whether the economy has a dedicated cybersecurity legal framework
           (horizontal, or focused on specific sectors).
@@ -171,6 +289,24 @@ pillars:
       - submission_id: "P7-I3"
         rdtii_id: "7.3"
         name: "Minimum period of data retention requirements"
+        long_definition: >
+          This indicator asks whether an economy imposes a MINIMUM period of data
+          retention. Data retention requirements regulate how long a company must keep a
+          copy of certain data and make it available on request by the authorities. Under
+          a 'minimum period of retention', firms must retain data for AT LEAST a specified
+          period (days, months or years). Only the MINIMUM type is scored. A 'maximum
+          period of retention' — where firms may not retain data longer than necessary,
+          WITHOUT specifying a period (e.g. "retain only as long as necessary", "cease to
+          retain once the purpose ends") — is the OPPOSITE and is NOT scored. BOUNDARY vs
+          6.2 (local storage): retention is about DURATION; local storage is about
+          LOCATION. For retention, firms may keep data at ANY location, even abroad; the
+          two are often found in different laws. Examples of minimum retention: Bangladesh
+          (e-commerce transaction data 6 years); Botswana (financial information 20 years;
+          electronic payments at least 5 years); India (cyber café user ID at least 1
+          year); Mexico and Peru (telecom user data 12 months plus an additional period).
+          Score 1 when a minimum period of data retention requirement is met; 0 when there
+          is no retention requirement, or a requirement exists but does NOT specify a
+          minimum period. Government data is not scored.
         description: >
           Whether the law imposes a minimum period for retaining data.
           Exception: requirements applied to government data are not scored.
@@ -198,6 +334,21 @@ pillars:
       - submission_id: "P7-I4"
         rdtii_id: "7.4"
         name: "Data Protection Impact Assessment (DPIA) or Data Protection Officer (DPO) requirements"
+        long_definition: >
+          This indicator asks whether an economy requires firms to appoint a Data
+          Protection Officer (DPO) or to perform a Data Protection Impact Assessment
+          (DPIA). A DPO ensures a company processes personal data in compliance with data
+          protection rules; a DPIA is a process of identifying the risks of
+          data-processing operations on users' rights. Examples: Colombia (appoint a
+          person or division responsible for the protection of personal data); Ghana
+          (appoint a data protection officer/supervisor to monitor compliance); Singapore
+          (appoint one or more data protection officers; conduct a DPIA before products
+          likely to be accessed by children). Score 1 if there is a requirement to appoint
+          a DPO, or to apply both DPO and DPIA, horizontally across all sectors; 0.5 if
+          the DPO (or DPO+DPIA) requirement applies only to a specific sector; 0 when
+          there is no requirement. Scoring focuses on the presence of the DPO requirement
+          (a DPIA is generally introduced following DPO appointment); 0.25 applies if ONLY
+          a DPIA is required.
         description: >
           Whether firms are required to appoint a Data Protection Officer (DPO)
           or to conduct a Data Protection Impact Assessment (DPIA).
@@ -218,6 +369,21 @@ pillars:
       - submission_id: "P7-I5"
         rdtii_id: "7.5"
         name: "Requirements to allow government access to personal data"
+        long_definition: >
+          This indicator asks whether the Government can access personal data WITHOUT the
+          explicit authorization of an INDEPENDENT JUDICIAL BODY — such as a court
+          decision, a judicial warrant, or an equivalent order issued by a truly
+          independent tribunal with due-process safeguards. The lack of judicial oversight
+          of this discretionary power is what the indicator targets; access that requires
+          a court order/warrant does not score. Examples: Cambodia (telecom operators must
+          provide service data to the Ministry; secret surveillance allowed on an
+          undefined "legitimate authority"); Cuba (criminal investigator may use
+          electronic surveillance without the Attorney General's authorization); India
+          (ISPs must give a subscriber list with password-controlled access to
+          intelligence agencies at any time); Sri Lanka (mobile operators must provide
+          access to databases/networks on request by the Telecommunications Regulatory
+          Commission). Score 1 if such a requirement applies; 0 when there is no
+          requirement.
         description: >
           Whether measures allow the government to access personal data,
           particularly without court orders.

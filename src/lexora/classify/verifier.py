@@ -192,6 +192,16 @@ class Verifier:
             f"Indicator {indicator.submission_id} — {indicator.name}",
             f"Definition: {indicator.description}",
         ]
+        if indicator.long_definition:
+            # The authoritative RDTII Guide long definition carries the boundary
+            # rules that separate look-alike indicators (e.g. a conditional-flow
+            # clause is 6.4 not 6.1; storage is 6.2 not 6.3; retention=duration not
+            # location). Drop a clause that the long definition assigns to a
+            # DIFFERENT indicator.
+            lines.append(
+                "Official RDTII Guide definition (authoritative — apply its scope and "
+                f"its boundaries with neighbouring indicators):\n{indicator.long_definition}"
+            )
         if indicator.scoring_criteria:
             lines.append(f"Scoring criteria: {indicator.scoring_criteria}")
         lines.append("\nCandidate clauses:")

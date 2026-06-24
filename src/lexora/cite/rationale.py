@@ -176,6 +176,11 @@ class RationaleGenerator:
             f"Indicator: {indicator.submission_id} — {indicator.name}",
             f"Indicator description: {indicator.description}",
         ]
+        if indicator.long_definition:
+            lines.append(
+                "Official RDTII Guide definition (authoritative — ground the rationale "
+                f"in its scope and boundaries):\n{indicator.long_definition}"
+            )
         if indicator.scoring_criteria:
             lines.append(f"Scoring criteria: {indicator.scoring_criteria}")
         lines += [

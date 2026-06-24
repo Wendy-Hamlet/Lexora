@@ -20,6 +20,13 @@ class RDTIIIndicator(BaseModel):
     pillar: int
     name: str
     description: str
+    # The official RDTII 2.1 Guide's FULL "long" definition of this indicator
+    # (verbatim-faithful), carrying the boundary rules the one-line `description`
+    # omits — e.g. 6.1-ban vs 6.4-conditional, 6.2-storage vs 6.3-infrastructure,
+    # 7.3-duration vs 6.2-location. Fed to the LLM verifier/rationale so it applies
+    # the authoritative discriminators, not just shared vocabulary. Empty when the
+    # YAML has no long_definition for the indicator.
+    long_definition: str = ""
     scoring_criteria: str = ""
     possible_scores: list[float] = Field(default_factory=list)
     keywords: list[str] = Field(default_factory=list)
