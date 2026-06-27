@@ -285,9 +285,10 @@ class FakeReranker:
 
 
 def test_reranker_reorders_pool_keeps_bm25_score_and_tag():
-    # BM25 surfaces both clauses on shared vocabulary; the cross-encoder prefers the
-    # genuinely on-point one. The rerank result must put it first, tag the hit
-    # "reranked", and keep the RAW BM25 score (so the confidence gate is unchanged).
+    # Pure-rerank mode (rerank_rrf=False): BM25 surfaces both clauses on shared
+    # vocabulary; the cross-encoder prefers the genuinely on-point one and fully
+    # reorders. The hit is tagged "reranked" and keeps the RAW BM25 score (so the
+    # confidence gate is unchanged).
     from lexora.classify.retrieval import build_index, retrieve_candidates
 
     decoy = _clause(
@@ -308,12 +309,44 @@ def test_reranker_reorders_pool_keeps_bm25_score_and_tag():
 
     rr = FakeReranker(prefer=["personal data", "comparable protection"])
     hits = retrieve_candidates(ind, _profile(), index, top_k=2, use_semantic=False,
-                               reranker=rr)
+                               reranker=rr, rerank_rrf=False)
     assert [h.clause_id for h in hits] == ["c2", "c1"]   # cross-encoder reorders
     assert all(h.source == "reranked" for h in hits)
     # raw BM25 score is preserved per clause (rerank changes order, not the scale)
     assert hits[0].score == base_score["c2"]
     assert hits[1].score == base_score["c1"]
+
+
+def test_rerank_rrf_blend_keeps_bm25_confident_top1():
+    # The default (rerank_rrf=True) fuses the BM25 and cross-encoder rankings, so a
+    # clause BM25 ranks #1 with a big margin is NOT displaced by a cross-encoder that
+    # only mildly prefers an off-point clause (the small-easy-document tie regression
+    # observed on SG/MY P7-I1). Here `g` is BM25 #1, `d` is BM25 last; the reranker
+    # ranks the decoy `d` first. RRF must keep `g` ahead of `d`.
+    from lexora.classify.retrieval import build_index, retrieve_candidates
+
+    g = _clause("g", "records must be kept for a minimum retention period of seven years")
+    x = _clause("x", "records register and prescribed forms")
+    d = _clause("d", "unrelated fishing provisions about boats and nets")
+    index = build_index([g, x, d])
+    ind = RDTIIIndicator(
+        rdtii_id="7.3", submission_id="P7-I3", pillar=7, name="retention",
+        description="minimum retention period records kept", keywords=["records", "retention"],
+    )
+    # BM25 ranks g#1 (matches all), x#2 (records), d#3 (nothing). Reranker prefers d.
+    bm25 = retrieve_candidates(ind, _profile(), index, top_k=3, use_semantic=False)
+    assert bm25[0].clause_id == "g"
+
+    rr = FakeReranker(prefer=["fishing", "boats", "nets"])  # lifts the decoy d to #1
+    pure = retrieve_candidates(ind, _profile(), index, top_k=3, use_semantic=False,
+                               reranker=rr, rerank_rrf=False)
+    assert pure[0].clause_id == "d"  # pure rerank would regress to the decoy
+
+    blended = retrieve_candidates(ind, _profile(), index, top_k=3, use_semantic=False,
+                                  reranker=rr)  # default RRF blend
+    ids = [h.clause_id for h in blended]
+    assert ids[0] == "g"             # BM25's confident top-1 survives
+    assert ids.index("g") < ids.index("d")
 
 
 def test_reranker_takes_precedence_over_dense():

@@ -231,6 +231,9 @@ def retrieve_candidates(
     anchor_bm25_top1: bool = True,
     reranker=None,
     rerank_pool_k: int = 20,
+    rerank_rrf: bool = True,
+    rerank_weight: float = 1.0,
+    rerank_rrf_k: int = 60,
 ) -> list[RetrievalHit]:
     """Return clause candidates for a single indicator.
 
@@ -252,6 +255,14 @@ def retrieve_candidates(
     *which* clauses rank first. A bi-encoder ranks each clause in isolation; a
     cross-encoder reads the pair together, which is the lever on the wrong-indicator
     failure mode.
+
+    ``rerank_rrf`` (default) does NOT order by the raw cross-encoder score but
+    reciprocal-rank-fuses the BM25 and cross-encoder rankings of the pool, so a
+    clause BM25 ranks #1 with confidence is not displaced by a cross-encoder that
+    only mildly prefers another (the small-easy-document tie regression), while a
+    clause the cross-encoder strongly lifts from deep in the BM25 pool still wins
+    (the large-document gain). ``rerank_weight`` weights the cross-encoder ranking
+    in the fusion; ``rerank_rrf=False`` falls back to ordering by raw rerank score.
     """
     terms = _expand_query(indicator, profile, language)
     scores = index.bm25_scores(terms)
@@ -270,7 +281,22 @@ def retrieve_candidates(
             return []
         docs = [index.clauses[i].span.text for i in pool]
         ranked = reranker.rerank(_concept_text(indicator, profile, language), docs)
-        ordered = [pool[r] for r, _ in ranked] or pool
+        rerank_order = [pool[r] for r, _ in ranked] or pool
+        if rerank_rrf:
+            # Fuse the BM25 and cross-encoder rankings (don't fully discard BM25).
+            from lexora.semantic.embedder import reciprocal_rank_fusion
+
+            bm25_ids = [index.clauses[i].clause_id for i in pool]
+            rerank_ids = [index.clauses[i].clause_id for i in rerank_order]
+            fused = reciprocal_rank_fusion(
+                [bm25_ids, rerank_ids], k=rerank_rrf_k,
+                weights=[bm25_weight, rerank_weight],
+            )
+            idx_by_id = {index.clauses[i].clause_id: i for i in pool}
+            ordered = [idx_by_id[cid]
+                       for cid in sorted(fused, key=lambda c: fused[c], reverse=True)]
+        else:
+            ordered = rerank_order
         return [
             RetrievalHit(index.clauses[i].clause_id, float(scores[i]), "reranked")
             for i in ordered[:top_k]

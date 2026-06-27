@@ -34,7 +34,12 @@ from lexora.cite.rationale import RationaleGenerator, template_rationale
 from lexora.cite.validator import validate_claim
 from lexora.classify.boundaries import admits_clause
 from lexora.classify.lifecycle import detect_status, is_enforced, merge_status
-from lexora.classify.retrieval import BM25Index, build_index, retrieve_candidates
+from lexora.classify.retrieval import (
+    BM25Index,
+    _maybe_reranker,
+    build_index,
+    retrieve_candidates,
+)
 from lexora.collect.crawler import fetch, ingest_local_file
 from lexora.extract.html_extractor import HtmlBlock, extract_html
 from lexora.extract.pdf_text_extractor import PdfPage, extract_pdf_bytes, extract_pdf_text
@@ -107,6 +112,17 @@ def _map_use_dense() -> bool:
     (e.g. for SG, or a cross-lingual doc once a multilingual embedder is active).
     Gates the MAPPING clause retrieval only; discovery's semantic re-rank is separate."""
     return os.environ.get("LEXORA_MAP_DENSE", "").lower() in ("1", "true", "yes", "on")
+
+
+def _map_use_rerank() -> bool:
+    """Whether mapping clause retrieval applies the cross-encoder rerank stage.
+
+    Default OFF. When ``LEXORA_MAP_RERANK=1`` the BM25 recall pool is reordered by a
+    cross-encoder (RRF-blended with BM25 so a confident BM25 top-1 is not displaced)
+    before truncation — the precision lane that lifts a buried on-point section
+    (measured: AU APP8 rank 3 -> 1). Opt-in because it needs the fastembed
+    cross-encoder backend + a downloaded model; falls back to BM25 if unavailable."""
+    return os.environ.get("LEXORA_MAP_RERANK", "").lower() in ("1", "true", "yes", "on")
 
 
 def _maybe_ocr_fill(
@@ -547,6 +563,9 @@ def _citations_from_clauses(
             return citations  # repealed/draft instrument — out of the inventory
     index: BM25Index = build_index(clauses)
     clause_by_id = {c.clause_id: c for c in clauses}
+    # Optional cross-encoder rerank stage (LEXORA_MAP_RERANK), built ONCE per document
+    # (the model is a cached singleton). None when disabled/unavailable -> BM25 path.
+    reranker = _maybe_reranker(_map_use_rerank())
     # Document-level metadata (Law Number / Last Amended) resolved ONCE per document.
     doc_last_amended, doc_law_number, doc_meta_note = _resolve_doc_metadata(
         document, document_text, profile, meta_extractor
@@ -570,7 +589,8 @@ def _citations_from_clauses(
         # fixed raw cutoff prunes nothing on a big document).
         passing = [
             hit for hit in retrieve_candidates(
-                indicator, profile, index, top_k=top_k, use_semantic=_map_use_dense()
+                indicator, profile, index, top_k=top_k,
+                use_semantic=_map_use_dense(), reranker=reranker,
             )
             if _normalize_score(hit.score) >= min_score
         ]
