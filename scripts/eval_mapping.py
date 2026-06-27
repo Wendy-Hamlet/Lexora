@@ -95,6 +95,12 @@ def load_gold(path: Path = GOLD) -> dict[str, dict[str, dict[str, set[str]]]]:
     with path.open(encoding="utf-8") as f:
         for row in csv.DictReader(f):
             sections = {s.strip() for s in row["gold_sections"].split(";") if s.strip()}
+            # "N/A" marks an indicator the Act does not address — a real annotation,
+            # but not a retrievable section, so it carries no eval gold. Drop it (and
+            # any row left empty) so it never pollutes hit@k / MRR.
+            sections = {s for s in sections if s.upper() != "N/A"}
+            if not sections:
+                continue
             by_iso[row["iso"].lower()][row["document"].strip()][row["indicator"].strip()] = sections
     return {iso: dict(docs) for iso, docs in by_iso.items()}
 
@@ -550,10 +556,17 @@ def _clauses_from_discovery(profile: SourceProfile, indicators) -> list[Clause]:
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--iso", help="sg|au|my (not needed with --collect)")
+    ap.add_argument("--gold", type=Path, default=GOLD,
+                    help="gold CSV to score against (default the legal-group file; pass "
+                         "configs/eval/mapping_sections_llm.csv for the LLM-drafted gold)")
     ap.add_argument("--doc", help="gold document name (substring) when an economy has several")
     ap.add_argument("--pdf", type=Path, help="local PDF (deterministic)")
     ap.add_argument("--url", help="live-fetch one full-text URL")
     ap.add_argument("--browser", action="store_true", help="escalate --url to Chromium")
+    ap.add_argument("--rerank", action="store_true",
+                    help="add a cross-encoder rerank run to the A/B: reorder the BM25 "
+                         "recall pool with fastembed's TextCrossEncoder "
+                         "(LEXORA_RERANK_MODEL, default BAAI/bge-reranker-base)")
     ap.add_argument("--rank-report", action="store_true",
                     help="G-6.1: record each gold section's rank (top --rank-k), "
                          "report MRR + recall@k instead of just hit@1/hit@3")
@@ -620,7 +633,7 @@ def main() -> None:
     iso = args.iso.lower()
     profile = load_profile(REPO / "configs" / "jurisdictions" / f"{iso}.yaml")
     indicators = load_indicators(INDICATORS)
-    by_doc = load_gold().get(iso, {})
+    by_doc = load_gold(args.gold).get(iso, {})
     if not by_doc and not args.dump:
         print(f"No mapping gold for {iso} in {GOLD.relative_to(REPO)}.")
         return
@@ -781,10 +794,14 @@ def main() -> None:
         print(f"review file -> {out.relative_to(REPO)}")
         return
 
-    # A/B: BM25-only vs BM25+dense fusion on the SAME parsed document.
-    from lexora.classify.retrieval import _maybe_embedder
+    # A/B: BM25-only vs BM25+dense fusion (vs +cross-encoder rerank) on the SAME
+    # parsed document.
+    from lexora.classify.retrieval import _maybe_embedder, _maybe_reranker
 
     embedder = _maybe_embedder(True)
+    reranker = _maybe_reranker(True) if args.rerank else None
+    if args.rerank and reranker is None:
+        print("note: --rerank requested but the cross-encoder backend is unavailable.\n")
 
     if args.ablate:
         # G-6.2: one knob at a time, judged on MRR/recall@k (rank distribution),
@@ -803,14 +820,16 @@ def main() -> None:
             print("\nnote: dense backend unavailable — only the bm25-only row ran.")
         return
 
-    runs = [("bm25", False, None)]
+    runs: list[tuple[str, bool, object, dict]] = [("bm25", False, None, {})]
     if embedder is not None:
-        runs.append(("fused", True, embedder))
+        runs.append(("fused", True, embedder, {}))
+    if reranker is not None:
+        runs.append(("reranked", False, None, {"reranker": reranker}))
 
-    for label, use_sem, emb in runs:
+    for label, use_sem, emb, kw in runs:
         if args.rank_report:
             rows = evaluate_rank(clauses, profile, indicators, gold,
-                                 rank_k=args.rank_k, use_semantic=use_sem, embedder=emb)
+                                 rank_k=args.rank_k, use_semantic=use_sem, embedder=emb, **kw)
             s = summarize_rank(rows)
             rec = "  ".join(f"r@{k} {v}/{s['n']}" for k, v in s["recall"].items())
             print(f"[{label}]  MRR {s['mrr']:.3f}   {rec}")
@@ -820,7 +839,7 @@ def main() -> None:
                       f"rank={rk:<5} top={r['retrieved'][:8]}")
             print()
             continue
-        rows = evaluate(clauses, profile, indicators, gold, use_semantic=use_sem, embedder=emb)
+        rows = evaluate(clauses, profile, indicators, gold, use_semantic=use_sem, embedder=emb, **kw)
         h1, h3, n = summarize(rows)
         print(f"[{label}]  hit@1 {h1}/{n}   hit@3 {h3}/{n}")
         for r in rows:

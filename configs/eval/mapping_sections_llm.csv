@@ -1,0 +1,28 @@
+iso,document,indicator,gold_sections,note
+SG,Personal Data Protection Act 2012,P6-I1,N/A,"No transfer ban or local-processing mandate; SG permits cross-border transfer subject to conditions (s.26 -> P6-I4), so the ban indicator is absent"
+SG,Personal Data Protection Act 2012,P6-I2,N/A,No data-localisation / local-storage requirement in the PDPA
+SG,Personal Data Protection Act 2012,P6-I3,N/A,No local data-centre / infrastructure requirement
+SG,Personal Data Protection Act 2012,P6-I4,26,"Transfer Limitation Obligation, s.26: must not transfer personal data outside Singapore unless comparable protection is ensured (conditional cross-border flow)"
+SG,Personal Data Protection Act 2012,P7-I1,13;24,"Comprehensive framework core obligations: Consent required (s.13) + Protection of personal data (s.24); s.14 is consent-mechanics not a core obligation"
+SG,Personal Data Protection Act 2012,P7-I2,N/A,Dedicated cybersecurity framework is the Cybersecurity Act 2018 (separate instrument), not the PDPA
+SG,Personal Data Protection Act 2012,P7-I3,N/A,"s.25 is a retention LIMITATION (must cease retention when purpose served), the opposite of a minimum-retention duty"
+SG,Personal Data Protection Act 2012,P7-I4,11,"s.11(3): organisation must designate one or more Data Protection Officers (DPO mandate); no DPIA requirement in the Act"
+SG,Personal Data Protection Act 2012,P7-I5,17,"s.17 + First/Second Schedule permit collection/use/disclosure without consent, incl. to public agencies and for investigations/proceedings — the PDPA's vehicle for government access without a court order; REVIEW: PDPA only permits, compulsion powers sit in CPC/ISA"
+AU,Privacy Act 1988,P6-I1,N/A,No transfer ban or local-processing mandate; APP8 is accountability-based conditional disclosure (-> P6-I4)
+AU,Privacy Act 1988,P6-I2,N/A,No local-storage requirement
+AU,Privacy Act 1988,P6-I3,N/A,No local infrastructure / data-centre requirement
+AU,Privacy Act 1988,P6-I4,APP8,"Australian Privacy Principle 8 — cross-border disclosure of personal information (accountability + comparable-protection / consent conditions); s.16C is the overseas-recipient accountability complement"
+AU,Privacy Act 1988,P7-I1,14;15,"Australian Privacy Principles (s.14) + APP entities must comply (s.15) — the comprehensive horizontal framework anchor"
+AU,Privacy Act 1988,P7-I2,N/A,No dedicated cybersecurity framework in the Privacy Act (AU cybersecurity sits in separate instruments)
+AU,Privacy Act 1988,P7-I3,N/A,"APP11.2 requires destruction/de-identification when no longer needed (a limitation); credit-reporting s.20W sets a max retention period, not a minimum-retention duty"
+AU,Privacy Act 1988,P7-I4,33D,"s.33D: Commissioner may direct an agency to give a privacy impact assessment — the Act's only DPIA touchpoint (discretionary, agencies only); no general DPO mandate (agency PIA+Privacy Officer duty sits in the APP Code, not the Act); REVIEW"
+AU,Privacy Act 1988,P7-I5,16A;APP6,"s.16A permitted general situations (enforcement-related activities) + APP6.2(e) permit use/disclosure to enforcement bodies without consent or a court order — government access without judicial authorisation"
+MY,Personal Data Protection Act 2010,P6-I1,N/A,No transfer ban or local-processing mandate; s.129 is conditional transfer (-> P6-I4)
+MY,Personal Data Protection Act 2010,P6-I2,N/A,No data-localisation / local-storage requirement
+MY,Personal Data Protection Act 2010,P6-I3,N/A,No local infrastructure / data-centre requirement
+MY,Personal Data Protection Act 2010,P6-I4,129,"s.129: a data user shall not transfer personal data to a place outside Malaysia unless the place is specified by the Minister or other conditions are met (conditional cross-border flow)"
+MY,Personal Data Protection Act 2010,P7-I1,5;6,"Personal Data Protection Principles (s.5, the seven-principle umbrella) + General Principle (s.6) — the comprehensive framework anchor"
+MY,Personal Data Protection Act 2010,P7-I2,N/A,Dedicated cybersecurity framework is the Cyber Security Act 2024 (separate instrument), not the PDPA
+MY,Personal Data Protection Act 2010,P7-I3,N/A,"s.10 Retention Principle (data shall not be kept longer than necessary) is a limitation, not a minimum-retention duty"
+MY,Personal Data Protection Act 2010,P7-I4,N/A,"Original PDPA 2010 imposes no DPO/DPIA requirement (DPO appointment was introduced only by the 2024 amendment, not present in this version)"
+MY,Personal Data Protection Act 2010,P7-I5,114;115,"s.114 search and seizure WITHOUT warrant + s.115 access to computerized data — authorized officers may access personal data without a court order (s.113, the with-warrant power, has judicial authorisation and does NOT score)"
