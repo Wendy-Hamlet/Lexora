@@ -197,6 +197,24 @@ def _maybe_embedder(use_semantic: bool):
         return None
 
 
+def _maybe_reranker(use_rerank: bool):
+    """The cached cross-encoder reranker, or ``None`` when disabled/unavailable.
+
+    Mirrors :func:`_maybe_embedder`: an explicit opt-in, and ``None`` (un-reranked
+    order) when the fastembed cross-encoder backend is absent, so callers can wire
+    it unconditionally."""
+    if not use_rerank:
+        return None
+    from lexora.semantic import reranker as rr_mod
+
+    if not rr_mod.is_available():
+        return None
+    try:
+        return rr_mod.get_reranker()
+    except Exception:
+        return None
+
+
 def retrieve_candidates(
     indicator: RDTIIIndicator,
     profile: SourceProfile,
@@ -211,6 +229,8 @@ def retrieve_candidates(
     bm25_weight: float = 1.0,
     dense_weight: float = 1.0,
     anchor_bm25_top1: bool = True,
+    reranker=None,
+    rerank_pool_k: int = 20,
 ) -> list[RetrievalHit]:
     """Return clause candidates for a single indicator.
 
@@ -223,6 +243,15 @@ def retrieve_candidates(
     ``drop_boilerplate`` removes non-operative front matter (short title /
     interpretation / objects …) from both channels; these are vocabulary hubs
     that the dense channel otherwise floats to the top for every indicator.
+
+    ``reranker`` (a :class:`lexora.semantic.reranker.Reranker`) is the optional
+    cross-encoder precision stage: when supplied it takes precedence over the
+    dense channel — the BM25 recall pool (top ``rerank_pool_k``) is reordered by
+    joint (indicator, clause) relevance and the top ``top_k`` returned. Hits keep
+    their raw BM25 score, so the confidence gate is unchanged; rerank only changes
+    *which* clauses rank first. A bi-encoder ranks each clause in isolation; a
+    cross-encoder reads the pair together, which is the lever on the wrong-indicator
+    failure mode.
     """
     terms = _expand_query(indicator, profile, language)
     scores = index.bm25_scores(terms)
@@ -232,6 +261,20 @@ def retrieve_candidates(
     score_by_id = {c.clause_id: float(scores[i]) for i, c in enumerate(index.clauses)}
     bm25_order = [i for i in sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
                   if i not in skip]
+
+    if reranker is not None:
+        # Cross-encoder precision stage over the BM25 recall pool. Reorder by joint
+        # relevance, keep the raw BM25 score (the gate is unchanged), tag "reranked".
+        pool = bm25_order[:rerank_pool_k]
+        if not pool:
+            return []
+        docs = [index.clauses[i].span.text for i in pool]
+        ranked = reranker.rerank(_concept_text(indicator, profile, language), docs)
+        ordered = [pool[r] for r, _ in ranked] or pool
+        return [
+            RetrievalHit(index.clauses[i].clause_id, float(scores[i]), "reranked")
+            for i in ordered[:top_k]
+        ]
 
     emb = embedder if embedder is not None else _maybe_embedder(use_semantic)
     if emb is None:

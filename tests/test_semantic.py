@@ -264,3 +264,72 @@ def test_bm25_anchored_rank1_protects_precision_against_dense_demotion():
                                    anchor_bm25_top1=True)
     assert plain[0].clause_id == cC.clause_id      # dense demotes the right clause
     assert anchored[0].clause_id == cA.clause_id   # anchoring restores it
+
+
+# --- cross-encoder rerank orchestration -------------------------------------
+
+class FakeReranker:
+    """Deterministic cross-encoder stub: scores each doc by how many of the given
+    ``prefer`` phrases it contains, so a test fully controls the rerank order
+    independently of BM25 (the real model is exercised live elsewhere)."""
+
+    def __init__(self, prefer: list[str]):
+        self._prefer = [p.lower() for p in prefer]
+
+    def rerank(self, query: str, documents: list[str]) -> list[tuple[int, float]]:
+        scored = [
+            (i, float(sum(p in d.lower() for p in self._prefer)))
+            for i, d in enumerate(documents)
+        ]
+        return sorted(scored, key=lambda pair: pair[1], reverse=True)
+
+
+def test_reranker_reorders_pool_keeps_bm25_score_and_tag():
+    # BM25 surfaces both clauses on shared vocabulary; the cross-encoder prefers the
+    # genuinely on-point one. The rerank result must put it first, tag the hit
+    # "reranked", and keep the RAW BM25 score (so the confidence gate is unchanged).
+    from lexora.classify.retrieval import build_index, retrieve_candidates
+
+    decoy = _clause(
+        "c1", "transfer of functions and transfer of staff between agencies on transfer")
+    onpoint = _clause(
+        "c2", "an organisation must not transfer personal data outside the country "
+        "unless comparable protection applies to the transfer")
+    index = build_index([decoy, onpoint])
+    ind = RDTIIIndicator(
+        rdtii_id="6.4", submission_id="P6-I4", pillar=6, name="transfer",
+        description="cross-border transfer of personal data subject to conditions",
+        keywords=["transfer"],
+    )
+
+    # Baseline BM25 order (no rerank) — decoy is vocabulary-dense on "transfer".
+    base = retrieve_candidates(ind, _profile(), index, top_k=2, use_semantic=False)
+    base_score = {h.clause_id: h.score for h in base}
+
+    rr = FakeReranker(prefer=["personal data", "comparable protection"])
+    hits = retrieve_candidates(ind, _profile(), index, top_k=2, use_semantic=False,
+                               reranker=rr)
+    assert [h.clause_id for h in hits] == ["c2", "c1"]   # cross-encoder reorders
+    assert all(h.source == "reranked" for h in hits)
+    # raw BM25 score is preserved per clause (rerank changes order, not the scale)
+    assert hits[0].score == base_score["c2"]
+    assert hits[1].score == base_score["c1"]
+
+
+def test_reranker_takes_precedence_over_dense():
+    # When both a dense embedder and a reranker are supplied, the cross-encoder owns
+    # the final order (the dense fusion path is skipped) — the documented precedence.
+    from lexora.classify.retrieval import build_index, retrieve_candidates
+
+    c1 = _clause("c1", "alpha provision about widgets and transfer")
+    c2 = _clause("c2", "beta provision about transfer of personal data abroad")
+    index = build_index([c1, c2])
+    ind = RDTIIIndicator(
+        rdtii_id="6.4", submission_id="P6-I4", pillar=6, name="transfer",
+        description="transfer of personal data abroad", keywords=["transfer"],
+    )
+    rr = FakeReranker(prefer=["personal data"])
+    hits = retrieve_candidates(ind, _profile(), index, top_k=2, embedder=FakeEmbedder(),
+                               reranker=rr)
+    assert hits[0].clause_id == "c2"
+    assert hits[0].source == "reranked"  # not "fused"
