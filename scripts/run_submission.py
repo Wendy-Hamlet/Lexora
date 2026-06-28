@@ -169,6 +169,17 @@ def summarize(iso: str, result: MapResult) -> dict:
     review_rows = sum(
         1 for c in result.citations if c.review_status.value == "CONFLICT_REVIEW"
     )
+    # Amendment-currency activity (Tier-2): rows routed to AMENDMENT_REVIEW and the
+    # spread of currency verdicts. CONFLICT_REVIEW (mapping doubt) and AMENDMENT_REVIEW
+    # (currency doubt) are distinct queues, so the latter needs its own counter — else
+    # a run that correctly flags amended/repealed provisions still reports 0 review rows.
+    amendment_review_rows = sum(
+        1 for c in result.citations if c.review_status.value == "AMENDMENT_REVIEW"
+    )
+    currency_breakdown: dict[str, int] = {}
+    for c in result.citations:
+        st = c.currency_status or "UNKNOWN"
+        currency_breakdown[st] = currency_breakdown.get(st, 0) + 1
     return {
         "iso": iso,
         "economy": ISO_TO_COUNTRY.get(iso, iso),
@@ -181,6 +192,8 @@ def summarize(iso: str, result: MapResult) -> dict:
         "indicators_covered": indicators_covered,
         "n_indicators_covered": len(indicators_covered),
         "review_rows": review_rows,
+        "amendment_review_rows": amendment_review_rows,
+        "currency_breakdown": currency_breakdown,
     }
 
 
@@ -363,16 +376,24 @@ def main() -> None:
     print(f"\nRound-1 submission run (budget {args.budget}"
           f"{', verifier ON' if args.verify else ''})")
     print(f"{'economy':<12}{'instr':<7}{'NEW':<5}{'KNOWN':<7}{'fetched':<9}{'real':<6}"
-          f"{'cites':<7}{'inds':<6}{'review'}")
-    print("-" * 70)
+          f"{'cites':<7}{'inds':<6}{'review':<8}{'amend?'}")
+    print("-" * 78)
     for s in summaries:
         if s.get("error"):
             print(f"{s['economy']:<12}ERROR: {s['error']}")
             continue
         print(f"{s['economy']:<12}{s['instruments']:<7}{s['new_instruments']:<5}"
               f"{s['known_instruments']:<7}{s['fetched_ok']:<9}{s['docs_with_clauses']:<6}"
-              f"{s['citations']:<7}{s['n_indicators_covered']:<6}{s['review_rows']}")
-    print("-" * 70)
+              f"{s['citations']:<7}{s['n_indicators_covered']:<6}{s['review_rows']:<8}"
+              f"{s.get('amendment_review_rows', 0)}")
+    print("-" * 78)
+    # Amendment-currency roll-up across economies (Tier-2 activity at a glance).
+    _curr: dict[str, int] = {}
+    for s in summaries:
+        for k, v in (s.get("currency_breakdown") or {}).items():
+            _curr[k] = _curr.get(k, 0) + v
+    if _curr:
+        print("currency: " + "  ".join(f"{k}={v}" for k, v in sorted(_curr.items())))
     if tokens_total["calls"]:
         print(
             f"LLM token total (all economies): {tokens_total['total']} tokens across "
