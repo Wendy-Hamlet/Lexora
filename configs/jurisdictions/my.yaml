@@ -11,7 +11,6 @@ ocr_languages: ["eng", "msa"]
 
 known_instruments:
   - "Personal Data Protection Act 2010"
-  - "Personal Data Protection (Amendment) Act 2024"
   - "Cyber Security Act 2024"
   - "Computer Crimes Act 1997"
   - "Communications and Multimedia Act 1998"
@@ -20,7 +19,6 @@ known_instruments:
 # tag KNOWN by identity. Keys are matched against the discovered Act number.
 known_instrument_ids:
   "709": "Personal Data Protection Act 2010"
-  "A1727": "Personal Data Protection (Amendment) Act 2024"
   "854": "Cyber Security Act 2024"
   "563": "Computer Crimes Act 1997"
   "588": "Communications and Multimedia Act 1998"

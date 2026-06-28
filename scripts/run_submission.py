@@ -27,6 +27,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
+from lexora.cite.amendments_llm import llm_enabled as amend_llm_env  # noqa: E402
+from lexora.cite.amendments_llm import make_amendment_extractor  # noqa: E402
 from lexora.cite.metadata import make_metadata_extractor  # noqa: E402
 from lexora.cite.rationale import make_rationale_generator  # noqa: E402
 from lexora.classify.verifier import make_verifier  # noqa: E402
@@ -53,6 +55,7 @@ def run_one(
     verify: bool,
     rationale_llm: bool = False,
     metadata_llm: bool = False,
+    amendment_llm: bool = False,
     timeout: float,
     llm_workers: int = 1,
     doc_workers: int = 1,
@@ -86,12 +89,16 @@ def run_one(
     if metadata_llm and meta_extractor._client is None:
         print("warning: --metadata-llm requested but the LLM backend is unavailable; "
               "using portal structured metadata only.")
+    amendment_extractor = make_amendment_extractor(use_llm=amendment_llm or amend_llm_env())
+    if amendment_llm and amendment_extractor._client is None:
+        print("warning: --amendment-llm requested but the LLM backend is unavailable; "
+              "using the regex amendment parser only.")
     result = run_pipeline_map(
         portal=profile.portals[0], profile=profile, indicators=indicators,
         budget=budget, timeout=timeout, verifier=verifier, rationale_gen=rationale_gen,
         meta_extractor=meta_extractor, llm_workers=llm_workers, doc_workers=doc_workers,
         fetch_min_interval=fetch_min_interval, serial_fetch=serial_fetch,
-        secondary_signals=secondary,
+        secondary_signals=secondary, amendment_extractor=amendment_extractor,
     )
     tokens = {"calls": 0, "prompt": 0, "completion": 0, "total": 0}
 
@@ -117,6 +124,14 @@ def run_one(
                if meta_extractor.error_count else "")
         )
         _account("metadata", meta_extractor._client)
+    if amendment_extractor._client is not None:
+        print(
+            f"  LLM amendment usage [{iso}]: {amendment_extractor.extracted} amending Act(s) "
+            f"extracted, {amendment_extractor.rejected} instruction(s) rejected by source-check"
+            + (f" ({amendment_extractor.error_count} backend error(s))"
+               if amendment_extractor.error_count else "")
+        )
+        _account("amendment", amendment_extractor._client)
     if rationale_gen._client is not None:
         print(
             f"  LLM rationale usage [{iso}]: {rationale_gen.llm_used} authored, "
@@ -188,6 +203,10 @@ def main() -> None:
     ap.add_argument("--metadata-llm", action="store_true",
                     help="Extract Law Number / Last Amended from document text with the LLM "
                          "(source-verified) when portal channel + curated anchor don't supply them")
+    ap.add_argument("--amendment-llm", action="store_true",
+                    help="Extract amendment instructions (Tier-2 provision adjudication) with the "
+                         "LLM, source-verified, regex fallback; runs concurrently under "
+                         "--llm-workers. Also enabled by LEXORA_AMENDMENT_LLM=1")
     ap.add_argument("--check-links", action="store_true",
                     help="Probe each citation's Source URL for reachability and annotate "
                          "dead links in Notes (extra network I/O; off by default)")
@@ -271,6 +290,7 @@ def main() -> None:
     def _run(iso: str):
         return run_one(iso, budget=args.budget, verify=args.verify,
                        rationale_llm=args.rationale_llm, metadata_llm=args.metadata_llm,
+                       amendment_llm=args.amendment_llm,
                        timeout=args.timeout, llm_workers=args.llm_workers,
                        doc_workers=args.doc_workers, fetch_min_interval=args.fetch_min_interval,
                        serial_fetch=args.serial_fetch, use_secondary=args.secondary,

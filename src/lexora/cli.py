@@ -149,6 +149,12 @@ def map(  # noqa: A001 - CLI verb
                                       help="Extract Law Number / Last Amended from the document "
                                            "text with the LLM (source-verified) when the portal "
                                            "channel and curated anchor do not supply them."),
+    amendment_llm: bool = typer.Option(False, "--amendment-llm/--no-amendment-llm",
+                                       help="Extract amendment instructions (Tier-2 provision "
+                                            "adjudication) with the LLM, source-verified, falling "
+                                            "back to the regex parser. More complete on real "
+                                            "drafting than the regex floor; same endpoint as "
+                                            "--verify. Also enabled by LEXORA_AMENDMENT_LLM=1."),
 ) -> None:
     """Fully autonomous MULTI-instrument map: per indicator, discover the family of
     instruments (flagship law + sectoral statutes), fetch each one's full text, and
@@ -156,6 +162,7 @@ def map(  # noqa: A001 - CLI verb
 
     No URL is handed in — Lexora searches the portal with each indicator's concept
     phrases, assembles a working set of instruments, and maps them all."""
+    from lexora.cite.amendments_llm import llm_enabled, make_amendment_extractor
     from lexora.cite.metadata import make_metadata_extractor
     from lexora.cite.rationale import make_rationale_generator
     from lexora.classify.verifier import make_verifier
@@ -180,16 +187,25 @@ def map(  # noqa: A001 - CLI verb
     if metadata_llm and meta_extractor._client is None:
         console.print("[yellow]--metadata-llm requested but the LLM backend is unavailable; "
                       "using portal metadata + curated anchor only.[/yellow]")
+    # LLM-first amendment extraction (Tier-2). Honour the flag OR the env switch so an
+    # e2e run can opt in without re-plumbing; falls back to the regex parser if down.
+    want_amend_llm = amendment_llm or llm_enabled()
+    amendment_extractor = make_amendment_extractor(use_llm=want_amend_llm)
+    if want_amend_llm and amendment_extractor._client is None:
+        console.print("[yellow]--amendment-llm requested but the LLM backend is unavailable; "
+                      "using the regex amendment parser only.[/yellow]")
     console.print(f"[bold]Autonomous multi-map — {profile.jurisdiction} ({profile.iso_code})[/bold]")
     console.print(f"  portal: {portal.name} · {len(indicators)} indicators · budget {budget}"
                   f"{' · LLM verifier ON' if verifier is not None else ''}"
                   f"{' · LLM rationale ON' if rationale_gen._client is not None else ''}"
-                  f"{' · LLM metadata ON' if meta_extractor._client is not None else ''}")
+                  f"{' · LLM metadata ON' if meta_extractor._client is not None else ''}"
+                  f"{' · LLM amendment ON' if amendment_extractor._client is not None else ''}")
 
     result = run_pipeline_map(
         portal=portal, profile=profile, indicators=indicators,
         query=query, top_k=top_k, min_score=min_score, rel_floor=rel_floor, budget=budget,
         verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
+        amendment_extractor=amendment_extractor,
     )
     if not result.discovered:
         console.print("[red]No instruments discovered.[/red]")

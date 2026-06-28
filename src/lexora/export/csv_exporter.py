@@ -59,6 +59,7 @@ AUDIT_FIELDS = [
     "char_start", "char_end", "document_hash", "retrieval_timestamp",
     "review_status",
     "currency_status", "amended_by", "amendments_incorporated_to", "amendment_text",
+    "source_version",
 ]
 
 

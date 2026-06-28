@@ -105,6 +105,7 @@ def to_submission_json(
                 # the official example; see lexora.cite.amendments) ---
                 "amendment_currency": {
                     "review_status": getattr(c.review_status, "value", str(c.review_status)),
+                    "source_version": getattr(c, "source_version", "") or "",
                     "status": getattr(c, "currency_status", "") or "",
                     "amended_by": getattr(c, "amended_by", "") or "",
                     "incorporated_to": getattr(c, "amendments_incorporated_to", "") or "",

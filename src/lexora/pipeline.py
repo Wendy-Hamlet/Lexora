@@ -360,6 +360,8 @@ def run_pipeline_map(
     fetch_min_interval: float = 0.0,
     serial_fetch: bool = False,
     secondary_signals: list | None = None,
+    discover_amendments: bool = True,
+    amendment_extractor=None,
 ) -> MapResult:
     """Autonomous MULTI-instrument map (P0).
 
@@ -443,6 +445,16 @@ def run_pipeline_map(
     else:
         documents = [_process(h) for h in hits]
 
+    # Tag every fetched law original/amendment/consolidated and, for each ORIGINAL,
+    # look for ITS amendments (queries derived from its own title — general, not a
+    # fixed amendment list). Found amending Acts join the working set so the currency
+    # pass below can adjudicate the principal's provisions against real instructions.
+    if discover_amendments:
+        documents = documents + _discover_amendments(
+            documents, _process, portal, profile,
+            force_browser=force_browser, timeout=timeout,
+        )
+
     citations: list[Citation] = []
     seen: set[tuple[str, str]] = set()
     for artifacts in documents:  # sequential dedup -> deterministic order
@@ -454,8 +466,18 @@ def run_pipeline_map(
             citations.append(c)
 
     # Amendment-currency pass: flag citations whose source text may pre-date a later
-    # amending instrument (needs the whole working set, so it runs once here).
-    _apply_currency_flags(documents, citations, profile)
+    # amending instrument (needs the whole working set, so it runs once here). Tier-2
+    # instruction extraction is LLM-first when an extractor is supplied (or
+    # LEXORA_AMENDMENT_LLM is set), regex otherwise; the per-amending-Act LLM calls run
+    # concurrently under the same `llm_workers` budget as the rest of the pipeline.
+    if amendment_extractor is None:
+        from lexora.cite.amendments_llm import llm_enabled, make_amendment_extractor
+
+        amendment_extractor = make_amendment_extractor(use_llm=llm_enabled())
+    _apply_currency_flags(
+        documents, citations, profile,
+        extractor=amendment_extractor, workers=llm_workers,
+    )
     # Enforced-only also drops provisions a commenced amendment REPEALED (the legal
     # team's "deleted -> remove" case). Flagged-but-uncommenced repeals stay
     # (STALE_RISK), and the per-document artifacts retain the row for the audit trail.
@@ -466,6 +488,66 @@ def run_pipeline_map(
         discovered=hits, documents=documents, citations=citations,
         secondary_signals=list(secondary_signals),
     )
+
+
+def _discover_amendments(
+    documents: list[DemoArtifacts],
+    process_fn,
+    portal: PortalSpec,
+    profile: SourceProfile,
+    *,
+    force_browser: bool,
+    timeout: float,
+    max_queries: int = 12,
+    per_query: int = 4,
+) -> list[DemoArtifacts]:
+    """For EVERY ORIGINAL law in the working set, look for ITS amendments.
+
+    General by construction: amendment-search queries are derived from each original's
+    own title (``amendment_search_queries``), not a hardcoded list of amending Acts —
+    so a NEW law's amendments are pursued just like a known law's. Each candidate is
+    fetched/parsed through the normal per-document path and kept only if it actually
+    classifies as an amending Act (``AMENDMENT_DELTA``), so an unrelated law surfaced
+    by the query is discarded. De-duplicated against what is already fetched."""
+    from lexora.cite.amendments import (
+        VersionKind,
+        amendment_search_queries,
+        classify_version,
+    )
+    from lexora.collect.discovery import discover
+
+    have_sha = {a.document.sha256 for a in documents}
+    seen_url = {str(a.document.source_url) for a in documents}
+    queries: list[str] = []
+    for a in documents:
+        if classify_version(a.document_text or "") is VersionKind.original and a.document.title:
+            queries.extend(amendment_search_queries(a.document.title))
+    queries = list(dict.fromkeys(queries))[:max_queries]
+
+    new_docs: list[DemoArtifacts] = []
+    for q in queries:
+        try:
+            hits = discover(
+                portal, query=q, limit=per_query, timeout=timeout,
+                force_browser=force_browser, known_instruments=profile.known_instruments,
+                known_instrument_ids=profile.known_instrument_ids,
+            )
+        except Exception:  # noqa: BLE001 — a failed amendment query never breaks a run
+            continue
+        for hit in hits:
+            if hit.url in seen_url:
+                continue
+            seen_url.add(hit.url)
+            try:
+                art = process_fn(hit)
+            except Exception:  # noqa: BLE001
+                continue
+            if art.document.sha256 in have_sha:
+                continue
+            if classify_version(art.document_text or "") is VersionKind.amendment_delta:
+                have_sha.add(art.document.sha256)
+                new_docs.append(art)
+    return new_docs
 
 
 def _attribute_by_name(hit, profile: SourceProfile, indicators: list[RDTIIIndicator]) -> set[str]:
@@ -524,8 +606,34 @@ def _year_of(value: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _extract_amendment_instructions(text: str, extractor=None) -> list:
+    """Instructions an amending Act performs — LLM-FIRST, regex fallback.
+
+    The LLM path (:mod:`lexora.cite.amendments_llm`) is the more complete extractor on
+    real drafting: on the Arbitration (Amendment) Act 2024 it recovered a section
+    deletion and several per-subsection substitutions the regex parser collapses into a
+    coarse ``amend`` or misses outright (LLM 24 vs regex 7 instructions), and it is
+    source-verified so it cannot fabricate one. The deterministic
+    :func:`lexora.cite.amendments.parse_amendment_instructions` backstops it whenever
+    the LLM is unavailable, inert, or returns nothing (offline run, non-English lexicon
+    the model declined, transient backend error) — so adjudication never loses the
+    regex floor. ``extractor`` is ``None`` or the inert extractor when LLM is off."""
+    from lexora.cite.amendments import parse_amendment_instructions
+
+    if extractor is not None:
+        instrs = extractor.extract(text)
+        if instrs:
+            return instrs
+    return parse_amendment_instructions(text)
+
+
 def _apply_currency_flags(
-    documents: list[DemoArtifacts], citations: list[Citation], profile: SourceProfile
+    documents: list[DemoArtifacts],
+    citations: list[Citation],
+    profile: SourceProfile,
+    *,
+    extractor=None,
+    workers: int = 1,
 ) -> None:
     """Stamp each citation with an amendment-currency verdict, in place.
 
@@ -533,24 +641,28 @@ def _apply_currency_flags(
     built from the fetched corpus (Signal B), the portal channel (D) and the curated
     registry (C backstop); a citation whose source pre-dates a known amendment is
     flagged ``STALE_RISK``. **Provision-level** (Tier-2): when the amending Act's TEXT
-    is in the corpus, its instructions are parsed and each citation's exact section is
-    adjudicated — untouched sections are downgraded to ``CURRENT``, an amended section
-    becomes ``AMENDED`` (carrying the amending Act's own verbatim), a deleted+commenced
-    section becomes ``REPEALED``, and an act-wide term rename annotates any quote that
-    uses the old term. Any non-CURRENT verdict raises a clean ``VERIFIED`` row to
-    ``AMENDMENT_REVIEW``. See :mod:`lexora.cite.amendments`."""
+    is in the corpus, its instructions are extracted (LLM-first via ``extractor``, regex
+    fallback) and each citation's exact section is adjudicated — untouched sections are
+    downgraded to ``CURRENT``, an amended section becomes ``AMENDED`` (carrying the
+    amending Act's own verbatim), a deleted+commenced section becomes ``REPEALED``, and
+    an act-wide term rename annotates any quote that uses the old term. Any non-CURRENT
+    verdict raises a clean ``VERIFIED`` row to ``AMENDMENT_REVIEW``.
+
+    ``extractor`` is the LLM amendment extractor (inert/``None`` -> regex only);
+    ``workers`` > 1 runs the per-amending-Act LLM extraction concurrently — the LLM
+    call is the wall-clock cost here, so this mirrors the document/rationale thread
+    pools. See :mod:`lexora.cite.amendments`."""
     from lexora.cite.amendments import (
         AmendmentIndex,
         CurrencyStatus,
         adjudicate_provision,
         assess_currency,
+        candidate_keys,
         classify_version,
         currency_note,
         detect_amends_target,
         detect_incorporated_to,
         is_commenced,
-        normalize_key,
-        parse_amendment_instructions,
         parse_identity,
         section_of,
     )
@@ -562,41 +674,64 @@ def _apply_currency_flags(
     )
     index.add_registry(profile.amended_by)
 
-    # Parse the instruction set of every amending Act in the corpus (Tier-2), merged
-    # per principal so a multiply-amended law is judged against all of them.
+    # Extract the instruction set of every amending Act in the corpus (Tier-2). The
+    # extraction is LLM-first (regex fallback) and is the wall-clock cost of this pass,
+    # so it runs CONCURRENTLY across amending Acts when an LLM extractor is in play —
+    # mirroring the document/rationale thread pools (`map` preserves order). Results are
+    # stored under ALL keys the principal may be cited by (Act-number AND title) so a
+    # citation keyed by number matches an amendment that named the principal by title.
+    amend_docs = [
+        a for a in documents
+        if classify_version(a.document_text or "") is _VK.amendment_delta
+        and detect_amends_target(a.document_text or "") is not None
+    ]
+    texts = [a.document_text or "" for a in amend_docs]
+    use_pool = (
+        workers > 1 and len(amend_docs) > 1
+        and extractor is not None and getattr(extractor, "_client", None) is not None
+    )
+    if use_pool:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(workers, len(amend_docs))) as ex:
+            instr_lists = list(ex.map(
+                lambda t: _extract_amendment_instructions(t, extractor), texts
+            ))
+    else:
+        instr_lists = [_extract_amendment_instructions(t, extractor) for t in texts]
+
     instr_by_key: dict[str, list] = {}
     label_by_key: dict[str, list[str]] = {}
     commenced_by_key: dict[str, bool] = {}
-    for a in documents:
+    for a, instrs in zip(amend_docs, instr_lists, strict=True):
         text = a.document_text or ""
-        if classify_version(text) is not _VK.amendment_delta:
-            continue
-        target = detect_amends_target(text)
-        if target is None:
-            continue
+        target = detect_amends_target(text)  # not None by construction of amend_docs
         ident = parse_identity(text)
-        key = normalize_key(number=target[0], title=target[1])
-        instr_by_key.setdefault(key, []).extend(parse_amendment_instructions(text))
         label = ident.number or "amendment"
         if ident.year:
             label = f"{label} ({ident.year})"
-        label_by_key.setdefault(key, []).append(label)
-        commenced_by_key[key] = commenced_by_key.get(key, True) and is_commenced(text)
+        commenced = is_commenced(text)
+        for key in candidate_keys(number=target[0], title=target[1]):
+            instr_by_key.setdefault(key, []).extend(instrs)
+            label_by_key.setdefault(key, []).append(label)
+            commenced_by_key[key] = commenced_by_key.get(key, True) and commenced
 
-    # Per-source-document key + incorporation cutoff, computed once. The cutoff is
-    # how current the source text is: Signal A's in-doc consolidation point, raised
-    # by any portal-reported amendment year (Signal D via RawDocument.last_amended).
-    by_hash: dict[str, tuple[str, int | None]] = {}
+    # Per-source-document candidate keys + incorporation cutoff + version tag. The
+    # cutoff is how current the source text is: Signal A's in-doc consolidation point,
+    # raised by any portal-reported amendment year (Signal D).
+    by_hash: dict[str, tuple[list[str], int | None]] = {}
+    ver_by_hash: dict[str, str] = {}
     for a in documents:
         doc = a.document
         ident = parse_identity(a.document_text or "")
-        key = normalize_key(
+        keys = candidate_keys(
             number=doc.law_number or ident.number, title=doc.title or ident.title
         )
         in_doc = detect_incorporated_to(a.document_text or "")
         portal_year = _year_of(doc.last_amended)
         cutoff = max([y for y in (in_doc, portal_year) if y is not None], default=None)
-        by_hash[doc.sha256] = (key, cutoff)
+        by_hash[doc.sha256] = (keys, cutoff)
+        ver_by_hash[doc.sha256] = classify_version(a.document_text or "").value
 
     def _flag(c: Citation, status: CurrencyStatus, amended_by: str, note: str,
               amendment_text: str = "") -> None:
@@ -612,27 +747,33 @@ def _apply_currency_flags(
             c.review_status = ReviewStatus.amendment_review
 
     for c in citations:
-        key, cutoff = by_hash.get(c.document_hash, ("", None))
-        if not key:  # fall back to the citation's own resolved metadata
-            key = normalize_key(number=c.law_number, title=c.title)
+        c.source_version = ver_by_hash.get(c.document_hash, "")
+        keys, cutoff = by_hash.get(c.document_hash, ([], None))
+        if not keys:  # fall back to the citation's own resolved metadata
+            keys = candidate_keys(number=c.law_number, title=c.title)
         if cutoff is None:
             cutoff = _year_of(c.last_amended)
-        assessment = assess_currency(
-            principal_key=key, incorporated_to=cutoff, index=index
-        )
+        assessment = assess_currency(keys=keys, incorporated_to=cutoff, index=index)
         c.currency_status = assessment.status.value
         if assessment.incorporated_to is not None:
             c.amendments_incorporated_to = str(assessment.incorporated_to)
 
-        instrs = instr_by_key.get(key)
+        # Gather the amending Act's instructions across every key the principal may be
+        # referenced by (number + title).
+        instrs: list = []
+        labels: list[str] = []
+        commenced = True
+        for k in keys:
+            if k in instr_by_key:
+                instrs.extend(instr_by_key[k])
+                labels.extend(label_by_key.get(k, []))
+                commenced = commenced and commenced_by_key.get(k, True)
         if instrs:
             # Tier-2: we have the amending Act's text -> adjudicate this exact section.
-            amend_label = "; ".join(dict.fromkeys(label_by_key.get(key, []))) \
-                or assessment.amended_by_label()
+            amend_label = "; ".join(dict.fromkeys(labels)) or assessment.amended_by_label()
             verdict = adjudicate_provision(
                 section=section_of(c.article_path), quote=c.quote,
-                instructions=instrs, amend_label=amend_label,
-                commenced=commenced_by_key.get(key, True),
+                instructions=instrs, amend_label=amend_label, commenced=commenced,
             )
             status = verdict.status if verdict.status is not None else assessment.status
             _flag(c, status, amend_label if status is not CurrencyStatus.current else "",

@@ -113,6 +113,22 @@ def normalize_key(*, number: str = "", title: str = "") -> str:
     return ("title:" + t) if t else ""
 
 
+def candidate_keys(*, number: str = "", title: str = "") -> list[str]:
+    """All keys a principal law may be referenced by — its Act-NUMBER key AND its
+    TITLE key. An amending Act frequently cites the principal by title only while the
+    principal document carries its number, so matching the two requires trying both."""
+    keys: list[str] = []
+    if number:
+        nk = normalize_key(number=number)
+        if nk.startswith("act:"):
+            keys.append(nk)
+    if title:
+        tk = normalize_key(title=title)
+        if tk.startswith("title:") and tk not in keys:
+            keys.append(tk)
+    return keys
+
+
 @dataclass(frozen=True)
 class AmendmentEvent:
     """One amending instrument acting on a principal law. ``year`` orders the chain
@@ -221,16 +237,14 @@ class AmendmentIndex:
             y = ident.year
             if y is None:
                 continue
-            key = normalize_key(number=t_num, title=t_title)
-            self._add(
-                key,
-                AmendmentEvent(
-                    year=y,
-                    amending_id=ident.number or (title_hint or "").strip(),
-                    amending_title=ident.title or t_title,
-                    detected_by="corpus",
-                ),
+            event = AmendmentEvent(
+                year=y,
+                amending_id=ident.number or (title_hint or "").strip(),
+                amending_title=ident.title or t_title,
+                detected_by="corpus",
             )
+            for key in candidate_keys(number=t_num, title=t_title):
+                self._add(key, event)
 
     def add_portal(self, *, principal_key: str, year: int, amending_id: str = "") -> None:
         """Signal D. A portal-reported amendment year on the principal."""
@@ -255,6 +269,20 @@ class AmendmentIndex:
         """The chain for a principal, chronological (oldest first; last = newest)."""
         return sorted(self._chains.get(key, []), key=lambda e: e.year)
 
+    def events_for_any(self, keys: list[str]) -> list[AmendmentEvent]:
+        """The merged, de-duplicated chain across several keys a principal may be
+        referenced by (Act-number + title) — chronological."""
+        seen: set[tuple[int, str]] = set()
+        out: list[AmendmentEvent] = []
+        for k in keys:
+            for e in self._chains.get(k, []):
+                sig = (e.year, e.amending_id)
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                out.append(e)
+        return sorted(out, key=lambda e: e.year)
+
 
 @dataclass
 class CurrencyAssessment:
@@ -268,16 +296,19 @@ class CurrencyAssessment:
 
 
 def assess_currency(
-    *, principal_key: str, incorporated_to: int | None, index: AmendmentIndex
+    *, principal_key: str = "", keys: list[str] | None = None,
+    incorporated_to: int | None, index: AmendmentIndex,
 ) -> CurrencyAssessment:
     """Compare what a source document incorporates against the known amendment chain.
 
-    ``incorporated_to`` is the cutoff the citation's source text is current to —
-    Signal A's consolidation point, else the year in the document's ``Last Amended``
-    (an "as made" original incorporates nothing past its enactment year). Any
-    amendment in the chain newer than the cutoff is reported as missing (later
-    overrides earlier, so every newer event matters, not just the last)."""
-    events = index.events_for(principal_key)
+    Pass ``keys`` (the principal's Act-number + title candidate keys) to match an
+    amendment that referenced the principal by either form, or ``principal_key`` for a
+    single key. ``incorporated_to`` is the cutoff the citation's source text is current
+    to — Signal A's consolidation point, else the year in the document's ``Last
+    Amended`` (an "as made" original incorporates nothing past its enactment year). Any
+    amendment newer than the cutoff is reported as missing (later overrides earlier, so
+    every newer event matters, not just the last)."""
+    events = index.events_for_any(keys) if keys else index.events_for(principal_key)
     if not events:
         return CurrencyAssessment(CurrencyStatus.unknown, incorporated_to, [])
     cutoff = incorporated_to if incorporated_to is not None else -1
@@ -360,10 +391,13 @@ _Q = r"[\"“”'‘’]"  # straight + curly quotes
 _NQ = r"[^\"“”]"  # any non-double-quote (term body)
 
 # Whole-act term substitution: the "wherever appearing" marker is what makes it
-# GLOBAL rather than a one-section edit. Captures the old and (optional) new term.
+# GLOBAL rather than a one-section edit. Real gazette clauses list several quoted
+# forms ("data user" AND "data users"), so extra coordinated quoted terms are
+# tolerated before "wherever"; group 1/2 keep the first old/new term for the note.
 _RENAME_RE = re.compile(
     r"substitut\w*\s+for\s+the\s+(?:word|expression)s?\s+"
     + _Q + r"(" + _NQ + r"+)" + _Q
+    + r"(?:\s*(?:,|and|or)\s*" + _Q + _NQ + r"+" + _Q + r")*"
     + r"\s+wherever\s+(?:appearing|they\s+appear|it\s+appears)\b"
     + r"(?:" + _NQ + r"*?the\s+(?:word|expression)s?\s+" + _Q + r"(" + _NQ + r"+)" + _Q + r")?",
     re.IGNORECASE | re.DOTALL,
@@ -443,6 +477,28 @@ def affected_sections(instructions: list[AmendmentInstruction]) -> set[str]:
 def has_global_rename(instructions: list[AmendmentInstruction]) -> bool:
     """True if any instruction is an act-wide term substitution (broad cascade)."""
     return any(i.kind is InstructionKind.global_rename for i in instructions)
+
+
+_TITLE_CORE_RE = re.compile(r"\s*\bAct\b\s*\d", re.IGNORECASE)
+
+
+def amendment_search_queries(title: str) -> list[str]:
+    """Portal queries that would surface amendments to a principal law, DERIVED from
+    its title — general (works for any law), not a hardcoded amendment name.
+
+    The driver tags every fetched document (``classify_version``) and, for each
+    ORIGINAL, runs these queries to look for ITS amendments, rather than chasing a
+    fixed list of known amending Acts. From "Personal Data Protection Act 2010" the
+    core "Personal Data Protection" yields "...(Amendment) Act" / "...Amendment"."""
+    t = (title or "").strip()
+    if not t:
+        return []
+    core = _TITLE_CORE_RE.split(t, maxsplit=1)[0].strip()
+    core = re.sub(r"\(amendment\)", "", core, flags=re.IGNORECASE).strip()
+    core = re.sub(r"\s+", " ", core)
+    if len(core) < 3:
+        return []
+    return [f"{core} (Amendment) Act", f"{core} Amendment"]
 
 
 _SECTION_OF_RE = re.compile(
@@ -553,6 +609,7 @@ __all__ = [
     "AmendmentIndex",
     "CurrencyAssessment",
     "normalize_key",
+    "candidate_keys",
     "parse_identity",
     "detect_amends_target",
     "detect_incorporated_to",
@@ -567,6 +624,7 @@ __all__ = [
     "parse_amendment_instructions",
     "affected_sections",
     "has_global_rename",
+    "amendment_search_queries",
     "ProvisionVerdict",
     "section_of",
     "is_commenced",

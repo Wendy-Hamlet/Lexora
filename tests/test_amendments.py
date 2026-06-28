@@ -15,6 +15,7 @@ from lexora.cite.amendments import (
     VersionKind,
     adjudicate_provision,
     affected_sections,
+    amendment_search_queries,
     assess_currency,
     classify_version,
     currency_note,
@@ -285,3 +286,22 @@ def test_adjudicate_global_rename_annotates_matching_quote():
         instructions=_instrs(), amend_label="Act A1727 (2024)",
     )
     assert 'renamed to "data controller"' in v.note
+
+
+# --- General amendment-search query derivation (discovery) ---
+
+def test_amendment_search_queries_general_from_title():
+    qs = amendment_search_queries("Personal Data Protection Act 2010")
+    assert "Personal Data Protection (Amendment) Act" in qs
+    assert "Personal Data Protection Amendment" in qs
+    # Works for any law, not a hardcoded amendment name.
+    assert amendment_search_queries("Cyber Security Act 2024")[0] == \
+        "Cyber Security (Amendment) Act"
+
+
+def test_amendment_search_queries_strips_existing_amendment_and_blanks():
+    # An amendment's own title collapses onto its principal's core.
+    assert amendment_search_queries("Personal Data Protection (Amendment) Act 2024")[0] == \
+        "Personal Data Protection (Amendment) Act"
+    assert amendment_search_queries("") == []
+    assert amendment_search_queries("Act 2010") == []

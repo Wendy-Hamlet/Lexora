@@ -115,3 +115,7 @@ class Citation(BaseModel):
     # For an AMENDED/REPEALED provision: the amending Act's OWN verbatim instruction
     # (kept beside the original quote — never a synthesized consolidated text).
     amendment_text: str = ""
+    # How the SOURCE document relates to the law's text: ORIGINAL (as-made),
+    # AMENDMENT_DELTA (an amending Act) or CONSOLIDATED (a reprint). See
+    # :func:`lexora.cite.amendments.classify_version`.
+    source_version: str = ""

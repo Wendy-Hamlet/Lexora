@@ -104,3 +104,111 @@ def test_repealed_provision_flagged_repealed():
     assert repealed.currency_status == "REPEALED"
     assert repealed.review_status is ReviewStatus.amendment_review
     assert "repealed by Act A1727 (2024)" in repealed.notes
+
+
+# A title-only amendment (no "[Act 709]" bracket) — the real gazetted A1727 names its
+# principal by title, while a PDPA citation is keyed by the Act number; the
+# number/title candidate-key bridge must still connect them.
+TITLE_ONLY_AMENDMENT = """
+LAWS OF MALAYSIA
+Act A1727
+PERSONAL DATA PROTECTION (AMENDMENT) ACT 2024
+This Act comes into operation on 1 January 2025.
+An Act to amend the Personal Data Protection Act 2010.
+6. Section 129 of the principal Act is deleted.
+"""
+
+
+class _RecordingExtractor:
+    """Stub LLM amendment extractor: returns a canned instruction set and records the
+    texts it was asked to extract (to assert the LLM-first path actually ran). Carries
+    a non-None ``_client`` so the pipeline treats it as a live LLM and can pool it."""
+
+    def __init__(self, instructions):
+        self._client = object()
+        self._instructions = instructions
+        self.seen: list[str] = []
+
+    def extract(self, text: str):
+        self.seen.append(text)
+        return list(self._instructions)
+
+
+def test_llm_first_extractor_is_preferred_over_regex():
+    from lexora.cite.amendments import AmendmentInstruction, InstructionKind, Operation
+
+    principal = _doc("H709", "Personal Data Protection Act 2010", PRINCIPAL_TEXT,
+                     "Act 709", "2010")
+    # An amending Act whose REGEX parse would NOT see section 40 as deleted; the LLM
+    # extractor reports the deletion, so adjudication must follow the LLM, not regex.
+    amendment = _doc("HA1727", "Personal Data Protection (Amendment) Act 2024",
+                     AMENDMENT_TEXT, "Act A1727", "2024")
+    c40 = _cit("H709", "40", "A data user may collect personal data ...")
+    extractor = _RecordingExtractor([
+        AmendmentInstruction(kind=InstructionKind.section_op, op=Operation.delete,
+                             target_section="40", old_term="", new_term="", raw=""),
+    ])
+    _apply_currency_flags([principal, amendment], [c40], SourceProfile(
+        jurisdiction="Malaysia", iso_code="MY", primary_language="en",
+        legal_system=LegalSystem.common), extractor=extractor)
+    assert extractor.seen == [AMENDMENT_TEXT]          # LLM path ran on the amending Act
+    assert c40.currency_status == "REPEALED"           # followed the LLM's deletion
+    assert "repealed by Act A1727 (2024)" in c40.notes
+
+
+def test_parallel_extraction_over_multiple_amending_acts():
+    # Two amending Acts in the working set, workers>1 -> the LLM extractor is called
+    # concurrently for each; both verdicts must land.
+    from lexora.cite.amendments import AmendmentInstruction, InstructionKind, Operation
+
+    principal = _doc("H709", "Personal Data Protection Act 2010", PRINCIPAL_TEXT,
+                     "Act 709", "2010")
+    amd_a = _doc("HA1", "Personal Data Protection (Amendment) Act 2024",
+                 AMENDMENT_TEXT, "Act A1727", "2024")
+    amd_b = _doc("HA2", "Personal Data Protection (Amendment) Act 2024",
+                 TITLE_ONLY_AMENDMENT, "Act A1800", "2024")
+    c6 = _cit("H709", "6", "A data user shall not process personal data ...")
+    extractor = _RecordingExtractor([
+        AmendmentInstruction(kind=InstructionKind.section_op, op=Operation.amend,
+                             target_section="6", old_term="", new_term="", raw="amended"),
+    ])
+    _apply_currency_flags([principal, amd_a, amd_b], [c6], SourceProfile(
+        jurisdiction="Malaysia", iso_code="MY", primary_language="en",
+        legal_system=LegalSystem.common), extractor=extractor, workers=4)
+    assert len(extractor.seen) == 2                    # both amending Acts extracted
+    assert c6.currency_status == "AMENDED"
+
+
+def test_inert_extractor_falls_back_to_regex():
+    # An inert extractor (_client None, extract -> []) must not suppress the regex floor.
+    class _Inert:
+        _client = None
+
+        def extract(self, text):
+            return []
+
+    principal = _doc("H709", "Personal Data Protection Act 2010", PRINCIPAL_TEXT,
+                     "Act 709", "2010")
+    amendment = _doc("HA1727", "Personal Data Protection (Amendment) Act 2024",
+                     AMENDMENT_TEXT, "Act A1727", "2024")
+    c = _cit("H709", "129", "transfer of personal data outside Malaysia ...")
+    _apply_currency_flags([principal, amendment], [c], SourceProfile(
+        jurisdiction="Malaysia", iso_code="MY", primary_language="en",
+        legal_system=LegalSystem.common), extractor=_Inert())
+    assert c.currency_status == "REPEALED"             # regex parser still adjudicated
+
+
+def test_title_only_amendment_matches_number_keyed_citation():
+    principal = _doc("H709", "Personal Data Protection Act 2010", PRINCIPAL_TEXT,
+                     "Act 709", "2010")
+    amendment = _doc("HA1727", "Personal Data Protection (Amendment) Act 2024",
+                     TITLE_ONLY_AMENDMENT, "Act A1727", "2024")
+    c = _cit("H709", "129", "transfer of personal data outside Malaysia ...")  # Act 709
+    from lexora.cite.amendments import detect_amends_target
+    # Sanity: this amendment names the principal by TITLE only (number empty).
+    assert detect_amends_target(TITLE_ONLY_AMENDMENT)[0] == ""
+    _apply_currency_flags([principal, amendment], [c], SourceProfile(
+        jurisdiction="Malaysia", iso_code="MY", primary_language="en",
+        legal_system=LegalSystem.common))
+    assert c.currency_status == "REPEALED"  # bridged despite number-vs-title keying
+    assert c.source_version == "ORIGINAL"
