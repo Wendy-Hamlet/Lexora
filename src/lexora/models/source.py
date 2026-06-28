@@ -90,6 +90,12 @@ class SourceProfile(BaseModel):
     # KNOWN by identity even when the result's title is a filename that defeats
     # fuzzy name matching (MY Fess document records).
     known_instrument_ids: dict[str, str] = Field(default_factory=dict)
+    # Curated amendment registry (BACKSTOP only — Signal C in lexora.cite.amendments).
+    # Maps a principal law's native number (or title) to its known amending acts, so a
+    # citation drawn from a stale source is flagged even when the amending instrument
+    # was not fetched. Only covers KNOWN laws; the corpus/portal signals generalize to
+    # NEW laws. Shape: {"709": [{"by": "Act A1727", "year": 2024}, ...]}.
+    amended_by: dict[str, list[dict]] = Field(default_factory=dict)
     portals: list[PortalSpec] = Field(default_factory=list)
 
 

@@ -11,6 +11,7 @@ ocr_languages: ["eng", "msa"]
 
 known_instruments:
   - "Personal Data Protection Act 2010"
+  - "Personal Data Protection (Amendment) Act 2024"
   - "Cyber Security Act 2024"
   - "Computer Crimes Act 1997"
   - "Communications and Multimedia Act 1998"
@@ -19,9 +20,20 @@ known_instruments:
 # tag KNOWN by identity. Keys are matched against the discovered Act number.
 known_instrument_ids:
   "709": "Personal Data Protection Act 2010"
+  "A1727": "Personal Data Protection (Amendment) Act 2024"
   "854": "Cyber Security Act 2024"
   "563": "Computer Crimes Act 1997"
   "588": "Communications and Multimedia Act 1998"
+
+# Curated amendment registry (BACKSTOP — Signal C in lexora.cite.amendments). Flags a
+# citation as STALE_RISK when its source pre-dates a known amendment, even if the
+# amending Act was not fetched. PDPA 2010 (Act 709) was amended by the Personal Data
+# Protection (Amendment) Act 2024 (Act A1727), which introduced the DPO duty (7.4) and
+# data-breach notification — absent from the original 2010 text.
+amended_by:
+  "709":
+    - by: "Act A1727"
+      year: 2024
 
 keywords_by_indicator:
   "6.1":

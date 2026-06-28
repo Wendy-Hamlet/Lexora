@@ -58,6 +58,7 @@ AUDIT_FIELDS = [
     "clause_id", "jurisdiction", "legal_form", "coverage",
     "char_start", "char_end", "document_hash", "retrieval_timestamp",
     "review_status",
+    "currency_status", "amended_by", "amendments_incorporated_to", "amendment_text",
 ]
 
 

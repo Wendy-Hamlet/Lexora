@@ -101,6 +101,15 @@ def to_submission_json(
                 "source_url": str(c.source_url),
                 "confidence": c.confidence,
                 "notes": c.notes or "",
+                # --- amendment-currency audit (nested so the top level stays close to
+                # the official example; see lexora.cite.amendments) ---
+                "amendment_currency": {
+                    "review_status": getattr(c.review_status, "value", str(c.review_status)),
+                    "status": getattr(c, "currency_status", "") or "",
+                    "amended_by": getattr(c, "amended_by", "") or "",
+                    "incorporated_to": getattr(c, "amendments_incorporated_to", "") or "",
+                    "amendment_text": getattr(c, "amendment_text", "") or "",
+                },
                 # --- technical metadata the CSV cannot hold ---
                 "source_pdf_path": getattr(doc, "bytes_path", "") or "",
                 "pdf_is_scanned": bool(getattr(art, "pdf_is_scanned", False)),

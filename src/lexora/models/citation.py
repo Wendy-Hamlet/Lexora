@@ -48,6 +48,10 @@ class ReviewStatus(str, Enum):
     conflict_review = "CONFLICT_REVIEW"
     no_primary_source = "NO_PRIMARY_SOURCE_FOUND"
     hallucinated_or_unsupported = "HALLUCINATED_OR_UNSUPPORTED_MAPPING"
+    # The verbatim quote is sound, but a later instrument amended the law and the
+    # source text may pre-date it — route to human review to confirm the provision
+    # is still in force / current. See :mod:`lexora.cite.amendments`.
+    amendment_review = "AMENDMENT_REVIEW"
 
 
 class EvidenceClaim(BaseModel):
@@ -97,3 +101,17 @@ class Citation(BaseModel):
     char_start: int = Field(ge=0)
     char_end: int = Field(ge=0)
     review_status: ReviewStatus = ReviewStatus.verified
+
+    # --- amendment / currency audit (JSON export + audit CSV, not in submission) ---
+    # Whether the source text is current w.r.t. known amendments to this law.
+    # CurrencyStatus value ("CURRENT" | "STALE_RISK" | "UNKNOWN"); "" when not assessed.
+    currency_status: str = ""
+    # The amendments newer than what the source incorporates, e.g.
+    # "Act A1727 (2024)"; blank unless STALE_RISK. See lexora.cite.amendments.
+    amended_by: str = ""
+    # The year the source document states it incorporates amendments to (Signal A);
+    # blank for an "as made" original that makes no such claim.
+    amendments_incorporated_to: str = ""
+    # For an AMENDED/REPEALED provision: the amending Act's OWN verbatim instruction
+    # (kept beside the original quote — never a synthesized consolidated text).
+    amendment_text: str = ""

@@ -453,6 +453,15 @@ def run_pipeline_map(
             seen.add(key)
             citations.append(c)
 
+    # Amendment-currency pass: flag citations whose source text may pre-date a later
+    # amending instrument (needs the whole working set, so it runs once here).
+    _apply_currency_flags(documents, citations, profile)
+    # Enforced-only also drops provisions a commenced amendment REPEALED (the legal
+    # team's "deleted -> remove" case). Flagged-but-uncommenced repeals stay
+    # (STALE_RISK), and the per-document artifacts retain the row for the audit trail.
+    if enforced_only:
+        citations = [c for c in citations if c.currency_status != "REPEALED"]
+
     return MapResult(
         discovered=hits, documents=documents, citations=citations,
         secondary_signals=list(secondary_signals),
@@ -505,6 +514,133 @@ def _resolve_doc_metadata(
         last_amended = last_amended or ex_amended
         law_number = law_number or ex_number
     return last_amended, law_number, review_note
+
+
+def _year_of(value: str) -> int | None:
+    """First 4-digit year in a string, or None."""
+    import re
+
+    m = re.search(r"\b(1[6-9]\d{2}|20\d{2})\b", value or "")
+    return int(m.group(1)) if m else None
+
+
+def _apply_currency_flags(
+    documents: list[DemoArtifacts], citations: list[Citation], profile: SourceProfile
+) -> None:
+    """Stamp each citation with an amendment-currency verdict, in place.
+
+    Two layers. **Document-level** (Tier-1): the amendment chain for every law is
+    built from the fetched corpus (Signal B), the portal channel (D) and the curated
+    registry (C backstop); a citation whose source pre-dates a known amendment is
+    flagged ``STALE_RISK``. **Provision-level** (Tier-2): when the amending Act's TEXT
+    is in the corpus, its instructions are parsed and each citation's exact section is
+    adjudicated — untouched sections are downgraded to ``CURRENT``, an amended section
+    becomes ``AMENDED`` (carrying the amending Act's own verbatim), a deleted+commenced
+    section becomes ``REPEALED``, and an act-wide term rename annotates any quote that
+    uses the old term. Any non-CURRENT verdict raises a clean ``VERIFIED`` row to
+    ``AMENDMENT_REVIEW``. See :mod:`lexora.cite.amendments`."""
+    from lexora.cite.amendments import (
+        AmendmentIndex,
+        CurrencyStatus,
+        adjudicate_provision,
+        assess_currency,
+        classify_version,
+        currency_note,
+        detect_amends_target,
+        detect_incorporated_to,
+        is_commenced,
+        normalize_key,
+        parse_amendment_instructions,
+        parse_identity,
+        section_of,
+    )
+    from lexora.cite.amendments import VersionKind as _VK
+
+    index = AmendmentIndex()
+    index.add_from_corpus(
+        [(a.document.title or "", a.document_text) for a in documents if a.document_text]
+    )
+    index.add_registry(profile.amended_by)
+
+    # Parse the instruction set of every amending Act in the corpus (Tier-2), merged
+    # per principal so a multiply-amended law is judged against all of them.
+    instr_by_key: dict[str, list] = {}
+    label_by_key: dict[str, list[str]] = {}
+    commenced_by_key: dict[str, bool] = {}
+    for a in documents:
+        text = a.document_text or ""
+        if classify_version(text) is not _VK.amendment_delta:
+            continue
+        target = detect_amends_target(text)
+        if target is None:
+            continue
+        ident = parse_identity(text)
+        key = normalize_key(number=target[0], title=target[1])
+        instr_by_key.setdefault(key, []).extend(parse_amendment_instructions(text))
+        label = ident.number or "amendment"
+        if ident.year:
+            label = f"{label} ({ident.year})"
+        label_by_key.setdefault(key, []).append(label)
+        commenced_by_key[key] = commenced_by_key.get(key, True) and is_commenced(text)
+
+    # Per-source-document key + incorporation cutoff, computed once. The cutoff is
+    # how current the source text is: Signal A's in-doc consolidation point, raised
+    # by any portal-reported amendment year (Signal D via RawDocument.last_amended).
+    by_hash: dict[str, tuple[str, int | None]] = {}
+    for a in documents:
+        doc = a.document
+        ident = parse_identity(a.document_text or "")
+        key = normalize_key(
+            number=doc.law_number or ident.number, title=doc.title or ident.title
+        )
+        in_doc = detect_incorporated_to(a.document_text or "")
+        portal_year = _year_of(doc.last_amended)
+        cutoff = max([y for y in (in_doc, portal_year) if y is not None], default=None)
+        by_hash[doc.sha256] = (key, cutoff)
+
+    def _flag(c: Citation, status: CurrencyStatus, amended_by: str, note: str,
+              amendment_text: str = "") -> None:
+        c.currency_status = status.value
+        if amended_by:
+            c.amended_by = amended_by
+        if amendment_text:
+            c.amendment_text = amendment_text
+        if note:
+            c.notes = f"{c.notes} | {note}" if c.notes else note
+        if status in (CurrencyStatus.stale_risk, CurrencyStatus.amended,
+                      CurrencyStatus.repealed) and c.review_status is ReviewStatus.verified:
+            c.review_status = ReviewStatus.amendment_review
+
+    for c in citations:
+        key, cutoff = by_hash.get(c.document_hash, ("", None))
+        if not key:  # fall back to the citation's own resolved metadata
+            key = normalize_key(number=c.law_number, title=c.title)
+        if cutoff is None:
+            cutoff = _year_of(c.last_amended)
+        assessment = assess_currency(
+            principal_key=key, incorporated_to=cutoff, index=index
+        )
+        c.currency_status = assessment.status.value
+        if assessment.incorporated_to is not None:
+            c.amendments_incorporated_to = str(assessment.incorporated_to)
+
+        instrs = instr_by_key.get(key)
+        if instrs:
+            # Tier-2: we have the amending Act's text -> adjudicate this exact section.
+            amend_label = "; ".join(dict.fromkeys(label_by_key.get(key, []))) \
+                or assessment.amended_by_label()
+            verdict = adjudicate_provision(
+                section=section_of(c.article_path), quote=c.quote,
+                instructions=instrs, amend_label=amend_label,
+                commenced=commenced_by_key.get(key, True),
+            )
+            status = verdict.status if verdict.status is not None else assessment.status
+            _flag(c, status, amend_label if status is not CurrencyStatus.current else "",
+                  verdict.note, verdict.amendment_text)
+        elif assessment.status is CurrencyStatus.stale_risk:
+            # Tier-1 only: an amendment exists but its text is not in the corpus.
+            _flag(c, CurrencyStatus.stale_risk, assessment.amended_by_label(),
+                  currency_note(assessment))
 
 
 def _citations_from_clauses(
