@@ -64,6 +64,15 @@ _DOTTED = re.compile(
 # Spaced style (AU): "13  Short title", "2A  Objects", "6AA  ..." (no dot).
 _SPACED = re.compile(r"(?P<sec>\d+[A-Z]{0,3})\s{2,}(?=\S)")
 
+# AU decimal style: the Criminal Code numbers sections "4.1", "477.1" (dot) and the
+# Income Tax Assessment Act 1997 numbers them "1-1", "900-115" (hyphen). Both are
+# emitted as a single token by `au_epub` (the hyphen form is reassembled there), so
+# the heading reads "477.1  Title". A single space suffices (HTML collapses the gap);
+# the winner-takes-all in `_detect_boundaries` only adopts this style when it yields
+# more boundaries than the dotted/spaced styles, so a normal Act that merely mentions
+# "1.1" in prose is unaffected. No inline subsection — AU puts "(1)" on the next line.
+_AU_DECIMAL = re.compile(r"(?P<sec>\d+(?:\.\d+|-\d+)[A-Z]?)\s+(?=\S)")
+
 # Section numbers that are really 4-digit years are almost always false positives
 # (a year in a citation, a TOC dotted-leader line, a commencement date).
 _YEARISH = re.compile(r"(?:19|20)\d{2}")
@@ -121,7 +130,7 @@ _ARTICLE_TH = re.compile(r"มาตรา\s*(?P<num>[0-9๐-๙]+)")
 _ARTICLE_LATIN = re.compile(r"Art(?:icle|ículo|icolo|igo|\.)?\s+(?P<num>\d+)", re.I)
 
 # All section/article openers, each tagged with the structural kind it yields.
-_SECTION_OPENERS = ((_DOTTED, "section"), (_SPACED, "section"))
+_SECTION_OPENERS = ((_DOTTED, "section"), (_SPACED, "section"), (_AU_DECIMAL, "section"))
 _ARTICLE_OPENERS = (
     (_ARTICLE_ZH, "article"), (_ARTICLE_TH, "article"), (_ARTICLE_LATIN, "article"),
 )

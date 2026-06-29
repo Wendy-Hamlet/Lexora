@@ -69,6 +69,32 @@ def test_charsectno_becomes_dotted_heading():
     assert "5. Object of this Act" in text
 
 
+def test_decimal_section_number_is_kept():
+    # Criminal Code style: a single CharSectno "4.1" must stay "4.1" (not gain a
+    # second dot) so the AU decimal opener can detect it.
+    doc1 = (b'<html><body><p class="ActHead5">'
+            b'<span class="CharSectno">4.1</span><span>&#xa0; </span>'
+            b'<span>Physical elements</span></p></body></html>')
+    out = combine_au_epub(_BASE.format(n=1), doc1, _FakeClient({}), inter_delay=0)
+    text = assemble_global_text(extract_html(out))
+    assert "4.1 Physical elements" in text
+    assert "4.1." not in text
+
+
+def test_hyphen_section_number_fragments_are_merged():
+    # ITAA 1997 style: the number "1-1" is split across three CharSectno spans
+    # (1, U+2011, 1) — merge them and fold the non-breaking hyphen to "-".
+    doc1 = ('<html><body><p class="ActHead5">'
+            '<span class="CharSectno">1</span>'
+            '<span class="CharSectno">‑</span>'
+            '<span class="CharSectno">1</span>'
+            '<span>&#xa0; </span><span>Short title</span></p></body></html>'
+            ).encode()
+    out = combine_au_epub(_BASE.format(n=1), doc1, _FakeClient({}), inter_delay=0)
+    text = assemble_global_text(extract_html(out))
+    assert "1-1 Short title" in text
+
+
 def test_non_epub_url_is_ignored():
     client = _FakeClient({2: "<html><body><p>y</p></body></html>"})
     assert combine_au_epub("https://e.gov/some.pdf", b"%PDF", client) is None

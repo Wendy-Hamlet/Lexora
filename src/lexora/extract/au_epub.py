@@ -19,10 +19,14 @@ whitespace to a single space, so the structure parser's spaced opener (which
 requires 2+ spaces, to avoid matching every "1 apple") never fires and every
 section's number is lost — clauses then mis-label as the front commencement
 table's row numbers. The EPUB tags each real section number explicitly with
-``<span class="CharSectno">N</span>``; we append a dot to it ("N.") so the
-parser's *dotted* opener detects the genuine heading. This runs for every part
-(so single-document EPUBs are normalised too — hence a single-doc EPUB returns
-its normalised body, not ``None``).
+``<span class="CharSectno">N</span>`` (the TOC uses a plain ``<span>``).
+``_normalize_section_numbers`` rewrites those: a plain integer gains a dot
+("5" -> "5.") for the parser's *dotted* opener, while the decimal style (Criminal
+Code "4.1") and the hyphen style (ITAA 1997 "1-1", whose number is split across
+consecutive CharSectno spans and folded here, U+2011 -> "-") are kept intact for
+the parser's AU *decimal* opener. This runs for every part (so single-document
+EPUBs are normalised too — hence a single-doc EPUB returns its normalised body,
+not ``None``).
 """
 from __future__ import annotations
 
@@ -37,19 +41,50 @@ _DOC1 = re.compile(r"(?P<a>.*/epub/OEBPS/document_)1(?P<b>/document_)1(?P<c>\.ht
 _MAX_PARTS = 50  # safety bound; real Acts have a handful
 
 
-def _inner_body(html_bytes: bytes) -> str:
-    soup = BeautifulSoup(html_bytes, "lxml")
-    # Make every real section number ("<span class=CharSectno>5</span>") parse as a
-    # dotted heading ("5.") — the only robust section signal once whitespace is
-    # collapsed (see module docstring). TOC/cross-reference numbers are plain
-    # <span> without this class, so genuine headings alone are rewritten.
+def _is_charsectno(node: object) -> bool:
+    return getattr(node, "name", None) == "span" and "CharSectno" in (
+        getattr(node, "get", lambda _k: None)("class") or []
+    )
+
+
+def _normalize_section_numbers(soup: BeautifulSoup) -> None:
+    """Rewrite each real section number (``<span class="CharSectno">``) into a form
+    the structure parser detects once whitespace is collapsed. TOC/cross-reference
+    numbers are plain ``<span>`` without this class, so genuine headings alone are
+    touched. Three styles occur:
+
+    * plain integer ("5")        -> "5."   (the dotted opener, like SG/MY)
+    * decimal ("4.1", Crim Code) -> kept   (the AU decimal opener)
+    * hyphen ("1-1", ITAA 1997)  -> kept; the number is SPLIT across consecutive
+      CharSectno spans ("1","‑","1") joined here, U+2011 folded to "-".
+
+    The integer case must NOT gain a dot when it already has one, or the dotted
+    opener would mis-read "4.1." as section "1"; the decimal/hyphen forms are left
+    intact for the dedicated opener instead."""
     for span in soup.find_all("span", class_="CharSectno"):
-        num = span.get_text().strip()
-        # Skip numbers that already carry a dot — a trailing-dot heading ("5.") is
-        # done, and the Criminal Code's decimal style ("477.1") must NOT gain a
-        # second dot (it would make the dotted opener mis-read it as section "1").
-        if num and "." not in num:
-            span.string = f"{num}."
+        if _is_charsectno(span.previous_sibling):
+            continue  # consumed by the run head below
+        merged = [span]
+        nxt = span.next_sibling
+        while _is_charsectno(nxt):
+            merged.append(nxt)
+            nxt = nxt.next_sibling
+        num = "".join(s.get_text() for s in merged).replace("‑", "-").strip()
+        if not num:
+            continue
+        if "." not in num and "-" not in num:
+            num = f"{num}."
+        span.string = num
+        for extra in merged[1:]:
+            extra.extract()
+
+
+def _inner_body(html_bytes: bytes) -> str:
+    # Force UTF-8 — the Federal Register EPUB is UTF-8, but without a charset hint
+    # lxml can mis-detect it and mojibake the non-breaking hyphen (U+2011) that the
+    # ITAA's "1-1" section numbers are built from.
+    soup = BeautifulSoup(html_bytes, "lxml", from_encoding="utf-8")
+    _normalize_section_numbers(soup)
     body = soup.body or soup
     return "".join(str(x) for x in body.contents)
 
