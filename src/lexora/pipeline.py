@@ -20,6 +20,7 @@ Two entry points:
 """
 from __future__ import annotations
 
+import logging
 import math
 import os
 import time
@@ -63,6 +64,8 @@ from lexora.structure.legal_parser import parse_structure, parse_structure_html
 
 if TYPE_CHECKING:
     from lexora.collect.discovery import DiscoveryResult
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -422,6 +425,12 @@ def run_pipeline_map(
         known_instrument_ids=profile.known_instrument_ids,
         extra_seed_queries=seed_queries,
     )
+    logger.info("working set: %d instrument(s) to map", len(hits))
+
+    import threading
+
+    _progress = {"done": 0, "total": len(hits)}
+    _progress_lock = threading.Lock()
 
     def _process(hit) -> DemoArtifacts:
         t0 = time.perf_counter()
@@ -457,6 +466,15 @@ def run_pipeline_map(
             brute_judge=brute_judge,
         )
         artifacts.processing_time_seconds = round(time.perf_counter() - t0, 3)
+        with _progress_lock:
+            _progress["done"] += 1
+            n = _progress["done"]
+        logger.info(
+            "mapped %d/%d %-38s %d clause(s) -> %d citation(s) [%.1fs]",
+            n, _progress["total"], (hit.title or hit.url)[:38],
+            len(artifacts.clauses), len(artifacts.citations),
+            artifacts.processing_time_seconds,
+        )
         return artifacts
 
     # Document-level parallelism: process instruments concurrently. This is what

@@ -48,11 +48,25 @@ def test_combine_splices_all_parts():
     assert any("document_4" in u for u in client.requested)
 
 
-def test_single_document_epub_returns_none():
-    # document_2 missing -> nothing to combine -> None (caller keeps original body).
+def test_single_document_epub_returns_normalised_body():
+    # A single-document EPUB still returns its (normalised) body, not None — the
+    # section-heading fix must apply even when there is nothing to splice.
     client = _FakeClient({})
-    assert combine_au_epub(_BASE.format(n=1), b"<html><body><p>x</p></body></html>",
-                           client, inter_delay=0) is None
+    out = combine_au_epub(_BASE.format(n=1), b"<html><body><p>x</p></body></html>",
+                          client, inter_delay=0)
+    assert out is not None
+    assert b"x" in out
+
+
+def test_charsectno_becomes_dotted_heading():
+    # "<span class=CharSectno>5</span>  Object" -> "5." so the dotted opener fires.
+    doc1 = (b'<html><body><p class="ActHead5">'
+            b'<span class="CharSectno">5</span><span>&#xa0; </span>'
+            b'<span>Object of this Act</span></p></body></html>')
+    client = _FakeClient({})
+    out = combine_au_epub(_BASE.format(n=1), doc1, client, inter_delay=0)
+    text = assemble_global_text(extract_html(out))
+    assert "5. Object of this Act" in text
 
 
 def test_non_epub_url_is_ignored():
