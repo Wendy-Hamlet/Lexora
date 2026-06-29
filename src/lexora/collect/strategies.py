@@ -749,6 +749,13 @@ def concept_strategy_for(portal: PortalSpec) -> Callable[..., list[DiscoveryResu
 # find it. These resolvers know each portal's PDF convention.
 
 _AU_PDF_PATH = re.compile(r"/[^\"'\s]+/text/\w+/pdf")
+# The FRL EPUB carries the full operative prose as one static XHTML file at a
+# dated path. The ``/{point}/text`` SPA shell only renders the table of contents,
+# but it embeds every section's deep-link into that EPUB, so the EPUB URL can be
+# harvested from the shell HTML with a plain GET — no browser, no PDF.
+_AU_EPUB_PATH = re.compile(
+    r"https://www\.legislation\.gov\.au/[^\"'\s]+/epub/OEBPS/document_1/document_1\.html"
+)
 
 
 def sg_resolve_fulltext(result, *, timeout: float = 30.0) -> str | None:
@@ -759,12 +766,40 @@ def sg_resolve_fulltext(result, *, timeout: float = 30.0) -> str | None:
 
 
 def au_resolve_fulltext(result, *, timeout: float = 30.0) -> str | None:
-    """AU FRL serves the latest-compilation PDF at a dated path
-    ``/{id}/{date}/{date}/text/original/pdf`` that is embedded in the rendered
-    downloads page (the date is the latest compilation, so APP-era amendments are
-    included — unlike the as-made PDF)."""
+    """Resolve an AU FRL instrument page to a fetchable full-text source.
+
+    Primary route is the **EPUB HTML** (``/{id}/{point}/{date}/{date}/text/
+    original/epub/OEBPS/document_1/document_1.html``): a single static XHTML file
+    holding the whole compilation's operative prose. Its URL is embedded in the
+    ``/{point}/text`` SPA shell (each TOC entry deep-links into it), so a plain
+    GET on the shell yields it — NO browser. This is cheaper and richer than the
+    PDF path: the structure parser extracts hundreds-to-thousands of verbatim
+    clauses from the EPUB (incl. Schedule-1 Australian Privacy Principles), where
+    the shell alone yields zero (it is just a table of contents). The date in the
+    EPUB path is the latest compilation, so APP-era amendments are included.
+
+    Falls back to the legacy browser-rendered downloads page → dated PDF
+    (``/text/original/pdf``) when the shell has no EPUB link (e.g. image-only
+    as-made instruments).
+    """
     from urllib.parse import urljoin
 
+    shell = result.url.rstrip("/")
+    if not shell.endswith("/text"):
+        shell += "/text"
+    try:
+        with httpx.Client(
+            follow_redirects=True, timeout=timeout,
+            headers={"User-Agent": "Mozilla/5.0"},
+        ) as client:
+            html = client.get(shell).text
+        m = _AU_EPUB_PATH.search(html)
+        if m:
+            return m.group(0)
+    except Exception:
+        pass
+
+    # Fallback: legacy browser-rendered downloads page → dated PDF.
     from lexora.collect.browser import render
 
     downloads = result.url.rstrip("/")

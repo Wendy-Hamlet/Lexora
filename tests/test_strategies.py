@@ -239,6 +239,58 @@ def test_resolver_for_matches_hosts():
     assert resolver_for("https://lom.agc.gov.my/act-detail.php?act=709") is None
 
 
+def test_au_resolve_prefers_epub_html_no_browser(monkeypatch):
+    """The AU resolver harvests the EPUB full-text URL from the cheap ``/text``
+    shell with a plain GET, never touching the browser. The shell is a TOC whose
+    entries deep-link into the EPUB; the resolver returns that static XHTML URL so
+    the structure parser can extract verbatim clauses (the shell yields none)."""
+    epub = ("https://www.legislation.gov.au/C2004A03712/2026-06-04/2026-06-04/"
+            "text/original/epub/OEBPS/document_1/document_1.html")
+    shell_html = (
+        '<html><body><a href="' + epub + '#_Toc1">1 Short title</a>'
+        '<a href="' + epub + '#_Toc2">6 Interpretation</a></body></html>'
+    )
+    requested: list[str] = []
+
+    def fake_get(self, url, *a, **k):  # noqa: ANN001
+        requested.append(url)
+        return httpx.Response(200, text=shell_html)
+
+    monkeypatch.setattr(httpx.Client, "get", fake_get)
+    # A browser call would raise (no display in CI) — proves we never reach it.
+    import lexora.collect.browser as browser
+    monkeypatch.setattr(browser, "render", lambda *a, **k: pytest.fail("browser used"))
+
+    result = DiscoveryResult(
+        url="https://www.legislation.gov.au/C2004A03712/latest",
+        title="Privacy Act 1988", source_type=SourceType.primary, score=1.0,
+        via="api", is_pdf_link=False,
+    )
+    assert au_resolve_fulltext(result) == epub
+    assert requested == ["https://www.legislation.gov.au/C2004A03712/latest/text"]
+
+
+def test_au_resolve_falls_back_to_pdf_when_no_epub(monkeypatch):
+    """When the shell carries no EPUB link (e.g. an image-only as-made
+    instrument), the resolver falls back to the legacy browser → dated-PDF path."""
+    pdf = "/C2004A03712/2026-06-04/2026-06-04/text/original/pdf"
+    monkeypatch.setattr(
+        httpx.Client, "get",
+        lambda self, url, *a, **k: httpx.Response(200, text="<html>no epub here</html>"),
+    )
+    import lexora.collect.browser as browser
+    monkeypatch.setattr(
+        browser, "render",
+        lambda *a, **k: type("R", (), {"html": f'<a href="{pdf}">PDF</a>'})(),
+    )
+    result = DiscoveryResult(
+        url="https://www.legislation.gov.au/C2004A03712/latest",
+        title="Privacy Act 1988", source_type=SourceType.primary, score=1.0,
+        via="api", is_pdf_link=False,
+    )
+    assert au_resolve_fulltext(result) == "https://www.legislation.gov.au" + pdf
+
+
 @pytest.mark.live
 @_LIVE
 def test_my_api_live_finds_pdpa():
