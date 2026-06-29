@@ -208,16 +208,27 @@ def fetch(
         else:
             _rate_limit(host, min_interval)
             response = _get()
+
+        body = response.content
+        status = response.status_code
+        final_url = str(response.url)
+        content_type = response.headers.get(
+            "content-type", "application/octet-stream"
+        ).split(";")[0].strip()
+
+        # AU EPUB is split across document_1..N (a big Act keeps its Schedule —
+        # e.g. the Criminal Code's computer offences — in the later parts); splice
+        # them into one body while the client is still open. No-op for other URLs.
+        if status == 200 and "html" in content_type.lower():
+            from lexora.extract.au_epub import combine_au_epub
+
+            combined = combine_au_epub(final_url, body, client)
+            if combined is not None:
+                body = combined
+                content_type = "text/html"
     finally:
         if owns_client:
             client.close()
-
-    body = response.content
-    status = response.status_code
-    final_url = str(response.url)
-    content_type = response.headers.get(
-        "content-type", "application/octet-stream"
-    ).split(";")[0].strip()
 
     if browser_fallback and status in (403, 429):
         rendered = _browser_render(final_url, timeout=timeout)

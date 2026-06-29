@@ -106,6 +106,14 @@ def _env(layers: list[dict[str, str]], name: str, default: str, *aliases: str) -
     return default
 
 
+def env_value(name: str, default: str = "", *aliases: str) -> str:
+    """Read a single setting from the process env, then the local ``.env`` (same
+    precedence as :func:`load_config`). For keys not modelled on
+    :class:`LexoraConfig` (e.g. ``LEXORA_BRUTE_MODEL``) so they honour ``.env``
+    instead of requiring a real environment variable."""
+    return _env(_dotenv_layers(".env"), name, default, *aliases)
+
+
 @dataclass(frozen=True)
 class LexoraConfig:
     db_url: str

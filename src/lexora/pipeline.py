@@ -433,10 +433,12 @@ def run_pipeline_map(
         # name-driven hit (AU OData has no full-text, so no surfacing indicator),
         # attribute via the profile's indicator->instrument-name hints; only fall
         # back to all indicators when nothing pins it down.
-        # Regime-2 (brute judge) decides relevance from full text against ALL indicators,
-        # so pass the full set and let the judge subset inside run_pipeline_from_url.
+        # Per-clause 9-in-1 verifier decides relevance at the clause level against ALL
+        # indicators, so pass the full set (it removes the attribution ceiling without a
+        # noisy full-text skim). A full-text brute judge likewise wants all indicators.
         # Otherwise use the discovery-attribution subset (regime-1).
-        if brute_judge is not None:
+        per_clause = verifier is not None and getattr(verifier, "mode", "") == "per_clause"
+        if brute_judge is not None or per_clause:
             ind_subset = indicators
         else:
             wanted = set(hit.indicator_hits) or _attribute_by_name(hit, profile, indicators)
@@ -884,6 +886,20 @@ def _citations_from_clauses(
     # (the slow, I/O-bound part inside _materialize) — concurrently when asked.
     specs: list[dict] = []
     sec_notes = secondary_note_by_indicator or {}
+
+    # Per-clause 9-in-1 relevance: pool candidate clauses across all indicators, then
+    # judge each clause ONCE against all of them (the focused single-clause question a
+    # full-text skim gets wrong). This IS the relevance decision, so it replaces the
+    # per-indicator verifier loop below.
+    if verifier is not None and getattr(verifier, "mode", "pick_one") == "per_clause":
+        specs = _per_clause_specs(
+            indicators, profile, index, clause_by_id, verifier,
+            top_k=top_k, min_score=min_score, rel_floor=rel_floor,
+            use_semantic=_map_use_dense(), reranker=reranker,
+            sec_notes=sec_notes, common=common, llm_workers=llm_workers,
+        )
+        return _execute_specs(specs, llm_workers, rationale_gen)
+
     for indicator in indicators:
         secondary_note = sec_notes.get(indicator.submission_id, "")
         # Gate on the NORMALIZED score so `min_score` is a portable [0, 1]
@@ -952,9 +968,16 @@ def _citations_from_clauses(
                 bm25_score=hit.score, secondary_note=secondary_note, **common,
             ))
 
-    # Execute the specs. Rationale is the only network-bound step; parallelize it
-    # when llm_workers > 1 and an LLM generator is actually in play (the template
-    # path is local). `map` preserves order, so citation order is unchanged.
+    return _execute_specs(specs, llm_workers, rationale_gen)
+
+
+def _execute_specs(
+    specs: list[dict], llm_workers: int, rationale_gen: RationaleGenerator | None
+) -> list[Citation]:
+    """Materialize collected specs into citations. Rationale is the only
+    network-bound step; parallelize it when ``llm_workers`` > 1 and an LLM
+    generator is in play (the template path is local). ``map`` preserves order, so
+    citation order is unchanged."""
     use_pool = (
         llm_workers > 1 and len(specs) > 1
         and rationale_gen is not None and rationale_gen._client is not None
@@ -966,8 +989,93 @@ def _citations_from_clauses(
             results = list(ex.map(lambda s: _materialize(**s), specs))
     else:
         results = [_materialize(**s) for s in specs]
-    citations = [c for c in results if c is not None]
-    return citations
+    return [c for c in results if c is not None]
+
+
+def _per_clause_specs(
+    indicators: list[RDTIIIndicator],
+    profile: SourceProfile,
+    index: BM25Index,
+    clause_by_id: dict[str, Clause],
+    verifier,
+    *,
+    top_k: int,
+    min_score: float,
+    rel_floor: float,
+    use_semantic: bool,
+    reranker,
+    sec_notes: dict,
+    common: dict,
+    llm_workers: int,
+) -> list[dict]:
+    """Build materialization specs via the per-clause 9-in-1 judge.
+
+    Pool the candidate clauses every indicator retrieves (union — so a clause
+    surfaced under one indicator can still be judged for another, removing the
+    attribution ceiling), judge each pooled clause ONCE against all indicators,
+    then for each supported indicator keep the clause if it passes that indicator's
+    boundary rule, capped to ``top_k`` per indicator by retrieval score and gated
+    by ``rel_floor`` (the multi-section precision gate)."""
+    ind_by_id = {i.submission_id: i for i in indicators}
+    # Pool: clause_id -> best RAW retrieval score; plus the per-(indicator,clause)
+    # raw score. Scores stay RAW (``_materialize`` normalizes); gate on normalized.
+    pool_score: dict[str, float] = {}
+    pair_score: dict[tuple[str, str], float] = {}
+    for indicator in indicators:
+        for hit in retrieve_candidates(
+            indicator, profile, index, top_k=top_k,
+            use_semantic=use_semantic, reranker=reranker,
+        ):
+            if _normalize_score(hit.score) < min_score:
+                continue
+            pool_score[hit.clause_id] = max(pool_score.get(hit.clause_id, 0.0), hit.score)
+            pair_score[(indicator.submission_id, hit.clause_id)] = hit.score
+    if not pool_score:
+        return []
+
+    pool_ids = list(pool_score)
+
+    def _judge(cid: str) -> tuple[str, set[str] | None]:
+        return cid, verifier.judge_clause(clause_by_id[cid], indicators)
+
+    if llm_workers > 1 and len(pool_ids) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(llm_workers, len(pool_ids))) as ex:
+            verdicts = dict(ex.map(_judge, pool_ids))
+    else:
+        verdicts = dict(_judge(cid) for cid in pool_ids)
+
+    # Invert to indicator -> [(clause_id, score)], keeping only boundary-admitted
+    # clauses; a judge-assigned indicator that never retrieved the clause uses the
+    # clause's best pool score as its confidence proxy.
+    by_indicator: dict[str, list[tuple[str, float]]] = {}
+    for cid, sids in verdicts.items():
+        if not sids:
+            continue
+        clause = clause_by_id[cid]
+        for sid in sids:
+            indicator = ind_by_id.get(sid)
+            if indicator is None or not admits_clause(indicator.rdtii_id, clause.span.text):
+                continue
+            score = pair_score.get((sid, cid), pool_score[cid])
+            by_indicator.setdefault(sid, []).append((cid, score))
+
+    specs: list[dict] = []
+    for sid, items in by_indicator.items():
+        items.sort(key=lambda t: t[1], reverse=True)
+        items = items[:top_k]
+        if rel_floor > 0.0 and len(items) > 1:
+            cutoff = rel_floor * _normalize_score(items[0][1])
+            items = [items[0]] + [
+                it for it in items[1:] if _normalize_score(it[1]) >= cutoff
+            ]
+        for cid, score in items:
+            specs.append(dict(
+                indicator=ind_by_id[sid], clause=clause_by_id[cid],
+                bm25_score=score, secondary_note=sec_notes.get(sid, ""), **common,
+            ))
+    return specs
 
 
 def _materialize(

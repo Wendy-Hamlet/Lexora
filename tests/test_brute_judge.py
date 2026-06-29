@@ -33,25 +33,35 @@ def test_parse_handles_plain_fenced_and_trailing_prose():
     assert _parse("no json at all") is None
 
 
+def _cfg(base="", key="", ua="", model="gpt-5.4"):
+    from types import SimpleNamespace
+    return SimpleNamespace(llm_base_url=base, llm_api_key=key, llm_user_agent=ua,
+                           llm_model=model)
+
+
 def test_make_brute_judge_inert_when_disabled(monkeypatch):
+    import lexora.config as cfgmod
     monkeypatch.delenv("LEXORA_BRUTE_JUDGE", raising=False)
     assert make_brute_judge() is None  # disabled by default
     # enabled but no API config -> still inert (never raises)
     monkeypatch.setenv("LEXORA_BRUTE_JUDGE", "1")
-    monkeypatch.delenv("LEXORA_LLM_BASE_URL", raising=False)
-    monkeypatch.delenv("LEXORA_LLM_API_KEY", raising=False)
+    monkeypatch.setattr(cfgmod, "load_config", lambda: _cfg(base="", key=""))
     assert make_brute_judge() is None
     assert brute_enabled() is True
 
 
 def test_make_brute_judge_uses_separate_brute_model(monkeypatch):
+    import lexora.config as cfgmod
     monkeypatch.setenv("LEXORA_BRUTE_JUDGE", "1")
-    monkeypatch.setenv("LEXORA_LLM_BASE_URL", "https://x/v1")
-    monkeypatch.setenv("LEXORA_LLM_API_KEY", "k")
-    monkeypatch.setenv("LEXORA_LLM_MODEL", "gpt-5.4")  # reasoning backend
+    # reasoning backend in shared config; brute must still pick its own model
+    monkeypatch.setattr(
+        cfgmod, "load_config",
+        lambda: _cfg(base="https://x/v1", key="k", ua="UA", model="gpt-5.4"),
+    )
     monkeypatch.delenv("LEXORA_BRUTE_MODEL", raising=False)
     j = make_brute_judge()
     assert j is not None and j.model == "deepseek-v4-flash"  # brute stays non-reasoning
+    assert j.user_agent == "UA"  # UA threaded from shared config
 
 
 def test_relevant_unions_passes(monkeypatch):

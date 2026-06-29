@@ -20,6 +20,7 @@ AU (SPA) and SG (403 -> browser).
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from urllib.parse import quote, urljoin, urlparse, urlunparse
@@ -645,6 +646,30 @@ def discover_for_indicators(
     ``max_queries_per_indicator`` caps the phrase count, and a phrase shared by
     several indicators is fetched once and attributed to all of them.
     """
+    # AU full-catalogue enumeration as the discovery source (opt-in via
+    # LEXORA_AU_ENUMERATE). The AU portal has no concept search, so name queries
+    # miss sectoral/surveillance statutes; enumerating the principal-Act catalogue
+    # and judging each on its EPUB full text recovers them. The full-text judge's
+    # per-indicator verdict IS the attribution, so the mapper uses it directly
+    # (regime-1) — no per-document re-judge needed. Needs an LLM key; if absent the
+    # judge is None and we fall through to the normal name/crosswalk discovery.
+    from lexora.collect.au_enumerate import enumerate_enabled
+
+    if enumerate_enabled() and "legislation.gov.au" in urlparse(str(portal.url)).netloc.lower():
+        from lexora.classify.brute_judge import make_brute_judge
+        from lexora.collect.au_enumerate import enumerate_au_candidates
+
+        judge = make_brute_judge(enabled=True)
+        if judge is not None:
+            return enumerate_au_candidates(
+                indicators, judge=judge, source_type=portal.source_type,
+                known_instruments=known_instruments,
+                catalogue_cache=os.environ.get("LEXORA_AU_CATALOGUE_CACHE"),
+                verdict_cache=os.environ.get("LEXORA_AU_ENUM_VERDICTS"),
+                judge_workers=int(os.environ.get("LEXORA_AU_ENUM_WORKERS", "32")),
+                timeout=timeout, user_agent=user_agent,
+            )
+
     # Build the query -> attributed-indicators map. On a full-text portal we use
     # each indicator's concept phrases (and credit the surfacing indicators). On a
     # name-only portal (AU OData) concept phrases return nothing useful, so we

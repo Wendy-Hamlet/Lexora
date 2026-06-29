@@ -1,12 +1,17 @@
-"""Regime-2 brute relevance judge: one LLM call decides ALL 9 indicators for a law.
+"""Brute CANDIDACY judge: one LLM call decides which of ALL 9 indicators a law may touch.
 
-Why this exists. The discovery layer attributes each instrument to the indicator(s)
-whose query surfaced it, and the mapper then scores the law ONLY against that subset
-(``run_pipeline_map`` -> ``_attribute_by_name`` / ``hit.indicator_hits``). That makes
-discovery accuracy a *recall ceiling*: a law surfaced under 7.3 is never tried for 7.5,
-so a buried government-access clause is lost. This judge removes the ceiling — given a
-law's FULL TEXT it returns which of all 9 indicators the law is relevant to, so the
-mapper then produces verbatim citations for exactly those indicators.
+Why this exists. The AU portal has no concept search, so the discovery layer enumerates
+the principal-Act catalogue and must cheaply decide which Acts are worth examining. This
+judge runs over an Act's TABLE OF CONTENTS (its ``/latest/text`` shell — section titles,
+concentrated and high-signal) and returns the indicators the Act plausibly touches; the
+caller (:mod:`lexora.collect.au_enumerate`) keeps any Act flagged for >=1 indicator. It is
+a RECALL gate only — the precise per-indicator attribution is decided later, clause by
+clause, by the per-clause 9-in-1 verifier (``classify.verifier`` ``mode="per_clause"``),
+because a single 9-in-1 call over a whole Act's FULL TEXT is a noisy skim that buries
+sectoral provisions (measured) whereas section titles judge candidacy well (validated 8/9).
+
+The legacy ``subset`` path (full-text 9-in-1, opt-in ``LEXORA_BRUTE_JUDGE``) remains for
+back-compat but is inert by default; the per-clause verifier supersedes it for relevance.
 
 Model choice (validated 2026-06-29). The default backend ``gpt-5.4`` is a reasoning
 model that returns EMPTY content ~45-55% of the time (independent of concurrency,
@@ -63,13 +68,15 @@ def _system(indicators: list[RDTIIIndicator]) -> str:
         f'{{"indicator_id":"{s}","relevant":false,"evidence":"","confidence":0.9}}' for s in ids
     ) + "]}"
     return (
-        "You are building a CANDIDATE shortlist for the UN ESCAP RDTII. Given ONE law's full text, "
-        "decide for EACH indicator whether the law contains ANY provision that could plausibly be "
-        "CITED AS EVIDENCE for that indicator — INCLUDING partial, sector-specific, non-dedicated, "
-        "or weak (0.5-score) cases. This is a RECALL step (a later strict review confirms), so when "
-        "a provision is arguably on-topic, mark relevant=true. Use the long definition to pick the "
+        "You are building a CANDIDATE shortlist for the UN ESCAP RDTII from a law's TABLE OF "
+        "CONTENTS (its section titles). Decide for EACH indicator whether the law plausibly "
+        "contains a provision that could be CITED AS EVIDENCE for that indicator — INCLUDING "
+        "partial, sector-specific, non-dedicated, or weak (0.5-score) cases. This is a RECALL "
+        "step deciding only whether the law is worth examining clause-by-clause later, so when a "
+        "title is arguably on-topic, mark relevant=true. Use the long definition to pick the "
         "CORRECT indicator (its boundaries separate look-alike indicators), NOT to exclude a "
-        "borderline-but-on-topic law. Mark relevant=false only when the law has nothing on that topic.\n"
+        "borderline-but-on-topic law. Mark relevant=false only when the law has nothing on that "
+        "topic.\n"
         "POLARITY NOTE: indicators phrased as 'Lack of <framework>' (P7-I1 comprehensive "
         "data-protection framework; P7-I2 dedicated cybersecurity framework) are assessed by "
         "EXAMINING the framework laws — a law that PROVIDES or CONTRIBUTES to such a framework IS "
@@ -78,7 +85,7 @@ def _system(indicators: list[RDTIIIndicator]) -> str:
         'Output ONE JSON object only, no markdown or prose. Key "verdicts": an array of EXACTLY '
         f"{len(ids)} objects, one per indicator, each "
         '{"indicator_id","relevant","evidence","confidence"}; evidence = a verbatim substring of '
-        f"the law text or empty.\nEXACT SHAPE (values illustrative):\n{shape}"
+        f"the text or empty.\nEXACT SHAPE (values illustrative):\n{shape}"
     )
 
 
@@ -189,24 +196,30 @@ def _parse(content: str) -> dict | None:
 def make_brute_judge(*, enabled: bool | None = None, model: str | None = None) -> BruteJudge | None:
     """Construct a :class:`BruteJudge`, or None when disabled / unconfigured.
 
-    Reads endpoint + key from ``LEXORA_LLM_BASE_URL`` / ``LEXORA_LLM_API_KEY`` (shared
-    with the rest of the LLM stack) but a SEPARATE ``LEXORA_BRUTE_MODEL`` (default
-    ``deepseek-v4-flash``) so the brute judge stays on a reliable non-reasoning model
-    even when ``LEXORA_LLM_MODEL`` points at a reasoning backend."""
+    Reads endpoint + key + UA from the shared project config (``load_config`` —
+    process env AND the local ``.env``, same source as ``LlmClient``), so the judge
+    is configured wherever the rest of the LLM stack is; reading raw ``os.environ``
+    would silently no-op when creds live only in ``.env``. The model is a SEPARATE
+    ``LEXORA_BRUTE_MODEL`` (default ``deepseek-v4-flash``) so the brute judge stays
+    on a reliable non-reasoning model even when ``LEXORA_LLM_MODEL`` points at a
+    reasoning backend."""
     if enabled is None:
         enabled = brute_enabled()
     if not enabled:
         return None
-    base = os.environ.get("LEXORA_LLM_BASE_URL", "")
-    key = os.environ.get("LEXORA_LLM_API_KEY", "")
+    from lexora.config import env_value, load_config
+
+    cfg = load_config()
+    base = cfg.llm_base_url
+    key = cfg.llm_api_key
     if not base or not key:
         return None
     return BruteJudge(
         base_url=base,
         api_key=key,
-        model=model or os.environ.get("LEXORA_BRUTE_MODEL", DEFAULT_BRUTE_MODEL),
-        user_agent=os.environ.get("LEXORA_LLM_USER_AGENT", "Mozilla/5.0"),
-        passes=int(os.environ.get("LEXORA_BRUTE_PASSES", "2")),
+        model=model or env_value("LEXORA_BRUTE_MODEL", DEFAULT_BRUTE_MODEL),
+        user_agent=cfg.llm_user_agent or "Mozilla/5.0",
+        passes=int(env_value("LEXORA_BRUTE_PASSES", "2")),
     )
 
 

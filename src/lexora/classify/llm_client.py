@@ -48,11 +48,14 @@ class LlmClient:
     reachable server — only an actual call does.
     """
 
-    def __init__(self, *, timeout: float = 60.0) -> None:
+    def __init__(self, *, timeout: float = 60.0, model: str | None = None) -> None:
         cfg = load_config()
         self.base_url = cfg.llm_base_url
         self.api_key = cfg.llm_api_key
-        self.model = cfg.llm_model
+        # ``model`` overrides the configured default (e.g. the per-clause verifier
+        # pins the reliable non-reasoning deepseek-v4-flash regardless of
+        # LEXORA_LLM_MODEL, which may point at a reasoning backend).
+        self.model = model or cfg.llm_model
         self.max_tokens = cfg.llm_max_tokens
         self.max_retries = cfg.llm_max_retries
         # Optional User-Agent override. Some hosted OpenAI-compatible gateways sit

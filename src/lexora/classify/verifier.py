@@ -90,6 +90,38 @@ _PER_CELL_SCHEMA = {
 }
 
 
+_PER_CLAUSE_SYSTEM = (
+    "You are a legal-mapping auditor for the UN ESCAP RDTII framework. You are given ONE "
+    "statutory clause and the full list of indicators. Decide which indicators (if any) THIS "
+    "single clause substantively supports as direct primary-source evidence — not merely shares "
+    "vocabulary with. A clause may support zero, one, or several indicators.\n"
+    "Decision rule:\n"
+    "- Mark an indicator only when THIS clause's operative provision falls WITHIN that "
+    "indicator's official definition and its boundaries with look-alike indicators. Judge the "
+    "clause on its own text, not the rest of the Act.\n"
+    "- An incidental mention, a bare definition with no operative rule, or a pure cross-reference "
+    "to another Act is NOT support — leave such indicators out.\n"
+    "- Distinguish look-alikes by the definitions: e.g. a conditional cross-border transfer rule "
+    "is 6.4 not 6.1; storage location is 6.2 not retention duration 7.3.\n"
+    "POLARITY: for indicators phrased as 'Lack of <framework>' (P7-I1 comprehensive "
+    "data-protection framework; P7-I2 dedicated cybersecurity framework), a clause that PROVIDES "
+    "or constitutes part of that framework IS supporting evidence.\n"
+    "- Base your judgement ONLY on the provided clause text and the indicator definitions, not on "
+    "outside knowledge. You may ONLY return submission_id values from the given list.\n"
+    'Respond with a single JSON object: {"indicators": [<submission_id>, ...], '
+    '"rationale": <short string>}.'
+)
+
+_PER_CLAUSE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "indicators": {"type": "array", "items": {"type": "string"}},
+        "rationale": {"type": "string"},
+    },
+    "required": ["indicators"],
+}
+
+
 class Verifier:
     """Wraps an LLM client to judge (indicator, candidate clauses).
 
@@ -101,6 +133,11 @@ class Verifier:
       keep/drop and return the kept subset — :meth:`judge_each`. This is the
       universal precision lane that kills the "broad statute floods all 9
       indicators on shared vocabulary" failure mode.
+    * ``"per_clause"`` (9-in-1 per clause): judge ONE clause against ALL indicators
+      in a single call — :meth:`judge_clause`. This is the relevance decision
+      itself (not a tightening pass on a prior attribution): a focused single-clause
+      question the model answers reliably, where a full-text 9-in-1 skim over a
+      whole Act is noisy and buries sectoral provisions.
     """
 
     def __init__(self, client, *, mode: str = "pick_one") -> None:
@@ -108,6 +145,36 @@ class Verifier:
         self.mode = mode
         self.error_count = 0
         self.last_error_type: str | None = None
+
+    def judge_clause(
+        self,
+        clause: Clause,
+        indicators: list[RDTIIIndicator],
+    ) -> set[str] | None:
+        """9-in-1 per clause: return the submission_ids of the indicators THIS one
+        clause substantively supports (possibly empty, possibly several).
+
+        The result is always a SUBSET of the given indicators' ids (hallucinated
+        ids dropped). An empty set is a real "supports nothing". Returns ``None``
+        only on a backend error / unparseable reply, which the caller treats as a
+        skip (the clause contributes no citation) so an outage cannot fabricate
+        mappings."""
+        if not indicators:
+            return set()
+        valid = {i.submission_id for i in indicators}
+        try:
+            data = self._client.chat(
+                _PER_CLAUSE_SYSTEM, self._clause_prompt(clause, indicators),
+                json_schema=_PER_CLAUSE_SCHEMA,
+            )
+        except Exception as exc:
+            self.error_count += 1
+            self.last_error_type = type(exc).__name__
+            return None
+        got = data.get("indicators") if isinstance(data, dict) else None
+        if not isinstance(got, list):
+            return None
+        return {str(x) for x in got if str(x) in valid}
 
     def judge_each(
         self,
@@ -187,6 +254,20 @@ class Verifier:
         )
 
     @staticmethod
+    def _clause_prompt(clause: Clause, indicators: list[RDTIIIndicator]) -> str:
+        """One clause + the full indicator catalogue (9-in-1 per clause)."""
+        text = clause.span.text.strip().replace("\n", " ")
+        if len(text) > _CLAUSE_TEXT_CAP:
+            text = text[:_CLAUSE_TEXT_CAP] + " …"
+        lines = [f"CLAUSE ({clause.structural_path}):", text, "", "INDICATORS:"]
+        for i in indicators:
+            b = f"- {i.submission_id} ({i.name}): {i.description}"
+            if i.long_definition:
+                b += f"\n  Definition (scope + boundaries): {i.long_definition}"
+            lines.append(b)
+        return "\n".join(lines)
+
+    @staticmethod
     def _user_prompt(indicator: RDTIIIndicator, candidates: list[Clause]) -> str:
         lines = [
             f"Indicator {indicator.submission_id} — {indicator.name}",
@@ -226,11 +307,17 @@ _RESPONSE_SCHEMA = {
 }
 
 
-def make_verifier(use_llm: bool = False, *, mode: str = "pick_one") -> Verifier | None:
+def make_verifier(
+    use_llm: bool = False, *, mode: str = "pick_one", model: str | None = None
+) -> Verifier | None:
     """Construct a :class:`Verifier`, or ``None`` when the LLM gate is off.
 
     ``use_llm`` is the explicit opt-in (the ``--verify`` / ``--verify-cells`` flag).
-    ``mode`` is ``"pick_one"`` (legacy) or ``"per_cell"`` (universal precision lane).
+    ``mode`` is ``"pick_one"`` (legacy), ``"per_cell"`` (precision lane), or
+    ``"per_clause"`` (9-in-1 per clause — the relevance decision itself). ``model``
+    overrides the configured LLM model; ``per_clause`` defaults it to the reliable
+    non-reasoning ``LEXORA_BRUTE_MODEL`` (deepseek-v4-flash) so the relevance
+    decision never rides a reasoning backend that returns empty content.
     Even when requested, returns ``None`` if the ``openai`` SDK is not installed,
     so callers can wire it unconditionally and the run degrades gracefully.
     """
@@ -240,8 +327,12 @@ def make_verifier(use_llm: bool = False, *, mode: str = "pick_one") -> Verifier 
 
     if not llm_client.is_available():
         return None
+    if model is None and mode == "per_clause":
+        from lexora.config import env_value
+
+        model = env_value("LEXORA_BRUTE_MODEL", "deepseek-v4-flash")
     try:
-        return Verifier(llm_client.LlmClient(), mode=mode)
+        return Verifier(llm_client.LlmClient(model=model), mode=mode)
     except Exception:
         return None
 

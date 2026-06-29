@@ -98,6 +98,47 @@ def test_verify_backend_failure_abstains_instead_of_raising():
     assert verifier.last_error_type == "RuntimeError"
 
 
+# --- per-clause 9-in-1 judge ------------------------------------------------
+
+def _inds() -> list[RDTIIIndicator]:
+    return [
+        RDTIIIndicator(rdtii_id="6.4", submission_id="P6-I4", pillar=6,
+                       name="cross-border", description="conditional transfer abroad"),
+        RDTIIIndicator(rdtii_id="7.3", submission_id="P7-I3", pillar=7,
+                       name="retention", description="minimum retention period"),
+        RDTIIIndicator(rdtii_id="7.5", submission_id="P7-I5", pillar=7,
+                       name="govt access", description="state access to data"),
+    ]
+
+
+def test_judge_clause_returns_supported_indicator_subset():
+    # The clause supports two indicators; one returned id is hallucinated and dropped.
+    client = FakeClient({"indicators": ["P7-I3", "P7-I5", "P9-I9"], "rationale": "x"})
+    got = Verifier(client, mode="per_clause").judge_clause(
+        _clause("c1", "records must be retained and may be disclosed to an agency"), _inds()
+    )
+    assert got == {"P7-I3", "P7-I5"}  # hallucinated P9-I9 filtered out
+    # the prompt carries the one clause and enumerates the indicator ids
+    assert "P6-I4" in client.last_user and "CLAUSE" in client.last_user
+
+
+def test_judge_clause_empty_means_supports_nothing():
+    client = FakeClient({"indicators": [], "rationale": "off-topic"})
+    assert Verifier(client, mode="per_clause").judge_clause(_clause("c1", "forms"), _inds()) == set()
+
+
+def test_judge_clause_backend_error_returns_none():
+    v = Verifier(FakeClient(RuntimeError("down")), mode="per_clause")
+    assert v.judge_clause(_clause("c1", "x"), _inds()) is None
+    assert v.error_count == 1 and v.last_error_type == "RuntimeError"
+
+
+def test_judge_clause_unparseable_returns_none():
+    assert Verifier(FakeClient({"nope": 1}), mode="per_clause").judge_clause(
+        _clause("c1", "x"), _inds()
+    ) is None
+
+
 def test_verify_empty_candidates_returns_none():
     client = FakeClient({"clause_id": "c1", "label": "match"})
     assert Verifier(client).verify(_ind(), []) is None
@@ -224,3 +265,41 @@ def test_pipeline_without_verifier_is_unchanged():
     # both keyword-passing clauses materialize when no verifier narrows them
     assert {c.clause_id for c in cites} == {"c1", "c2"}
     assert all(c.review_status is ReviewStatus.verified for c in cites)
+
+
+# --- per-clause 9-in-1 verifier (pipeline wiring) ---------------------------
+
+class _ClauseAwareClient:
+    """A per_clause fake: reads the clause text from the prompt and returns the
+    indicators that clause supports, so different clauses get different verdicts."""
+
+    def chat(self, system: str, user: str, json_schema=None) -> dict:
+        # "seven years" appears only in c1's clause text (not the indicator block).
+        if "seven years" in user:                    # c1 — retention provision
+            return {"indicators": ["P7-I3"], "rationale": "retention period"}
+        return {"indicators": [], "rationale": "off-topic"}  # c2 — forms
+
+
+def test_pipeline_per_clause_assigns_only_supported_clause():
+    from lexora.pipeline import _citations_from_clauses
+
+    # c1 (retention) -> P7-I3; c2 (forms) -> nothing. One 9-in-1 call per clause.
+    verifier = Verifier(_ClauseAwareClient(), mode="per_clause")
+    cites = _citations_from_clauses(
+        _candidates(), _doc(), _profile(), [_ind()], "statute", top_k=2, min_score=0.0,
+        verifier=verifier,
+    )
+    assert {(c.indicator_id, c.clause_id) for c in cites} == {("P7-I3", "c1")}
+
+
+def test_pipeline_per_clause_error_yields_no_citation_for_clause():
+    from lexora.pipeline import _citations_from_clauses
+
+    # backend error -> judge_clause None -> that clause contributes nothing (never
+    # fabricates a mapping); with every clause erroring, no citations at all.
+    verifier = Verifier(FakeClient(RuntimeError("down")), mode="per_clause")
+    cites = _citations_from_clauses(
+        _candidates(), _doc(), _profile(), [_ind()], "statute", top_k=2, min_score=0.0,
+        verifier=verifier,
+    )
+    assert cites == []
