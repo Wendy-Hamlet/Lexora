@@ -117,6 +117,12 @@ pillars:
           - "data localisation"
           - "retain within"
           - "kept within"
+          # Long-def discriminator: 6.2 = a COPY stored within the economy (transfer
+          # still allowed). These catch the "copy"-phrased localisation that bare
+          # "store within" misses, and stay distinct from 7.3 (duration, not location).
+          - "copy of the data"
+          - "a copy ... within"
+          - "store a copy"
         discovery_queries:
           - "data stored within the country"
           - "local storage requirement"
@@ -319,6 +325,14 @@ pillars:
           - "minimum period"
           - "period of retention"
           - "maintain ... records"
+          # Long-def discriminator: only a MINIMUM duty scores ("retain for AT LEAST
+          # a specified period"). These minimum-duration n-grams separate it from the
+          # 7.3-excluded maximum duty ("not longer than necessary") and are the
+          # operative wording the long def's examples share (e.g. "at least 1 year").
+          - "for at least"
+          - "not less than"
+          - "for a period of not less than"
+          - "preserve"
         # Tight statutory n-grams reach the sectoral retention duties hidden in
         # Acts whose TITLE says nothing about retention. A domain qualifier
         # ("income tax records") pulls the specific statute to the top of an
@@ -398,6 +412,16 @@ pillars:
           - "without a warrant"
           - "production order"
           - "government access"
+          # Long-def discriminators: the score targets access WITHOUT independent
+          # judicial authorisation, and the long def's examples use these mechanisms
+          # (secret surveillance; operators must PROVIDE service/subscriber data to a
+          # Ministry/intelligence agency on request). They reach the surveillance /
+          # criminal-procedure statutes whose titles hide the data-access power.
+          - "surveillance"
+          - "subscriber"
+          - "intelligence agency"
+          - "disclose to"
+          - "without judicial"
         # "search and seizure" is the doorway to the Criminal Procedure Code and
         # Security Offences Act — the government-access statutes whose titles give
         # no hint of a data-access power. Kept first three for the all-words cap.

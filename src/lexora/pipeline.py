@@ -228,6 +228,7 @@ def run_pipeline_from_url(
     rel_floor: float = 0.0,
     llm_workers: int = 1,
     secondary_note_by_indicator: dict | None = None,
+    brute_judge=None,
     **fetch_kwargs,
 ) -> DemoArtifacts:
     """Live fetch a URL and run the full pipeline, routing PDF vs HTML.
@@ -269,6 +270,14 @@ def run_pipeline_from_url(
         "\n\n".join(p.text for p in pages) if pages
         else "\n".join(b.text for b in blocks)
     )
+    # Regime-2: a full-text 9-in-1 judge decides which of ALL indicators this law is
+    # relevant to, replacing the discovery-attribution subset (which caps recall — a law
+    # surfaced under one indicator is never tried for another). On total judge failure it
+    # returns None and we keep the attribution subset we were called with.
+    if brute_judge is not None and document_text:
+        judged = brute_judge.subset(document_text, indicators)
+        if judged:
+            indicators = judged
     citations = _citations_from_clauses(
         clauses, document, profile, indicators, legal_form, top_k, min_score, discovery_tag,
         verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
@@ -362,6 +371,7 @@ def run_pipeline_map(
     secondary_signals: list | None = None,
     discover_amendments: bool = True,
     amendment_extractor=None,
+    brute_judge=None,
 ) -> MapResult:
     """Autonomous MULTI-instrument map (P0).
 
@@ -382,6 +392,14 @@ def run_pipeline_map(
 
     force_browser = portal.fetch_method is FetchMethod.playwright
     dest_dir = dest_dir or (Path("data") / "raw" / profile.iso_code.lower())
+
+    # Regime-2 relevance judge (opt-in via LEXORA_BRUTE_JUDGE). Inert -> None, and the
+    # mapper keeps its discovery-attribution subset. Reuses the production fetch/parse
+    # (browser anti-bot, OCR, PDF) — only the relevance decision changes.
+    if brute_judge is None:
+        from lexora.classify.brute_judge import make_brute_judge
+
+        brute_judge = make_brute_judge()
 
     # Secondary-source consumers (WS-S, S-2): seed discovery with the primary-law
     # names a tracker pointed to (USE 1), and prepare per-indicator provenance
@@ -415,8 +433,14 @@ def run_pipeline_map(
         # name-driven hit (AU OData has no full-text, so no surfacing indicator),
         # attribute via the profile's indicator->instrument-name hints; only fall
         # back to all indicators when nothing pins it down.
-        wanted = set(hit.indicator_hits) or _attribute_by_name(hit, profile, indicators)
-        ind_subset = [i for i in indicators if i.submission_id in wanted] or indicators
+        # Regime-2 (brute judge) decides relevance from full text against ALL indicators,
+        # so pass the full set and let the judge subset inside run_pipeline_from_url.
+        # Otherwise use the discovery-attribution subset (regime-1).
+        if brute_judge is not None:
+            ind_subset = indicators
+        else:
+            wanted = set(hit.indicator_hits) or _attribute_by_name(hit, profile, indicators)
+            ind_subset = [i for i in indicators if i.submission_id in wanted] or indicators
         artifacts = run_pipeline_from_url(
             url=target, profile=profile, indicators=ind_subset, portal_name=portal.name,
             source_type=portal.source_type, dest_dir=dest_dir, top_k=top_k,
@@ -428,6 +452,7 @@ def run_pipeline_map(
             llm_workers=llm_workers, min_interval=fetch_min_interval,
             serial_fetch=serial_fetch,
             secondary_note_by_indicator=secondary_note_by_indicator,
+            brute_judge=brute_judge,
         )
         artifacts.processing_time_seconds = round(time.perf_counter() - t0, 3)
         return artifacts
