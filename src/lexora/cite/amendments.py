@@ -82,6 +82,13 @@ _INCORP_RES = (
     re.compile(r"\bas at\b[^.\n]*?" + _YEAR, re.IGNORECASE),
     re.compile(r"\brevised\b(?:\s+up\s+to)?[^.\n]*?" + _YEAR, re.IGNORECASE),
     re.compile(r"\bamendments?\s+incorporated\b[^.\n]*?" + _YEAR, re.IGNORECASE),
+    # AU Federal Register compilation masthead, two phrasings seen: "Includes
+    # amendments up to: Act No. 79, 2021" and "Includes amendments: Act No. 75,
+    # 2025". The "Act No. NN," before the year contains a period, so this one stays
+    # on its line ([^\n]) rather than stopping at the first dot; the amending Act's
+    # own 2-3 digit number can't satisfy the 4-digit _YEAR, so the match lands on
+    # the trailing compilation year.
+    re.compile(r"includes\s+amendments?\b[^\n]*?" + _YEAR, re.IGNORECASE),
 )
 
 _HEAD = 4000  # masthead window
@@ -298,6 +305,7 @@ class CurrencyAssessment:
 def assess_currency(
     *, principal_key: str = "", keys: list[str] | None = None,
     incorporated_to: int | None, index: AmendmentIndex,
+    self_consolidated: bool = False,
 ) -> CurrencyAssessment:
     """Compare what a source document incorporates against the known amendment chain.
 
@@ -310,7 +318,13 @@ def assess_currency(
     every newer event matters, not just the last)."""
     events = index.events_for_any(keys) if keys else index.events_for(principal_key)
     if not events:
-        return CurrencyAssessment(CurrencyStatus.unknown, incorporated_to, [])
+        # No amendment chain known. A source that is itself a CONSOLIDATION states its
+        # own currency point in its masthead ("incorporates amendments to YYYY"), so
+        # with no later amendment surfaced it is CURRENT to that point. An "as made"
+        # ORIGINAL makes no such claim — even if a portal supplied an enactment-year
+        # cutoff — so its status is genuinely UNKNOWN until an amendment is found.
+        status = CurrencyStatus.current if self_consolidated else CurrencyStatus.unknown
+        return CurrencyAssessment(status, incorporated_to, [])
     cutoff = incorporated_to if incorporated_to is not None else -1
     missing = [e for e in events if e.year > cutoff]
     status = CurrencyStatus.stale_risk if missing else CurrencyStatus.current

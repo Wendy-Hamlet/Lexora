@@ -546,31 +546,58 @@ def _discover_amendments(
     max_queries: int = 12,
     per_query: int = 4,
 ) -> list[DemoArtifacts]:
-    """For EVERY ORIGINAL law in the working set, look for ITS amendments.
+    """For every ORIGINAL or CONSOLIDATED law in the working set, look for ITS amendments.
 
-    General by construction: amendment-search queries are derived from each original's
-    own title (``amendment_search_queries``), not a hardcoded list of amending Acts —
-    so a NEW law's amendments are pursued just like a known law's. Each candidate is
+    General by construction: amendment-search queries are derived from each law's own
+    title (``amendment_search_queries``), not a hardcoded list of amending Acts — so a
+    NEW law's amendments are pursued just like a known law's. Each candidate is
     fetched/parsed through the normal per-document path and kept only if it actually
     classifies as an amending Act (``AMENDMENT_DELTA``), so an unrelated law surfaced
-    by the query is discarded. De-duplicated against what is already fetched."""
+    by the query is discarded. De-duplicated against what is already fetched.
+
+    An ORIGINAL "as made" text incorporates no later amendments, so all of its
+    amendments matter. A CONSOLIDATED text (e.g. an AU compilation) already folds in
+    everything up to its compilation year, so only amendments newer than that year can
+    render it stale — those are filtered by the candidate's title year before fetching,
+    so a heavily-amended principal does not drag in dozens of already-incorporated Acts."""
     from lexora.cite.amendments import (
         VersionKind,
         amendment_search_queries,
         classify_version,
+        detect_incorporated_to,
     )
     from lexora.collect.discovery import discover
 
     have_sha = {a.document.sha256 for a in documents}
     seen_url = {str(a.document.source_url) for a in documents}
-    queries: list[str] = []
+    # query -> year FLOOR below which an amendment is uninteresting. An ORIGINAL
+    # "as made" text folds in nothing, so it pursues ALL its amendments (floor None);
+    # a CONSOLIDATED already incorporates everything up to its compilation year (AU
+    # serves compiled text), so only amendments AFTER that year can make it stale.
+    # When a query serves several principals, keep the loosest (lowest) floor.
+    query_floor: dict[str, int | None] = {}
     for a in documents:
-        if classify_version(a.document_text or "") is VersionKind.original and a.document.title:
-            queries.extend(amendment_search_queries(a.document.title))
-    queries = list(dict.fromkeys(queries))[:max_queries]
+        kind = classify_version(a.document_text or "")
+        if not a.document.title:
+            continue
+        if kind is VersionKind.original:
+            floor: int | None = None
+        elif kind is VersionKind.consolidated:
+            floor = detect_incorporated_to(a.document_text or "")
+        else:
+            continue
+        for q in amendment_search_queries(a.document.title):
+            if q not in query_floor:
+                query_floor[q] = floor
+            elif floor is None or query_floor[q] is None:
+                query_floor[q] = None
+            else:
+                query_floor[q] = min(query_floor[q], floor)
+    queries = list(query_floor)[:max_queries]
 
     new_docs: list[DemoArtifacts] = []
     for q in queries:
+        floor = query_floor[q]
         try:
             hits = discover(
                 portal, query=q, limit=per_query, timeout=timeout,
@@ -583,6 +610,11 @@ def _discover_amendments(
             if hit.url in seen_url:
                 continue
             seen_url.add(hit.url)
+            # Skip an amendment a consolidated principal already incorporates, judged
+            # by the title year BEFORE fetching (avoids fetching/parsing dead weight).
+            hit_year = _year_of(hit.title)
+            if floor is not None and hit_year is not None and hit_year <= floor:
+                continue
             try:
                 art = process_fn(hit)
             except Exception:  # noqa: BLE001
@@ -798,7 +830,14 @@ def _apply_currency_flags(
             keys = candidate_keys(number=c.law_number, title=c.title)
         if cutoff is None:
             cutoff = _year_of(c.last_amended)
-        assessment = assess_currency(keys=keys, incorporated_to=cutoff, index=index)
+        # A source that is itself a consolidation is CURRENT to its stated point when
+        # no later amendment is known; an as-made original stays UNKNOWN (see
+        # `assess_currency`). The version was classified per-document above.
+        self_consolidated = ver_by_hash.get(c.document_hash) == _VK.consolidated.value
+        assessment = assess_currency(
+            keys=keys, incorporated_to=cutoff, index=index,
+            self_consolidated=self_consolidated,
+        )
         c.currency_status = assessment.status.value
         if assessment.incorporated_to is not None:
             c.amendments_incorporated_to = str(assessment.incorporated_to)

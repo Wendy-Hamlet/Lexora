@@ -96,6 +96,17 @@ def test_detect_incorporated_to():
     assert detect_incorporated_to(PRINCIPAL_709_AS_MADE) is None
 
 
+def test_detect_incorporated_to_au_compilation_phrasings():
+    # AU Federal Register compilation mastheads, both observed wordings; the amending
+    # Act's own 2-digit number must not be read as the year.
+    assert detect_incorporated_to(
+        "Privacy Act 1988\nCompilation No. 104\nIncludes amendments up to: Act No. 79, 2021"
+    ) == 2021
+    assert detect_incorporated_to(
+        "Privacy Act 1988\nCompilation No. 104\nIncludes amendments: Act No. 75, 2025"
+    ) == 2025
+
+
 def test_signal_b_corpus_builds_chain():
     idx = AmendmentIndex()
     idx.add_from_corpus([
@@ -133,6 +144,21 @@ def test_no_amendment_signal_is_unknown_not_stale():
     a = assess_currency(principal_key="act:709", incorporated_to=2010, index=idx)
     assert a.status is CurrencyStatus.unknown
     assert a.missing == []
+
+
+def test_self_consolidated_with_no_chain_is_current_not_unknown():
+    # A source that is itself a consolidation states its own currency point, so with
+    # no amendment chain known it is CURRENT to that point — not UNKNOWN (which stays
+    # reserved for an as-made original, the default flag).
+    idx = AmendmentIndex()
+    a = assess_currency(
+        principal_key="act:709", incorporated_to=2026, index=idx, self_consolidated=True
+    )
+    assert a.status is CurrencyStatus.current
+    assert a.missing == []
+    # Same inputs but as an as-made original -> UNKNOWN.
+    b = assess_currency(principal_key="act:709", incorporated_to=2026, index=idx)
+    assert b.status is CurrencyStatus.unknown
 
 
 def test_multiple_amendments_later_overrides_and_partial_incorporation():
