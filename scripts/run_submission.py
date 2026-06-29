@@ -178,7 +178,7 @@ def summarize(iso: str, result: MapResult) -> dict:
     )
     currency_breakdown: dict[str, int] = {}
     for c in result.citations:
-        st = c.currency_status or "UNKNOWN"
+        st = getattr(c, "currency_status", None) or "UNKNOWN"
         currency_breakdown[st] = currency_breakdown.get(st, 0) + 1
     return {
         "iso": iso,
