@@ -607,6 +607,30 @@ def _discover_amendments(
         queries = queries[:max_queries]
 
     new_docs: list[DemoArtifacts] = []
+
+    def _consider(hit, floor: int | None) -> None:
+        """Fetch+classify one amendment candidate; keep it iff it really is an
+        amending Act (``AMENDMENT_DELTA``) the principal doesn't already incorporate."""
+        if hit.url in seen_url:
+            return
+        seen_url.add(hit.url)
+        # Skip an amendment a consolidated principal already incorporates, judged by
+        # the title year BEFORE fetching (avoids fetching/parsing dead weight).
+        hit_year = _year_of(hit.title)
+        if floor is not None and hit_year is not None and hit_year <= floor:
+            return
+        try:
+            art = process_fn(hit)
+        except Exception:  # noqa: BLE001
+            return
+        if art.document.sha256 in have_sha:
+            return
+        if classify_version(art.document_text or "") is VersionKind.amendment_delta:
+            have_sha.add(art.document.sha256)
+            new_docs.append(art)
+
+    # Path 1 — title-derived name search (portal-agnostic). Works for amendments named
+    # "<principal core> Amendment Act"; misses theme-named omnibus Acts (see Path 2).
     for q in queries:
         floor = query_floor[q]
         try:
@@ -618,23 +642,36 @@ def _discover_amendments(
         except Exception:  # noqa: BLE001 — a failed amendment query never breaks a run
             continue
         for hit in hits:
-            if hit.url in seen_url:
-                continue
-            seen_url.add(hit.url)
-            # Skip an amendment a consolidated principal already incorporates, judged
-            # by the title year BEFORE fetching (avoids fetching/parsing dead weight).
-            hit_year = _year_of(hit.title)
-            if floor is not None and hit_year is not None and hit_year <= floor:
-                continue
-            try:
-                art = process_fn(hit)
-            except Exception:  # noqa: BLE001
-                continue
-            if art.document.sha256 in have_sha:
-                continue
-            if classify_version(art.document_text or "") is VersionKind.amendment_delta:
-                have_sha.add(art.document.sha256)
-                new_docs.append(art)
+            _consider(hit, floor)
+
+    # Path 2 — AU FRL reverse-lookup (recovers the omnibus amendments Path 1 cannot).
+    # Australia's omnibus amendment Acts ("Surveillance Legislation Amendment (Identify
+    # and Disrupt) Act 2021") are named by policy theme, not by the principal they
+    # amend, so a title-derived query never surfaces them. The Federal Register's own
+    # versions/affects graph lists every amending Act by id; reverse-look up each AU
+    # principal in the working set (keyed by its FRL title id, which we already hold in
+    # the document URL). The per-principal year floor is the SAME staleness rule as
+    # Path 1 (ORIGINAL pursues all; CONSOLIDATED only amendments after its point).
+    from lexora.collect.strategies import au_amendment_acts, frl_id_from_url
+
+    for a in documents:
+        fid = frl_id_from_url(str(a.document.source_url))
+        if not fid:
+            continue
+        kind = classify_version(a.document_text or "")
+        if kind is VersionKind.original:
+            floor = None
+        elif kind is VersionKind.consolidated:
+            floor = detect_incorporated_to(a.document_text or "")
+        else:
+            continue
+        try:
+            amd_hits = au_amendment_acts(fid, timeout=timeout)
+        except Exception:  # noqa: BLE001
+            continue
+        for hit in amd_hits:
+            _consider(hit, floor)
+
     return new_docs
 
 

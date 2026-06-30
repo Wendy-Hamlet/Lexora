@@ -94,6 +94,72 @@ def test_au_api_live_finds_privacy_act():
     assert any("C2004A03712" in r.url for r in results)
 
 
+# --- AU amendment reverse-lookup (versions/affects graph) -------------------
+def test_frl_id_from_url():
+    from lexora.collect.strategies import frl_id_from_url
+
+    assert frl_id_from_url("https://www.legislation.gov.au/C2004A05145/latest/text") == "C2004A05145"
+    assert frl_id_from_url("https://www.legislation.gov.au/F2009L02014/asmade") == "F2009L02014"
+    assert frl_id_from_url("https://example.com/no-id") == ""
+
+
+# A trimmed versions response: the affecting Act lives under `affectedByTitle`
+# (NOT `amendedByTitle`, which is always null), keyed off `affect == "Amend"`.
+AU_VERSIONS_JSON = {
+    "id": "C2004A05145",
+    "versions": [
+        {"compilationNumber": "1", "reasons": [
+            {"affect": "Amend", "amendedByTitle": None, "affectedByTitle": {
+                "titleId": "C2023A00017",
+                "name": "Telecommunications Legislation Amendment (Information "
+                        "Disclosure, National Interest and Other Measures) Act 2023",
+                "provisions": "sch 1 (items 12-14)", "year": 2023, "number": 17}},
+        ]},
+        {"compilationNumber": "2", "reasons": [
+            # A Repeal reason must be ignored (not an amendment).
+            {"affect": "Repeal", "affectedByTitle": {
+                "titleId": "C2099A09999", "name": "Some Repealing Act 2099",
+                "provisions": "sch 9", "year": 2099, "number": 1}},
+            # An older amendment — comes out AFTER the 2023 one (newest-first sort).
+            {"affect": "Amend", "affectedByTitle": {
+                "titleId": "C2004A05315", "name": "Telecommunications Legislation "
+                "Amendment Act 1997", "provisions": "sch 1", "year": 1997, "number": 99}},
+        ]},
+    ],
+}
+
+
+def test_au_amendment_acts_reverse_lookup():
+    from lexora.collect.strategies import au_amendment_acts
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert "expand=versions" in request.url.query.decode()
+        assert "C2004A05145" in str(request.url)
+        return httpx.Response(200, json=AU_VERSIONS_JSON)
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    results = au_amendment_acts("C2004A05145", client=client)
+    client.close()
+    titles = [r.title for r in results]
+    # Both amendments surfaced; the Repeal reason filtered out.
+    assert any("Information Disclosure" in t for t in titles)
+    assert any(t == "Telecommunications Legislation Amendment Act 1997" for t in titles)
+    assert not any("Repealing" in t for t in titles)
+    # Newest first, canonical /latest URL by id, register law number.
+    assert results[0].url == "https://www.legislation.gov.au/C2023A00017/latest"
+    assert results[0].law_number == "No. 17 of 2023"
+    assert results[0].discovery_tag == "NEW"
+
+
+def test_au_amendment_acts_empty_id_and_non_200():
+    from lexora.collect.strategies import au_amendment_acts
+
+    assert au_amendment_acts("") == []
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(404)))
+    assert au_amendment_acts("C2004A05145", client=client) == []
+    client.close()
+
+
 MY_PORTAL = PortalSpec(
     name="Laws of Malaysia",
     url="https://lom.agc.gov.my/",

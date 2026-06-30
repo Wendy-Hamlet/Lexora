@@ -202,6 +202,106 @@ def au_legislation_api(
     return results[:limit]
 
 
+_FRL_ID_RE = re.compile(r"/([CF]\d{4}[A-Z]\d{5})\b")
+
+
+def frl_id_from_url(url: str) -> str:
+    """The Federal Register title id (e.g. ``C2004A03712``) embedded in an AU
+    legislation URL, or ``""`` when the URL is not an FRL document link."""
+    m = _FRL_ID_RE.search(url or "")
+    return m.group(1) if m else ""
+
+
+def au_amendment_acts(
+    title_id: str,
+    *,
+    limit: int = 40,
+    timeout: float = 30.0,
+    source_type: SourceType = SourceType.primary,
+    client: httpx.Client | None = None,
+) -> list[DiscoveryResult]:
+    """Every Act that AMENDS the principal ``title_id``, from the FRL versions graph.
+
+    The title-derived ``amendment_search_queries`` guess (``"<principal core>
+    Amendment"``) cannot surface Australia's THEME-named omnibus amendment Acts —
+    "Surveillance Legislation Amendment (Identify and Disrupt) Act 2021" amends the
+    Crimes Act and the Surveillance Devices Act but shares no title core with either,
+    so a name search never finds it. The authoritative source is each principal's
+    own compilation history: ``GET /titles('<id>')?$expand=versions`` returns every
+    version, and each version's ``reasons`` records the affecting Act under
+    ``affectedByTitle`` (id + name + affected provisions + year). This reverse-lookup
+    returns those amending Acts as canonical ``/latest`` document candidates, newest
+    first (an amendment that post-dates the principal's compilation is the one that
+    can make it stale), de-duplicated by title id.
+
+    GOTCHA: the populated field is ``affectedByTitle`` — ``amendedByTitle`` is always
+    null. Only ``affect == "Amend"`` reasons are kept (Repeal/Commence are not
+    amendments). The ``Affect`` / ``_AffectsSearch`` EntitySets are not directly
+    queryable (404); ``$expand=versions`` with inline ``reasons`` is the only route."""
+    if not title_id:
+        return []
+    url = (
+        f"{_AU_API}('{title_id}')?%24expand=versions"
+        f"&%24select=id"
+    )
+    owns = client is None
+    client = client or httpx.Client(
+        follow_redirects=True, timeout=timeout,
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+    )
+    try:
+        resp = _get_with_retry(client, url)
+        if resp.status_code != 200:
+            return []
+        versions = resp.json().get("versions", [])
+    except Exception:  # noqa: BLE001 — a failed lookup never breaks the run
+        return []
+    finally:
+        if owns:
+            client.close()
+
+    # title id -> (name, year, number) for distinct amending Acts (keep first = newest,
+    # since versions come oldest-first we overwrite, then sort by year desc below).
+    by_id: dict[str, tuple[str, int | None, int | None]] = {}
+    for v in versions:
+        for reason in v.get("reasons") or []:
+            if (reason.get("affect") or "") != "Amend":
+                continue
+            amb = reason.get("affectedByTitle")
+            if not amb or not amb.get("titleId"):
+                continue
+            by_id[amb["titleId"]] = (
+                amb.get("name") or "", amb.get("year"), amb.get("number")
+            )
+
+    results: list[DiscoveryResult] = []
+    for tid, (name, year, number) in by_id.items():
+        law_number = f"No. {number} of {year}" if number and year else tid
+        results.append(
+            DiscoveryResult(
+                url=_AU_DOC.format(id=tid, point="latest"),
+                title=name,
+                source_type=source_type,
+                score=1.0,  # authoritative register relationship
+                via="api",
+                is_pdf_link=False,
+                discovery_tag=TAG_NEW,
+                n_variants=1,
+                law_number=law_number,
+            )
+        )
+    # Newest first: the amendments most likely to post-date a compilation come first,
+    # so a per-principal `limit` keeps the staleness-relevant ones.
+    results.sort(key=lambda r: _year_of_title(r.title), reverse=True)
+    return results[:limit]
+
+
+def _year_of_title(title: str) -> int:
+    """Trailing 4-digit year in a title ("... Act 2021" -> 2021), else 0 (sorts last)."""
+    m = re.search(r"\b(19|20)\d{2}\b", title or "")
+    return int(m.group(0)) if m else 0
+
+
 def au_act_catalogue(
     *,
     client: httpx.Client | None = None,

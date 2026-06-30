@@ -219,6 +219,26 @@ def test_classify_version_three_kinds():
     assert classify_version(CONSOLIDATED_REPRINT) is VersionKind.consolidated
 
 
+def test_classify_omnibus_amendment_with_generic_long_title():
+    # AU theme-named omnibus Acts carry a generic long title that names no single
+    # principal ("An Act to amend legislation relating to ...") — the strict
+    # "to amend the X Act YYYY" form misses it, so it WAS misread as an as-made
+    # original. The broad "An Act to amend ..." long-title marker classifies it.
+    omnibus = (
+        "Telecommunications Legislation Amendment (Information Disclosure, National "
+        "Interest and Other Measures) Act 2023\nNo. 17, 2023\n"
+        "An Act to amend legislation relating to telecommunications, and for related "
+        "purposes\nContents\n1 Short title\n2 Commencement\n"
+    )
+    assert classify_version(omnibus) is VersionKind.amendment_delta
+    # A genuine as-made principal whose long title does NOT say "to amend" stays original.
+    principal = (
+        "Telecommunications Act 1997\nNo. 47, 1997\n"
+        "An Act relating to telecommunications, and for related purposes\nContents\n"
+    )
+    assert classify_version(principal) is VersionKind.original
+
+
 def test_parse_global_rename():
     instrs = parse_amendment_instructions(AMEND_BODY)
     renames = [i for i in instrs if i.kind is InstructionKind.global_rename]

@@ -69,6 +69,16 @@ _ACT_TITLE_RE = re.compile(r"([A-Z][A-Za-z()]+(?:\s+[A-Za-z()]+){0,8}\s+ACT,?\s+
 # --- Signal B: this document is an amending Act targeting a principal ---
 # Long-title form: "An Act to amend the Personal Data Protection Act 2010".
 _TO_AMEND_RE = re.compile(r"to amend the\s+(.{3,80}?Act,?\s+\d{4})", re.IGNORECASE)
+# Broader amendment SIGNAL (classification only, not target identification). AU's
+# theme-named omnibus Acts carry a GENERIC long title — "An Act to amend legislation
+# relating to telecommunications, and for related purposes" / "to amend the law
+# relating to ..." — which names no single principal, so `_TO_AMEND_RE` misses it and
+# the Act is misread as an as-made ORIGINAL. The "An Act to amend ..." long-title
+# formula is itself a reliable amendment marker (a principal's long title reads "An
+# Act relating to / to provide for / about ..."), so it distinguishes amendment from
+# original even when the target is unnamed. Used ONLY by `classify_version`;
+# `detect_amends_target` keeps the stricter forms (it must return a real principal).
+_AMEND_LONGTITLE_RE = re.compile(r"\bAn Act\b[^.\n]{0,40}?\bto amend\b", re.IGNORECASE)
 # Definition form: "The Personal Data Protection Act 2010 [Act 709] ... principal
 # Act" — captures both the principal's title and its bracketed Act number.
 _PRINCIPAL_RE = re.compile(
@@ -444,7 +454,11 @@ def classify_version(text: str) -> VersionKind:
     the ... Act 20xx" / "the principal Act"); a consolidation carries an
     incorporation note; anything else is treated as the original as-made text."""
     head = text[:_HEAD]
-    if _TO_AMEND_RE.search(head) or _PRINCIPAL_RE.search(head):
+    if (
+        _TO_AMEND_RE.search(head)
+        or _PRINCIPAL_RE.search(head)
+        or _AMEND_LONGTITLE_RE.search(head)
+    ):
         return VersionKind.amendment_delta
     if detect_incorporated_to(text) is not None:
         return VersionKind.consolidated
