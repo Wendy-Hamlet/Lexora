@@ -137,6 +137,30 @@ def test_collect_guidance_harvests_my_codes_excludes_hub_and_act():
     assert all(r.source_type is SourceType.secondary for r in out.values())
 
 
+def test_my_pdp_guidance_always_includes_the_standard(monkeypatch):
+    # The PDP Standard 2015 is not in the code-of-practice sidebar, so the link
+    # harvest cannot reach it; my_pdp_guidance must add it explicitly. Stub the
+    # network with a page that has NO code links to prove the Standard still lands.
+    import httpx
+
+    from lexora.collect import strategies as S
+
+    def _fake_get(self, url, *a, **k):
+        return httpx.Response(200, text="<html><body><p>no codes here</p></body></html>")
+
+    monkeypatch.setattr(httpx.Client, "get", _fake_get)
+    portal = PortalSpec(
+        name="JPDP", url="https://www.pdp.gov.my/", source_type=SourceType.secondary,
+        fetch_method=FetchMethod.http, search_query="code of practice",
+    )
+    results = S.my_pdp_guidance(portal, [], limit=40, timeout=5.0)
+    titles = [r.title for r in results]
+    assert "Personal Data Protection Standard 2015" in titles
+    std = next(r for r in results if "Standard 2015" in r.title)
+    assert std.source_type is SourceType.secondary
+    assert std.url.endswith("/personal-data-protection-standard-2015/")
+
+
 # --- AU OAIC guidance ---
 
 _OAIC_HTML = """

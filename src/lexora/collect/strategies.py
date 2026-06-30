@@ -824,6 +824,14 @@ _MY_PDP_SEEDS = (
     "https://www.pdp.gov.my/ppdpv1/en/akta/"
     "personal-data-protection-code-of-practice-for-banking-sector-and-financial-institutions/",
 )
+# The PDP Standard 2015 sits OUTSIDE the code-of-practice sidebar (a separate
+# instrument), so the sibling-link harvest never reaches it. It is a single stable
+# page; add it explicitly. resolve_fulltext's generic .pdf-harvest pulls its
+# LatestStandard.pdf for mapping.
+_MY_PDP_EXTRA = (
+    ("https://www.pdp.gov.my/ppdpv1/en/akta/personal-data-protection-standard-2015/",
+     "Personal Data Protection Standard 2015"),
+)
 
 
 def _my_is_code(url: str) -> bool:
@@ -861,6 +869,16 @@ def my_pdp_guidance(
                 html, seed, include=_my_is_code, known=known,
                 hubs=(_MY_PDP_SEEDS[0],), out=agg,
             )
+        # Soft-law instruments outside the code-of-practice sidebar (the Standard).
+        for url, title in _MY_PDP_EXTRA:
+            if url not in agg:
+                fuzzy, matched = _fuzzy_known(title, known) if known else (0.0, None)
+                agg[url] = DiscoveryResult(
+                    url=url, title=title, source_type=SourceType.secondary,
+                    score=1.0, via="http", is_pdf_link=False,
+                    discovery_tag=TAG_KNOWN if fuzzy >= 0.80 else TAG_NEW,
+                    matched_instrument=matched if fuzzy >= 0.80 else None,
+                )
     return list(agg.values())[:limit]
 
 

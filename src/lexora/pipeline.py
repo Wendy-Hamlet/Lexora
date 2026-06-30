@@ -507,6 +507,12 @@ def run_pipeline_map(
         documents = documents + _discover_child_regulations(
             documents, _process, timeout=timeout,
         )
+        # Regulator soft-law (codes of practice / standards) the statute portal does
+        # not index — gold instruments (MY: PDP Codes of Practice + Standard 2015)
+        # otherwise unreachable by the map pipeline.
+        documents = documents + _discover_regulator_instruments(
+            profile, _process, documents, timeout=timeout,
+        )
 
     citations: list[Citation] = []
     seen: set[tuple[str, str]] = set()
@@ -680,6 +686,56 @@ def _discover_amendments(
         for hit in amd_hits:
             _consider(hit, floor)
 
+    return new_docs
+
+
+def _discover_regulator_instruments(
+    profile: SourceProfile,
+    process_fn,
+    existing: list[DemoArtifacts],
+    *,
+    timeout: float,
+) -> list[DemoArtifacts]:
+    """Harvest soft-law (codes of practice, standards) from the regulator portals
+    in the profile and add the ones that fetch to real text.
+
+    A regulator (SG PDPC, MY PDP, AU OAIC) publishes codes/standards/guidance that
+    the primary STATUTE portal does not index — they are gold instruments for
+    several indicators (MY: the PDP Codes of Practice + Standard 2015) yet invisible
+    to the statute search. ``connector_for`` harvests each such portal's corpus; the
+    map pipeline (unlike the ``discover`` CLI) did not run it, so these never reached
+    the working set. Fetch each via the normal per-document path (the PDF resolves
+    through ``resolve_fulltext``'s page .pdf-harvest) and keep any that parsed."""
+    from lexora.collect.strategies import connector_for
+
+    have_sha = {a.document.sha256 for a in existing}
+    seen_url = {str(a.document.source_url) for a in existing}
+    new_docs: list[DemoArtifacts] = []
+    for portal in profile.portals:
+        connector = connector_for(portal)
+        if connector is None:
+            continue
+        try:
+            hits = connector(
+                portal, [], limit=40, timeout=timeout,
+                known_instruments=profile.known_instruments,
+                known_instrument_ids=profile.known_instrument_ids,
+            )
+        except Exception:  # noqa: BLE001 — a failed connector never breaks the run
+            continue
+        for hit in hits:
+            if hit.url in seen_url:
+                continue
+            seen_url.add(hit.url)
+            try:
+                art = process_fn(hit)
+            except Exception:  # noqa: BLE001
+                continue
+            if art.document.sha256 in have_sha:
+                continue
+            if art.document_text:  # kept iff it fetched to real text
+                have_sha.add(art.document.sha256)
+                new_docs.append(art)
     return new_docs
 
 
