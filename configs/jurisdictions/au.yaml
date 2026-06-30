@@ -9,11 +9,26 @@ legal_system: "common"
 
 ocr_languages: ["eng"]
 
+# The official RDTII Round-1 gold inventory (configs/eval/legal_inventory_p67.csv)
+# IS the known reference set for AU. Earlier only the four flagship statutes were
+# labelled; the sectoral/amendment/strategy gold was treated as NEW. KNOWN floats it
+# above the budget cut (and ranks it first in the brute enumeration); each must still
+# be discovered + verbatim-mapped — not a citation injection.
 known_instruments:
   - "Privacy Act 1988"
   - "Security of Critical Infrastructure Act 2018"
   - "Telecommunications (Interception and Access) Act 1979"
   - "My Health Records Act 2012"
+  - "Criminal Code Act 1995"
+  - "Telecommunications Act 1997"
+  - "Telecommunications Regulations 2021"
+  - "Australian Security Intelligence Organisation Act 1979"
+  - "Surveillance Legislation Amendment (Identify and Disrupt) Act 2021"
+  - "Telecommunications Legislation Amendment (International Production Orders) Act 2021"
+  - "Telecommunications and Other Legislation Amendment (Assistance and Access) Act 2018"
+  - "Data Availability and Transparency Act 2022"
+  - "2023-2030 Australian Cyber Security Strategy"
+  - "Privacy Impact Assessment 2020"
 
 keywords_by_indicator:
   "6.1":
