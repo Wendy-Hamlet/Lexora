@@ -499,6 +499,14 @@ def run_pipeline_map(
             documents, _process, portal, profile,
             force_browser=force_browser, timeout=timeout,
         )
+        # AU only: pull in the principal REGULATIONS made under each Act. The brute
+        # Act-enumeration skips delegated legislation (a different FRL collection), so
+        # a regulation that carries an indicator (e.g. Telecommunications Regulations
+        # 2021 -> P7-I5) is otherwise unreachable. Runs after the amendment pass so it
+        # sees (and de-dups against) the amendments already added.
+        documents = documents + _discover_child_regulations(
+            documents, _process, timeout=timeout,
+        )
 
     citations: list[Citation] = []
     seen: set[tuple[str, str]] = set()
@@ -672,6 +680,53 @@ def _discover_amendments(
         for hit in amd_hits:
             _consider(hit, floor)
 
+    return new_docs
+
+
+def _discover_child_regulations(
+    documents: list[DemoArtifacts],
+    process_fn,
+    *,
+    timeout: float,
+) -> list[DemoArtifacts]:
+    """For every AU principal Act in the working set, discover the principal
+    REGULATIONS made under it and add the ones that fetch successfully.
+
+    The brute Act-enumeration only judges the ``Act`` collection, so delegated
+    legislation (regulations / rules, a separate Federal Register collection) is
+    invisible — yet a regulation can be the sole carrier of an indicator (e.g.
+    Telecommunications Regulations 2021 for P7-I5 government access). AU exposes no
+    Act -> instruments navigation, so :func:`au_child_regulations` finds them by the
+    "<Act stem> Regulations" naming convention and confirms each via its FRL
+    ``authorisedBy`` edge (made-under this Act). Keyed by the principal's FRL title id,
+    which is already in its document URL; non-AU documents are skipped. A regulation
+    is kept when it fetched to real text — relevance is the mapper's call."""
+    from lexora.collect.strategies import au_child_regulations, frl_id_from_url
+
+    have_sha = {a.document.sha256 for a in documents}
+    seen_url = {str(a.document.source_url) for a in documents}
+    new_docs: list[DemoArtifacts] = []
+    for a in documents:
+        fid = frl_id_from_url(str(a.document.source_url))
+        if not fid or not a.document.title:
+            continue
+        try:
+            hits = au_child_regulations(fid, a.document.title, timeout=timeout)
+        except Exception:  # noqa: BLE001 — a failed lookup never breaks the run
+            continue
+        for hit in hits:
+            if hit.url in seen_url:
+                continue
+            seen_url.add(hit.url)
+            try:
+                art = process_fn(hit)
+            except Exception:  # noqa: BLE001
+                continue
+            if art.document.sha256 in have_sha:
+                continue
+            if art.document_text:  # kept iff it fetched to real text
+                have_sha.add(art.document.sha256)
+                new_docs.append(art)
     return new_docs
 
 

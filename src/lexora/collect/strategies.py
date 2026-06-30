@@ -302,6 +302,115 @@ def _year_of_title(title: str) -> int:
     return int(m.group(0)) if m else 0
 
 
+def _act_title_core(act_title: str) -> str:
+    """The naming stem of an Act title — everything before " Act [year]"
+    ("Telecommunications Act 1997" -> "Telecommunications"). Empty when the title
+    has no "Act" stem (so the caller skips the lookup)."""
+    stem = re.split(r"\bAct\b", act_title or "", maxsplit=1)[0]
+    return re.sub(r"\s+", " ", stem).strip()
+
+
+def _authorised_by(
+    reg_id: str, act_id: str, client: httpx.Client, timeout: float
+) -> bool:
+    """True iff legislative instrument ``reg_id`` is authorised (made under) the Act
+    ``act_id``, per the Federal Register's authorisation edge. The instrument's
+    ``authorisedBy`` is a collection of ``Affect`` whose ``affectingTitleId`` is the
+    enabling Act — this turns the name-pattern guess into a confirmed parent/child
+    link (drops a same-named instrument made under a different Act)."""
+    url = f"{_AU_API}('{reg_id}')?%24expand=authorisedBy&%24select=id"
+    try:
+        resp = _get_with_retry(client, url, retries=1)
+        if resp.status_code != 200:
+            return False
+        for affect in resp.json().get("authorisedBy", []) or []:
+            if affect.get("affectingTitleId") == act_id:
+                return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
+def au_child_regulations(
+    act_id: str,
+    act_title: str,
+    *,
+    limit: int = 20,
+    timeout: float = 30.0,
+    source_type: SourceType = SourceType.primary,
+    client: httpx.Client | None = None,
+) -> list[DiscoveryResult]:
+    """The principal REGULATIONS made under the Act ``act_id`` — delegated legislation
+    that the principal-Act brute enumeration skips (it admits only ``collection ==
+    'Act'``, dropping the ``LegislativeInstrument`` collection where regulations live).
+
+    AU exposes no Act -> instruments navigation, and the OData ``Affect``/
+    ``_AffectsSearch`` sets are not directly queryable. The reliable channel is the
+    naming convention: a principal regulation is named "<Act stem> Regulations <year>"
+    (Telecommunications Act 1997 -> Telecommunications Regulations 2021). So query the
+    register by that name stem, keep in-force PRINCIPAL items in the Regulations
+    subcollection, then CONFIRM each via its ``authorisedBy`` edge that it is actually
+    made under this Act (precision guard against a same-stemmed instrument under a
+    different Act). De-duplicated by id, newest first."""
+    core = _act_title_core(act_title)
+    if not act_id or len(core) < 3:
+        return []
+    flt = f"contains(tolower(name),'{_odata_escape(core.lower())} regulations')"
+    url = (
+        f"{_AU_API}?%24filter={quote(flt, safe='(),')}"
+        f"&%24top=50&%24select=id,name,collection,subCollection,isPrincipal,isInForce,number,year"
+    )
+    owns = client is None
+    client = client or httpx.Client(
+        follow_redirects=True, timeout=timeout,
+        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
+    )
+    try:
+        resp = _get_with_retry(client, url)
+        if resp.status_code != 200:
+            return []
+        values = resp.json().get("value", [])
+        results: list[DiscoveryResult] = []
+        seen: set[str] = set()
+        for v in values:
+            if (
+                v.get("subCollection") != "Regulations"
+                or not v.get("isPrincipal")
+                or not v.get("isInForce")
+            ):
+                continue
+            rid = v.get("id")
+            if not rid or rid in seen:
+                continue
+            if not _authorised_by(rid, act_id, client, timeout):
+                continue
+            seen.add(rid)
+            num, yr = v.get("number"), v.get("year")
+            from lexora.classify.lifecycle import detect_status
+
+            results.append(
+                DiscoveryResult(
+                    url=_AU_DOC.format(id=rid, point="latest"),
+                    title=v.get("name", ""),
+                    source_type=source_type,
+                    score=1.0,  # authoritative authorisation edge
+                    via="api",
+                    is_pdf_link=False,
+                    discovery_tag=TAG_NEW,
+                    n_variants=1,
+                    law_number=f"No. {num} of {yr}" if num and yr else rid,
+                    status=detect_status(in_force=True, portal_status="").value,
+                )
+            )
+    except Exception:  # noqa: BLE001 — a failed lookup never breaks the run
+        return []
+    finally:
+        if owns:
+            client.close()
+    results.sort(key=lambda r: _year_of_title(r.title), reverse=True)
+    return results[:limit]
+
+
 def au_act_catalogue(
     *,
     client: httpx.Client | None = None,

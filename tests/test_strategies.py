@@ -160,6 +160,69 @@ def test_au_amendment_acts_empty_id_and_non_200():
     client.close()
 
 
+# --- AU child-regulations discovery (Path 3: name stem + authorisedBy guard) ---
+def test_act_title_core():
+    from lexora.collect.strategies import _act_title_core
+
+    assert _act_title_core("Telecommunications Act 1997") == "Telecommunications"
+    assert _act_title_core("Personal Data Protection Act 2010") == "Personal Data Protection"
+    assert _act_title_core("Something With No Stem") == "Something With No Stem"
+
+
+# Name search for "<stem> regulations" returns the principal regulation made under
+# this Act AND a same-named one made under a DIFFERENT Act; the authorisedBy guard
+# must keep only the former.
+AU_REG_SEARCH_JSON = {
+    "value": [
+        {"id": "F2021L00289", "name": "Telecommunications Regulations 2021",
+         "collection": "LegislativeInstrument", "subCollection": "Regulations",
+         "isPrincipal": True, "isInForce": True, "number": None, "year": 2021},
+        {"id": "FWRONGACT01", "name": "Telecommunications Regulations (Other) 2019",
+         "collection": "LegislativeInstrument", "subCollection": "Regulations",
+         "isPrincipal": True, "isInForce": True, "number": None, "year": 2019},
+        # noise: a Determination (not Regulations) — filtered by subCollection.
+        {"id": "F2010DET001", "name": "Telecommunications Regulations Determination",
+         "collection": "LegislativeInstrument", "subCollection": "Determinations",
+         "isPrincipal": True, "isInForce": True},
+    ],
+}
+
+
+def _au_reg_handler(act_id: str = "C2004A05145"):
+    def handler(request: httpx.Request) -> httpx.Response:
+        q = request.url.query.decode()
+        if "expand=authorisedBy" in q:
+            rid = str(request.url).split("('")[1].split("')")[0]
+            # only F2021L00289 is authorised by act_id; the other reg is under a different Act
+            affecting = act_id if rid == "F2021L00289" else "CDIFFERENT99"
+            return httpx.Response(200, json={"id": rid, "authorisedBy": [
+                {"affectingTitleId": affecting, "affectedTitleId": rid}]})
+        return httpx.Response(200, json=AU_REG_SEARCH_JSON)
+
+    return handler
+
+
+def test_au_child_regulations_name_and_authorised_by_guard():
+    from lexora.collect.strategies import au_child_regulations
+
+    client = httpx.Client(transport=httpx.MockTransport(_au_reg_handler()))
+    results = au_child_regulations("C2004A05145", "Telecommunications Act 1997", client=client)
+    client.close()
+    # Exactly the one regulation actually made under this Act survives.
+    assert [r.url for r in results] == ["https://www.legislation.gov.au/F2021L00289/latest"]
+    assert results[0].title == "Telecommunications Regulations 2021"
+    assert results[0].discovery_tag == "NEW"
+
+
+def test_au_child_regulations_skips_short_core_and_non_200():
+    from lexora.collect.strategies import au_child_regulations
+
+    assert au_child_regulations("C1", "Ab Act 1900") == []  # core "Ab" < 3 chars
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(503)))
+    assert au_child_regulations("C2004A05145", "Telecommunications Act 1997", client=client) == []
+    client.close()
+
+
 MY_PORTAL = PortalSpec(
     name="Laws of Malaysia",
     url="https://lom.agc.gov.my/",
