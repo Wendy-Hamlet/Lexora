@@ -543,7 +543,7 @@ def _discover_amendments(
     *,
     force_browser: bool,
     timeout: float,
-    max_queries: int = 12,
+    max_queries: int | None = None,
     per_query: int = 4,
 ) -> list[DemoArtifacts]:
     """For every ORIGINAL or CONSOLIDATED law in the working set, look for ITS amendments.
@@ -559,7 +559,11 @@ def _discover_amendments(
     amendments matter. A CONSOLIDATED text (e.g. an AU compilation) already folds in
     everything up to its compilation year, so only amendments newer than that year can
     render it stale — those are filtered by the candidate's title year before fetching,
-    so a heavily-amended principal does not drag in dozens of already-incorporated Acts."""
+    so a heavily-amended principal does not drag in dozens of already-incorporated Acts.
+
+    ``max_queries=None`` (the default) covers every principal in the working set; pass
+    an int only to throttle. The old fixed cap silently limited STALE_RISK detection to
+    the first handful of principals on large (e.g. brute-enumerated) working sets."""
     from lexora.cite.amendments import (
         VersionKind,
         amendment_search_queries,
@@ -593,7 +597,14 @@ def _discover_amendments(
                 query_floor[q] = None
             else:
                 query_floor[q] = min(query_floor[q], floor)
-    queries = list(query_floor)[:max_queries]
+    # By default cover EVERY principal's amendment queries (max_queries=None) so
+    # STALE_RISK detection is not silently truncated to the first few principals.
+    # The OData search per query is cheap; the costly fetch is bounded by per_query
+    # and dedup, and for CONSOLIDATED principals further year-gated below — so the
+    # honest default is "no cap". A caller may still pass an int to throttle.
+    queries = list(query_floor)
+    if max_queries is not None:
+        queries = queries[:max_queries]
 
     new_docs: list[DemoArtifacts] = []
     for q in queries:
