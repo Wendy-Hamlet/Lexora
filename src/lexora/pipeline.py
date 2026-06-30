@@ -773,6 +773,16 @@ def _apply_currency_flags(
         if classify_version(a.document_text or "") is _VK.amendment_delta
         and detect_amends_target(a.document_text or "") is not None
     ]
+    # An amending Act that ALSO surfaces a citation of its own (a provision it enacts,
+    # mapped directly to an indicator the consolidated principal missed) is exported
+    # under the amendment's name + its internal Schedule locator — never linked to the
+    # principal in the fixed submission columns. Record what each amending document
+    # amends (read from its OWN masthead, not guessed) so the citation can carry that
+    # link in the Notes column. ``detect_amends_target`` is non-None by amend_docs's filter.
+    amends_target_by_hash: dict[str, tuple[str, str]] = {
+        a.document.sha256: detect_amends_target(a.document_text or "")  # type: ignore[misc]
+        for a in amend_docs
+    }
     texts = [a.document_text or "" for a in amend_docs]
     use_pool = (
         workers > 1 and len(amend_docs) > 1
@@ -834,8 +844,32 @@ def _apply_currency_flags(
                       CurrencyStatus.repealed) and c.review_status is ReviewStatus.verified:
             c.review_status = ReviewStatus.amendment_review
 
+    def _principal_of(target: tuple[str, str] | None) -> str:
+        """Render an amends-target ``(number, title)`` as a human reference, e.g.
+        "Privacy Act 1988 (Act C2004A03712)". Either field may be empty."""
+        if not target:
+            return ""
+        number, title = target
+        if title and number and number.lower() not in title.lower():
+            return f"{title} ({number})"
+        return title or number
+
     for c in citations:
         c.source_version = ver_by_hash.get(c.document_hash, "")
+        # If the citation's OWN source is an amending Act, the fixed submission columns
+        # name the amendment and locate the snippet inside the amendment's Schedule —
+        # nothing links it to the principal it amends. Add that link in Notes (an
+        # official column), read from the amendment's masthead, so a reviewer reading
+        # only the submission CSV can trace the provision to the consolidated principal.
+        if c.source_version == _VK.amendment_delta.value:
+            principal = _principal_of(amends_target_by_hash.get(c.document_hash))
+            amd_note = (
+                "Source is an amending Act (delta); snippet is the provision as enacted "
+                "by this amendment"
+                + (f" to {principal}" if principal else "")
+                + " — refer to the consolidated principal for the in-force text."
+            )
+            c.notes = f"{c.notes} | {amd_note}" if c.notes else amd_note
         keys, cutoff = by_hash.get(c.document_hash, ([], None))
         if not keys:  # fall back to the citation's own resolved metadata
             keys = candidate_keys(number=c.law_number, title=c.title)

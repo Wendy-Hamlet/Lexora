@@ -198,6 +198,55 @@ def test_inert_extractor_falls_back_to_regex():
     assert c.currency_status == "REPEALED"             # regex parser still adjudicated
 
 
+def _cit_on(sha: str, title: str, number: str, section: str, quote: str) -> Citation:
+    """A citation whose OWN source document is `sha` (used for a citation that the
+    amending Act surfaces of a provision it enacts)."""
+    return Citation(
+        economy="Malaysia", title=title, law_number=number, last_amended="2024",
+        indicator_id="P7-I1", article_path=f"Schedule 1 > Section {section}",
+        discovery_tag=DiscoveryTag.new, page_or_dom_anchor="p.1", quote=quote,
+        source_url="https://lom.agc.gov.my/a", confidence=0.9, clause_id=f"a{section}",
+        retrieval_timestamp=datetime.now(timezone.utc), document_hash=sha,
+        jurisdiction="Malaysia", legal_form="statute", char_start=0, char_end=5,
+        review_status=ReviewStatus.verified,
+    )
+
+
+def test_amendment_delta_citation_is_linked_to_principal_in_notes():
+    # An amending Act surfaces a citation of a provision IT enacts (its own Schedule),
+    # mapped to an indicator. The submission columns name the amendment + its internal
+    # Schedule locator; the Notes column must link it back to the principal it amends,
+    # read from the amendment's own masthead (here "Personal Data Protection Act 2010").
+    principal = _doc("H709", "Personal Data Protection Act 2010", PRINCIPAL_TEXT,
+                     "Act 709", "2010")
+    amendment = _doc("HA1727", "Personal Data Protection (Amendment) Act 2024",
+                     AMENDMENT_TEXT, "Act A1727", "2024")
+    c_on_amendment = _cit_on(
+        "HA1727", "Personal Data Protection (Amendment) Act 2024", "Act A1727",
+        "16A", "A data controller must notify the Commissioner of a breach ...")
+    _apply_currency_flags([principal, amendment], [c_on_amendment], SourceProfile(
+        jurisdiction="Malaysia", iso_code="MY", primary_language="en",
+        legal_system=LegalSystem.common))
+    assert c_on_amendment.source_version == "AMENDMENT_DELTA"
+    assert "Source is an amending Act (delta)" in c_on_amendment.notes
+    assert "Personal Data Protection Act 2010" in c_on_amendment.notes
+    assert "consolidated principal" in c_on_amendment.notes
+
+
+def test_principal_citation_gets_no_amendment_delta_note():
+    # A normal citation whose source is the principal (not an amending Act) must NOT
+    # receive the amendment-delta Notes annotation.
+    principal = _doc("H709", "Personal Data Protection Act 2010", PRINCIPAL_TEXT,
+                     "Act 709", "2010")
+    amendment = _doc("HA1727", "Personal Data Protection (Amendment) Act 2024",
+                     AMENDMENT_TEXT, "Act A1727", "2024")
+    c = _cit("H709", "40", "A data user may collect personal data ...")
+    _apply_currency_flags([principal, amendment], [c], SourceProfile(
+        jurisdiction="Malaysia", iso_code="MY", primary_language="en",
+        legal_system=LegalSystem.common))
+    assert "amending Act (delta)" not in (c.notes or "")
+
+
 def test_title_only_amendment_matches_number_keyed_citation():
     principal = _doc("H709", "Personal Data Protection Act 2010", PRINCIPAL_TEXT,
                      "Act 709", "2010")
