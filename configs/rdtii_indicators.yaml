@@ -339,11 +339,15 @@ pillars:
         # all-words engine where a bare concept phrase ("books of account") only
         # drowns it among the dozens of Acts that mention the term. Verified live:
         # "keep records for a period" -> Employment Act 1968; "income tax records"
-        # -> Income Tax Act 1947 (rank 0); "retention of records" -> Telecom Act.
+        # -> Income Tax Act 1947 (rank 0); "retention of records" -> Telecom Act;
+        # "service tax records retention" -> the indirect-tax family (MY: Service Tax
+        # Act 807, GST Act, Sales Tax), whose record-keeping duty the income-tax
+        # qualifier alone misses — a different but equally relevant retention family.
         discovery_queries:
           - "keep records for a period"
           - "income tax records"
           - "retention of records"
+          - "service tax records retention"
 
       - submission_id: "P7-I4"
         rdtii_id: "7.4"
@@ -422,11 +426,19 @@ pillars:
           - "intelligence agency"
           - "disclose to"
           - "without judicial"
-        # "search and seizure" is the doorway to the Criminal Procedure Code and
-        # Security Offences Act — the government-access statutes whose titles give
-        # no hint of a data-access power. Kept first three for the all-words cap.
+        # The govt-access power hides in statutes whose TITLE gives no hint of it.
+        # Each phrase reaches a different family: cyber/computer-access statutes;
+        # interception/surveillance statutes (Security Offences Act, telecom); the
+        # CRIMINAL PROCEDURE CODE family (the foundational search/seizure powers — a
+        # bare "search and seizure" ranks unrelated Acts above it, but pairing it with
+        # the instrument-category name "criminal procedure code" pulls the procedure
+        # code + Penal Code to the top; the category name generalises — most
+        # common-law economies have a "Criminal Procedure Code/Act"); and explicit
+        # production-order powers. Verified live (MY Fess): the CPC phrase ranks the
+        # Criminal Procedure Code (Act 593) #1 with the Penal Code / crime Acts behind
+        # it (a coherent law-enforcement family, not noise).
         discovery_queries:
           - "access to computer data"
-          - "search and seizure"
           - "interception of communications"
+          - "criminal procedure code search and seizure"
           - "production order requiring disclosure of data"

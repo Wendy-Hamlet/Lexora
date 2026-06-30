@@ -617,7 +617,7 @@ def discover_for_indicators(
     *,
     client: httpx.Client | None = None,
     per_indicator_limit: int = 8,
-    max_queries_per_indicator: int = 3,
+    max_queries_per_indicator: int = 4,
     budget: int = 20,
     min_score: float = 0.1,
     timeout: float = 30.0,
