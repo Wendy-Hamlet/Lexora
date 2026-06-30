@@ -1,0 +1,30 @@
+iso,indicator,section,tier,scores,reason
+# Companion annotation for mapping_sections_legal_my.csv. The gold CSV (membership)
+# is the law group's selection verbatim and is RELEVANCE-based: a provision belongs
+# to an indicator if it is topically in scope, regardless of whether it earns the
+# economy a point. This sidecar relocates the ESCAP scoring verdict OUT of the
+# membership filter and into an explicit, optional column.
+#   tier:   core    = a provision a human would cite as THE answer (strict P/R)
+#           related = topically in scope: score-0 provisions + cross-references +
+#                     cross-pillar overlap (must be RECALLED, never penalised)
+#   scores: yes  = this provision makes the indicator earn the point
+#           no   = relevant but does NOT score (limitation not minimum; with-warrant;
+#                  procedural; bare cross-reference) -- recall it anyway, equal weight
+#           na   = scoring is decided at the law level, not per section (P7-I1 / P6-I4)
+MY,P6-I4,129,core,yes,Cross-border transfer rule (s.129) -- the operative P6-I4 provision.
+MY,P7-I1,5,core,na,Seven personal-data-protection principles umbrella.
+MY,P7-I1,6,core,na,General principle: consent / lawful processing.
+MY,P7-I1,30,related,na,Access right -- framework rights machinery.
+MY,P7-I1,9,related,na,Security principle.
+MY,P7-I1,32,related,na,Grounds to refuse an access request (access-right mechanics).
+MY,P7-I1,129,related,na,Cross-pillar overlap: cross-border coverage also evidences a comprehensive framework (one provision, two indicators).
+MY,P7-I1,34,related,na,Correction right.
+MY,P7-I1,40,related,na,Sensitive-data processing conditions.
+MY,P7-I1,45,related,na,Exemptions -- structural: defines the scope/limits of the framework's rights.
+MY,P7-I3,5,related,no,Retention principle umbrella -- relevant to retention but sets no minimum period.
+MY,P7-I3,10,related,no,"Retention LIMITATION (""not kept longer than necessary"") -- the OPPOSITE of a minimum-retention duty, so it scores 0; still topically in scope for P7-I3."
+MY,P7-I5,114,core,yes,Search and seizure WITHOUT warrant -- government access without judicial authorization.
+MY,P7-I5,115,core,yes,Access to computerized data during a s.113/s.114 search -- covers the without-warrant path.
+MY,P7-I5,113,related,no,Search and seizure WITH a Magistrate's warrant -- has judicial authorization, so it does NOT score; still in scope for P7-I5.
+MY,P7-I5,118,related,no,Seizure procedure -- procedural, not itself an access power.
+MY,P7-I5,112,related,no,"Investigation powers cross-referencing the Criminal Procedure Code (Act 593) -- an outbound xref lead a human screener follows to the CPC; recall it, but it does not itself establish the access power."
