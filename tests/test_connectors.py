@@ -14,6 +14,7 @@ from lexora.collect.strategies import (
     _collect_guidance,
     _my_is_code,
     connector_for,
+    imda_guidance,
     my_pdp_guidance,
     oaic_guidance,
     pdpc_guidance,
@@ -88,6 +89,39 @@ def test_pdpc_guidance_tags_known_when_title_matches_known_list():
     )
     known = [h for h in hits if h.title == "Advisory Guidelines on Key Concepts"]
     assert known and known[0].discovery_tag == "KNOWN"
+
+
+def test_pdpc_guidance_always_includes_the_dpia_guide():
+    # The DPIA guide is a PDF outside the crawled hubs, so the link harvest cannot
+    # reach it; pdpc_guidance must add it explicitly even when the hub HTML lacks it.
+    hits = pdpc_guidance(_pdpc_portal(), [], browser_session=_FakeSession(), known_instruments=[])
+    # The explicitly-seeded entry is the PDF (the live hub does not link it); assert
+    # that PDF lands, distinct from any HTML detail page a hub might happen to expose.
+    dpia_pdf = [h for h in hits
+                if "Data Protection Impact Assessments" in h.title and h.url.endswith(".pdf")]
+    assert dpia_pdf and dpia_pdf[0].is_pdf_link
+    assert dpia_pdf[0].source_type is SourceType.secondary
+
+
+def _imda_portal() -> PortalSpec:
+    return PortalSpec(
+        name="IMDA", url="https://www.imda.gov.sg/", source_type=SourceType.secondary,
+        fetch_method=FetchMethod.http,
+    )
+
+
+def test_imda_guidance_seeds_the_two_telecom_instruments():
+    hits = imda_guidance(_imda_portal(), [], known_instruments=[])
+    titles = {h.title for h in hits}
+    assert any("IP Telephony" in t for t in titles)
+    assert any("Facilities-Based Operations" in t for t in titles)
+    for h in hits:
+        assert h.source_type is SourceType.secondary
+        assert h.is_pdf_link and h.url.endswith(".pdf")
+
+
+def test_connector_for_matches_imda_host():
+    assert connector_for(_imda_portal()) is imda_guidance
 
 
 def test_connector_for_matches_pdpc_host_only():

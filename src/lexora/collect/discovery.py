@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
@@ -709,15 +710,22 @@ def discover_for_indicators(
     is_valid = None
     render_retries = 0
     render_wait_until = "networkidle"
+    sweep_interval = 0.0
     if "sso.agc.gov.sg" in urlparse(str(portal.url)).netloc.lower():
         is_valid = sg_results_present
-        render_retries = 2
+        render_retries = 3
         # SG SSO's search page long-polls, so a navigation NEVER reaches the
         # `networkidle` state — the default render then deterministically times
         # out (60s) before any retry. Wait for the `load` event instead (it fires
         # regardless of the background long-poll XHR); settle_ms + the
         # `sg_results_present` retry remain the content backstop.
         render_wait_until = "load"
+        # SSO applies a CUMULATIVE per-IP rate limit: a rapid burst of navigations
+        # (the name + concept query sweep, now ~12 known names) starts serving the
+        # empty browse shell, which drops whole instruments from the working set even
+        # though they are discoverable. Space the navigations so the burst stays under
+        # the limit (the per-render `sg_results_present` retry handles a stray shell).
+        sweep_interval = 0.8
     session_cm = None
     if needs_browser:
         # Use the browser's own realistic Chrome UA, NOT the polite HTTP bot UA —
@@ -734,7 +742,9 @@ def discover_for_indicators(
     indicators_by_key: dict[str, set[str]] = {}
     session = session_cm.__enter__() if session_cm is not None else None
     try:
-        for phrase, ind_ids in phrase_indicators.items():
+        for i, (phrase, ind_ids) in enumerate(phrase_indicators.items()):
+            if i and sweep_interval and session is not None:
+                time.sleep(sweep_interval)  # space SSO navigations under its rate limit
             for r in discover(
                 portal, query=phrase, client=client, limit=per_indicator_limit,
                 min_score=min_score, timeout=timeout, user_agent=user_agent,

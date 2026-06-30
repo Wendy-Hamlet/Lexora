@@ -686,6 +686,21 @@ def _discover_amendments(
         for hit in amd_hits:
             _consider(hit, floor)
 
+    # Path 3 — SG SSO inline-annotation reverse-lookup (the SG analogue of Path 2).
+    # SSO has no FRL-style affects API, but a consolidated Act's text annotates each
+    # amending Act inline as "Act N of YYYY"; build each one's Acts Supplement URL.
+    # SG CONSOLIDATES amendments into the principal, so the staleness year-floor does
+    # NOT apply — the goal is to RECALL the standalone amendment instrument (a separate
+    # gold item, e.g. the PDPA (Amendment) Act 2020), so pass floor=None and let the
+    # AMENDMENT_DELTA filter discard the principal's own enactment and cross-references.
+    from lexora.collect.strategies import sg_amendment_acts
+
+    for a in documents:
+        if "sso.agc.gov.sg" not in str(a.document.source_url):
+            continue
+        for hit in sg_amendment_acts(a.document_text or ""):
+            _consider(hit, None)
+
     return new_docs
 
 

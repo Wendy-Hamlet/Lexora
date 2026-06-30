@@ -160,6 +160,35 @@ def test_au_amendment_acts_empty_id_and_non_200():
     client.close()
 
 
+# --- SG SSO inline-annotation amendment reverse-lookup ---
+def test_sg_amendment_acts_builds_acts_supp_urls_newest_first():
+    from lexora.collect.strategies import sg_amendment_acts
+
+    # A consolidated PDPA 2012 text with SSO's inline amendment annotations (and its
+    # own original enactment "Act 26 of 2012", plus a duplicate).
+    text = ("... Personal Data Protection Act 2012 (Act 26 of 2012) ... amended by "
+            "Act 40 of 2019 wef 01/02/2020 ... Act 40 of 2020 wef 01/02/2021 ... "
+            "Act 25 of 2021 ... Act 40 of 2020 again ...")
+    out = sg_amendment_acts(text)
+    urls = [r.url for r in out]
+    # Newest first, de-duplicated, Acts-Supplement URL form.
+    assert urls[0] == "https://sso.agc.gov.sg/Acts-Supp/25-2021/"
+    assert "https://sso.agc.gov.sg/Acts-Supp/40-2020/" in urls  # the gold amendment
+    assert urls.count("https://sso.agc.gov.sg/Acts-Supp/40-2020/") == 1  # de-duped
+    assert [r.title for r in out][:2] == ["Act 25 of 2021", "Act 40 of 2020"]
+    for r in out:
+        assert r.via == "sso-history" and r.source_type is SourceType.primary
+
+
+def test_sg_amendment_acts_limit_and_empty():
+    from lexora.collect.strategies import sg_amendment_acts
+
+    assert sg_amendment_acts("") == []
+    assert sg_amendment_acts("no citations here") == []
+    text = " ".join(f"Act {n} of 20{n:02d}" for n in range(1, 20))
+    assert len(sg_amendment_acts(text, limit=4)) == 4
+
+
 # --- AU child-regulations discovery (Path 3: name stem + authorisedBy guard) ---
 def test_act_title_core():
     from lexora.collect.strategies import _act_title_core

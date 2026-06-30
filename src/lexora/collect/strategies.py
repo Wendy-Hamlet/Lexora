@@ -757,6 +757,14 @@ _PDPC_HUBS = (
     "https://www.pdpc.gov.sg/organisations/resources/guidance-by-topic",
 )
 _PDPC_DETAIL = re.compile(r"/(?:regulatory-guidance|guidance-by-topic|resources)/[a-z0-9]", re.I)
+# The DPIA guide is a standalone PDF under /Other-Guides — not on either hub the
+# harvest crawls — so the sibling-link walk never reaches it. It is a single stable
+# PDF; add it explicitly. resolve_fulltext serves the PDF directly for mapping.
+_PDPC_EXTRA = (
+    ("https://www.pdpc.gov.sg/-/media/Files/PDPC/PDF-Files/Other-Guides/DPIA/"
+     "Guide-to-Data-Protection-Impact-Assessments-14-Sep-2021.pdf",
+     "Guide to Data Protection Impact Assessments"),
+)
 # Leading "<Category> <DD Mon YYYY>" noise on a harvested guidance title.
 _PDPC_TITLE_PREFIX = re.compile(
     r"^(?:Advisory Guidelines|Practical Guidance|Publications?|Templates?|"
@@ -812,6 +820,16 @@ def pdpc_guidance(
             html, hub, include=lambda u: bool(_PDPC_DETAIL.search(u)), known=known,
             via="browser", clean_title=_clean_guidance_title, hubs=_PDPC_HUBS, out=agg,
         )
+    # Guides outside the crawled hubs (the DPIA guide PDF) — add explicitly.
+    for url, title in _PDPC_EXTRA:
+        if url not in agg:
+            fuzzy, matched = _fuzzy_known(title, known) if known else (0.0, None)
+            agg[url] = DiscoveryResult(
+                url=url, title=title, source_type=SourceType.secondary,
+                score=1.0, via="http", is_pdf_link=url.lower().endswith(".pdf"),
+                discovery_tag=TAG_KNOWN if fuzzy >= 0.80 else TAG_NEW,
+                matched_instrument=matched if fuzzy >= 0.80 else None,
+            )
     return list(agg.values())[:limit]
 
 
@@ -923,6 +941,47 @@ def oaic_guidance(
     return list(agg.values())[:limit]
 
 
+# --- SG IMDA telecom licence conditions (static PDFs, no crawlable hub) ---
+# The telecom soft-law referenced under P7-I3 / P7-I5 lives as standalone official
+# PDFs with no list page the harvest can walk, so the gold instruments are seeded
+# explicitly. Each is a stable PDF that resolve_fulltext serves directly for mapping.
+_IMDA_INSTRUMENTS = (
+    ("https://www.imda.gov.sg/~/media/imda/files/inner/pcdg/consultations/"
+     "20040921_propoiptelephony/tcsforiptelephony240605.pdf",
+     "Specific Terms and Conditions for IP Telephony Services"),
+    ("https://www.imda.gov.sg/regulations-and-licences/licensing/"
+     "list-of-telecommunication-and-postal-service-licensees/-/media/Imda/Files/"
+     "Regulation-Licensing-and-Consultations/Licensing/Licensees/FBO/SingTelLtd.pdf",
+     "Licence to Provide Facilities-Based Operations (Singapore Telecommunications Limited)"),
+)
+
+
+def imda_guidance(
+    portal: PortalSpec,
+    indicators: list,
+    *,
+    browser_session=None,
+    limit: int = 40,
+    timeout: float = 45.0,
+    known_instruments: list[str] | None = None,
+    known_instrument_ids: dict[str, str] | None = None,
+) -> list[DiscoveryResult]:
+    """Seed the IMDA (Singapore) telecom licence-condition instruments. IMDA exposes
+    no crawlable guidance list, so the gold soft-law (IP Telephony T&Cs, the SingTel
+    facilities-based-operations licence) is added explicitly as secondary PDFs."""
+    known = known_instruments or []
+    out: list[DiscoveryResult] = []
+    for url, title in _IMDA_INSTRUMENTS:
+        fuzzy, matched = _fuzzy_known(title, known) if known else (0.0, None)
+        out.append(DiscoveryResult(
+            url=url, title=title, source_type=SourceType.secondary,
+            score=1.0, via="http", is_pdf_link=True,
+            discovery_tag=TAG_KNOWN if fuzzy >= 0.80 else TAG_NEW,
+            matched_instrument=matched if fuzzy >= 0.80 else None,
+        ))
+    return out[:limit]
+
+
 # host substring -> strategy
 STRATEGIES: dict[str, Strategy] = {
     "legislation.gov.au": au_legislation_api,
@@ -934,6 +993,7 @@ PORTAL_CONNECTORS: dict[str, PortalConnector] = {
     "pdpc.gov.sg": pdpc_guidance,
     "pdp.gov.my": my_pdp_guidance,
     "oaic.gov.au": oaic_guidance,
+    "imda.gov.sg": imda_guidance,
 }
 
 
@@ -986,10 +1046,43 @@ _AU_EPUB_PATH = re.compile(
 
 
 def sg_resolve_fulltext(result, *, timeout: float = 30.0) -> str | None:
-    """SG SSO serves the whole-Act PDF at ``<act-url>?ViewType=Pdf`` (fetchable
-    with a browser UA even though the HTML landing 403s bots)."""
+    """SG SSO serves the whole-instrument PDF at ``<url>?ViewType=Pdf`` (fetchable
+    with a browser UA even though the HTML landing 403s bots). Covers both principal
+    Acts (``/Act/``) and amendment instruments in the Acts Supplement
+    (``/Acts-Supp/``, surfaced by the SG amendment reverse-lookup)."""
     base = result.url.split("?")[0].rstrip("/")
-    return f"{base}?ViewType=Pdf" if "/Act/" in base else None
+    return f"{base}?ViewType=Pdf" if ("/Act/" in base or "/Acts-Supp/" in base) else None
+
+
+# A consolidated SSO Act annotates each amending Act inline as "Act N of YYYY" (in
+# the section endnotes), the SG analogue of AU FRL's structured affects graph.
+_SG_AMEND_CITE = re.compile(r"\bAct\s+(\d+)\s+of\s+((?:19|20)\d{2})\b")
+
+
+def sg_amendment_acts(principal_text: str, *, limit: int = 6) -> list[DiscoveryResult]:
+    """SG SSO reverse-lookup: SSO has no FRL-style affects API, but a consolidated
+    Act's text annotates each amending Act inline as "Act N of YYYY". Construct each
+    one's Acts Supplement URL (``/Acts-Supp/{N}-{YYYY}/`` — the form the official
+    inventory itself uses) so it can be fetched and classified. Newest first; the
+    caller keeps only those that actually classify as AMENDMENT_DELTA, which drops the
+    principal's own "Act N of YYYY" (its original enactment) and any cross-reference."""
+    seen: set[tuple[str, str]] = set()
+    cites: list[tuple[int, str, str]] = []
+    for m in _SG_AMEND_CITE.finditer(principal_text or ""):
+        n, y = m.group(1), m.group(2)
+        if (n, y) in seen:
+            continue
+        seen.add((n, y))
+        cites.append((int(y), n, y))
+    cites.sort(reverse=True)  # newest amendments first
+    out: list[DiscoveryResult] = []
+    for _, n, y in cites[:limit]:
+        out.append(DiscoveryResult(
+            url=f"https://sso.agc.gov.sg/Acts-Supp/{n}-{y}/",
+            title=f"Act {n} of {y}", source_type=SourceType.primary,
+            score=1.0, via="sso-history", is_pdf_link=False,
+        ))
+    return out
 
 
 def au_resolve_fulltext(result, *, timeout: float = 30.0) -> str | None:
@@ -1064,6 +1157,8 @@ __all__ = [
     "pdpc_guidance",
     "my_pdp_guidance",
     "oaic_guidance",
+    "imda_guidance",
+    "sg_amendment_acts",
     "PORTAL_CONNECTORS",
     "connector_for",
     "sg_resolve_fulltext",
