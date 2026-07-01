@@ -725,7 +725,11 @@ def discover_for_indicators(
         # empty browse shell, which drops whole instruments from the working set even
         # though they are discoverable. Space the navigations so the burst stays under
         # the limit (the per-render `sg_results_present` retry handles a stray shell).
-        sweep_interval = 0.8
+        # The SG sweep is ~40 unique phrases (28 concept + 12 known names), so the
+        # spacing fires ~39 times; at 1.5s that is only ~+58s wall-time against the
+        # 10-min budget while roughly halving the burst rate the limiter sees — cheap
+        # insurance against the cumulative throttle, since render time dominates anyway.
+        sweep_interval = 1.5
     session_cm = None
     if needs_browser:
         # Use the browser's own realistic Chrome UA, NOT the polite HTTP bot UA —
@@ -745,14 +749,22 @@ def discover_for_indicators(
         for i, (phrase, ind_ids) in enumerate(phrase_indicators.items()):
             if i and sweep_interval and session is not None:
                 time.sleep(sweep_interval)  # space SSO navigations under its rate limit
-            for r in discover(
-                portal, query=phrase, client=client, limit=per_indicator_limit,
-                min_score=min_score, timeout=timeout, user_agent=user_agent,
-                force_browser=force_browser, known_instruments=known_instruments,
-                known_instrument_ids=known_instrument_ids, browser_session=session,
-                is_valid=is_valid, render_retries=render_retries,
-                render_wait_until=render_wait_until,
-            ):
+            # A single flaky query must not abort the whole sweep. render() already
+            # degrades a hung/failed browser nav to an empty result, but guard the
+            # call anyway so any other per-query fault (strategy, harvest) just skips
+            # that phrase instead of losing every instrument found so far.
+            try:
+                hits = discover(
+                    portal, query=phrase, client=client, limit=per_indicator_limit,
+                    min_score=min_score, timeout=timeout, user_agent=user_agent,
+                    force_browser=force_browser, known_instruments=known_instruments,
+                    known_instrument_ids=known_instrument_ids, browser_session=session,
+                    is_valid=is_valid, render_retries=render_retries,
+                    render_wait_until=render_wait_until,
+                )
+            except Exception:  # noqa: BLE001 — a failed query skips its phrase, not the run
+                continue
+            for r in hits:
                 key = _identity_key(r)
                 _merge_into(agg, r, key)
                 indicators_by_key.setdefault(key, set()).update(ind_ids)

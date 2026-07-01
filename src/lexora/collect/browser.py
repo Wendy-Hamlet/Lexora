@@ -127,23 +127,33 @@ class BrowserSession:
         results — instead of the query's hits. A single render then silently maps
         nothing. When ``is_valid`` is supplied it is called on the rendered HTML;
         a falsy verdict triggers up to ``retries`` re-renders spaced by
-        ``backoff * attempt`` seconds (letting the rate-limit window clear). The
-        last result is returned regardless once retries are exhausted, so a
-        genuinely empty result set still degrades gracefully rather than raising.
+        ``backoff * attempt`` seconds (letting the rate-limit window clear).
+
+        A navigation that *raises* (e.g. a ``page.goto`` timeout when the same
+        anti-bot throttle serves a page that never fires ``load``) is treated the
+        same as an unusable shell: it counts as a failed attempt and is retried.
+        Once retries are exhausted the last result is returned regardless — an
+        empty ``RenderedResult`` if every attempt raised — so a flaky single
+        navigation degrades to an empty hit set rather than crashing the whole
+        discovery sweep (its caller loop has no per-query guard).
         """
-        result = self._render_once(
-            url, wait_until=wait_until, settle_ms=settle_ms,
-            wait_selector=wait_selector, timeout=timeout,
-        )
-        for attempt in range(1, retries + 1):
+        result: RenderedResult | None = None
+        for attempt in range(retries + 1):
+            if attempt:
+                time.sleep(backoff * attempt)
+            try:
+                result = self._render_once(
+                    url, wait_until=wait_until, settle_ms=settle_ms,
+                    wait_selector=wait_selector, timeout=timeout,
+                )
+            except Exception:  # noqa: BLE001 — a hung/failed nav is a retryable signal
+                result = None
+                continue
             if is_valid is None or is_valid(result.html):
                 break
-            time.sleep(backoff * attempt)
-            result = self._render_once(
-                url, wait_until=wait_until, settle_ms=settle_ms,
-                wait_selector=wait_selector, timeout=timeout,
-            )
-        return result
+        return result if result is not None else RenderedResult(
+            status=0, final_url=url, html=""
+        )
 
     def __exit__(self, *exc) -> None:
         try:

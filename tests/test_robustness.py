@@ -88,6 +88,40 @@ def test_render_without_predicate_does_not_retry():
     assert calls["n"] == 1  # no predicate -> single render (pre-P-5 behaviour)
 
 
+def test_render_degrades_to_empty_when_every_nav_raises(monkeypatch):
+    # A hung SSO navigation (page.goto timeout) raises inside _render_once. It must
+    # degrade to an empty result, NOT propagate and crash the whole sweep.
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    calls = {"n": 0}
+    s = BrowserSession()
+
+    def boom(url, **kw):
+        calls["n"] += 1
+        raise TimeoutError("Page.goto timeout")
+
+    s._render_once = boom
+    out = s.render("https://sso/x", retries=2, is_valid=sg_results_present)
+    assert out.html == "" and out.status == 0  # graceful empty, no exception
+    assert calls["n"] == 3  # a raising nav counts as a failed attempt (1 + retries)
+
+
+def test_render_recovers_after_a_raising_nav(monkeypatch):
+    # First navigation times out, retry succeeds — the transient failure is retried
+    # the same way an empty shell is.
+    monkeypatch.setattr("time.sleep", lambda *_: None)
+    seq = iter(["raise", RESULTS])
+    s = BrowserSession()
+
+    def flaky(url, **kw):
+        if next(seq) == "raise":
+            raise TimeoutError("Page.goto timeout")
+        return RenderedResult(200, url, RESULTS)
+
+    s._render_once = flaky
+    out = s.render("https://sso/x", retries=2, is_valid=sg_results_present)
+    assert sg_results_present(out.html)  # recovered on the retry after the timeout
+
+
 # --- submission run summary --------------------------------------------------
 
 _SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "run_submission.py"
