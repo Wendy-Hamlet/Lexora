@@ -63,6 +63,7 @@ def run_one(
     serial_fetch: bool = False,
     use_secondary: bool = False,
     verify_cells: bool = False,
+    verify_clauses: bool = False,
 ) -> MapResult:
     """Run the production multi-instrument map for one economy."""
     profile = load_profile(JURIS / f"{iso.lower()}.yaml")
@@ -74,11 +75,15 @@ def run_one(
         secondary = gather_signals(iso, indicators)
         print(f"  secondary sources [{iso}]: {len(secondary)} signal(s) from "
               f"{len({s.source_name for s in secondary})} tracker(s)")
-    # --verify-cells (per-cell universal precision lane) takes precedence over the
-    # legacy pick-one --verify.
-    verifier = make_verifier(use_llm=verify or verify_cells,
-                             mode="per_cell" if verify_cells else "pick_one")
-    if (verify or verify_cells) and verifier is None:
+    # Verifier mode, most capable first. Only "per_clause" lifts the discovery-attribution
+    # ceiling (pipeline passes ALL indicators to each document, so a law surfaced by one
+    # indicator's query is still judged for the other eight); "per_cell" is a precision
+    # lane INSIDE that ceiling and "pick_one" is the legacy single-pick.
+    mode = ("per_clause" if verify_clauses
+            else "per_cell" if verify_cells
+            else "pick_one")
+    verifier = make_verifier(use_llm=verify or verify_cells or verify_clauses, mode=mode)
+    if (verify or verify_cells or verify_clauses) and verifier is None:
         print("warning: --verify requested but the LLM verifier is unavailable "
               "(install the [llm] extra); continuing with BM25 + verbatim only.")
     rationale_gen = make_rationale_generator(use_llm=rationale_llm)
@@ -210,6 +215,12 @@ def main() -> None:
                          "indicator) keep/drop to kill the broad-statute-floods-all-9 "
                          "false positives. On endpoint error a cell is KEPT (never "
                          "worse than baseline). Needs LEXORA_LLM_* endpoint.")
+    ap.add_argument("--verify-clauses", action="store_true",
+                    help="Per-clause 9-in-1 LLM verifier: judge each candidate clause against "
+                         "ALL indicators at once. Unlike --verify-cells this LIFTS the "
+                         "discovery-attribution ceiling — a law surfaced by one indicator's "
+                         "query is still mapped for the other eight (recovers e.g. MY PDPA "
+                         "s.129 for P6-I4, SG PDPA s.26/s.11). Needs LEXORA_LLM_* endpoint.")
     ap.add_argument("--rationale-llm", action="store_true",
                     help="Author the Mapping Rationale column with the LLM (template fallback "
                          "+ verbatim-copy guard; needs LEXORA_LLM_* endpoint)")
@@ -307,7 +318,7 @@ def main() -> None:
                        timeout=args.timeout, llm_workers=args.llm_workers,
                        doc_workers=args.doc_workers, fetch_min_interval=args.fetch_min_interval,
                        serial_fetch=args.serial_fetch, use_secondary=args.secondary,
-                       verify_cells=args.verify_cells)
+                       verify_cells=args.verify_cells, verify_clauses=args.verify_clauses)
 
     # Country-level parallelism: economies are independent, so run them concurrently.
     # Threads (not processes) because the heavy stages — network fetch, OCR

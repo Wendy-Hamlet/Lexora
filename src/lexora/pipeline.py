@@ -437,17 +437,29 @@ def run_pipeline_map(
         fulltext = resolve_fulltext(hit, force_browser=force_browser, timeout=timeout)
         target = fulltext or hit.url
         tag = DiscoveryTag.new if hit.discovery_tag == "NEW" else DiscoveryTag.known
-        # Score the instrument only against the indicators whose query surfaced it
-        # (a retention-query hit is a candidate for 7.3, not for all nine). For a
+        # Which indicators is this instrument scored against?
+        #
+        # Regime-1 (no LLM judge): only the indicators whose query surfaced it (a
+        # retention-query hit is a candidate for 7.3, not for all nine). For a
         # name-driven hit (AU OData has no full-text, so no surfacing indicator),
-        # attribute via the profile's indicator->instrument-name hints; only fall
-        # back to all indicators when nothing pins it down.
-        # Per-clause 9-in-1 verifier decides relevance at the clause level against ALL
-        # indicators, so pass the full set (it removes the attribution ceiling without a
-        # noisy full-text skim). A full-text brute judge likewise wants all indicators.
-        # Otherwise use the discovery-attribution subset (regime-1).
-        per_clause = verifier is not None and getattr(verifier, "mode", "") == "per_clause"
-        if brute_judge is not None or per_clause:
+        # attribute via the profile's indicator->instrument-name hints; only fall back
+        # to all indicators when nothing pins it down.
+        #
+        # This discovery attribution is a RECALL CEILING: a law reached under one
+        # indicator is never tried for another, so a provision that serves two pillars
+        # is only ever cited under one. Measured on the 2026-07-12 run: MY PDPA was
+        # attributed to 7.1/7.2/7.5 only, so s.129 (gold for BOTH 7.1 and 6.4) never got
+        # scored for 6.4 — even though it ranks #1 there when simply asked. Same for SG
+        # PDPA s.26 (6.4, rank #1) and s.11 (7.4, rank #1).
+        #
+        # A verifier that judges every (clause x indicator) pair itself — per_cell and
+        # per_clause alike — makes the ceiling redundant AND lossy: it is built to reject
+        # the wrong-indicator matches the ceiling was guarding against, so it can be
+        # handed all nine indicators and decide for itself. A full-text brute judge
+        # likewise wants all indicators.
+        judges_all = verifier is not None and getattr(verifier, "mode", "") in (
+            "per_cell", "per_clause")
+        if brute_judge is not None or judges_all:
             ind_subset = indicators
         else:
             wanted = set(hit.indicator_hits) or _attribute_by_name(hit, profile, indicators)
