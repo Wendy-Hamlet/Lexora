@@ -798,12 +798,24 @@ def discover_for_indicators(
         _semantic_rerank(agg, indicators_by_key, indicators, embedder)
 
     ranked = sorted(agg.values(), key=lambda r: (r.score, r.n_variants), reverse=True)
-    # Keep KNOWN instruments ahead of the budget cut: a flagship/known law must
-    # not be squeezed out by a flood of lower-value NEW candidates (this is what
-    # dropped MY's Cyber Security / Computer Crimes Acts before).
+    # KNOWN instruments are the official gold inventory: every one of them must be mapped,
+    # so they are never cut (this is what once dropped MY's Cyber Security / Computer
+    # Crimes Acts). But they must not SPEND the budget either.
+    #
+    # They used to: `(known + rest)[:budget]` let a large gold inventory fill the budget on
+    # its own and starve discovery of every NEW candidate. Measured on the 2026-07-12 run,
+    # all three economies came back with new_instruments = 0 -- Malaysia matched 19 KNOWN
+    # against a budget of 20, so exactly one non-KNOWN slot survived, while Fess had in
+    # fact surfaced 35 NEW candidates including Malaysia's Data Sharing Act 2025. NEW
+    # provisions are worth 20 of the 40 Substantive Accuracy points, and the budget was
+    # silently throwing them all away.
+    #
+    # So the budget now means what its name says: how many candidates to EXPLORE beyond
+    # the gold inventory. The working set is every KNOWN instrument plus the top `budget`
+    # of the rest.
     known = [r for r in ranked if r.discovery_tag == TAG_KNOWN]
     rest = [r for r in ranked if r.discovery_tag != TAG_KNOWN]
-    return (known + rest)[:budget]
+    return known + rest[:budget]
 
 
 def discover_secondary(
