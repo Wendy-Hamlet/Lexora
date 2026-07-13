@@ -2,7 +2,7 @@
 
 UN Global Hackathon on AI for Digital Trade Regulatory Analysis
 Team: **Verbatim Trade** | Round: 1
-Last updated: 2026-06-22
+Last updated: 2026-07-13
 
 > A verifiable AI system for mapping digital-trade regulations to the UN ESCAP **RDTII 2.1** framework.
 >
@@ -35,61 +35,80 @@ non-regulatory indicator and is auto-excluded).
 ## Quick Start
 
 ⚠ **Required for Round 1.** A reviewer with basic Python should be able to run this in
-under 10 minutes.
+under 10 minutes, using only the steps below.
 
 ```bash
 # 1. Clone
 git clone https://github.com/Wendy-Hamlet/Lexora.git
 cd Lexora
 
-# 2. Environment (Python 3.10+)
-python -m venv .venv && source .venv/bin/activate    # Windows: .venv\Scripts\activate
-pip install -e ".[dev,embeddings,ocr]"
+# 2. Environment (Python 3.10+; verified on 3.12)
+python -m venv venv
+source venv/bin/activate          # Windows: venv\Scripts\activate
+pip install -r requirements.txt   # pinned; includes the LLM client AND the OCR stack
+playwright install chromium       # Singapore's SSO portal 403s a plain HTTP client
 
 # 3. Configure the LLM endpoint (any OpenAI-compatible server)
-cp .env.example .env        # then edit .env — see "Swapping the LLM" below
+cp .env.example .env              # then edit .env — see "Swapping the LLM" below
 
-# 4. Run the autonomous submission pipeline for one economy
-LEXORA_LIVE=1 LEXORA_OCR=1 python scripts/run_submission.py -j sg --budget 20
+# 4. Run it — one command, no manual steps
+python main.py --economy Singapore --pillar 6
 ```
 
-**Output:** `outputs/submission_round1.csv` (official 13-column schema) +
-`outputs/submission_round1.jsonld` + `outputs/submission_round1.summary.json`.
+**Output** (both files, always):
 
-> **Always set `LEXORA_OCR=1` for real runs.** OCR is gated off by default; without it,
-> scanned-only statutes (e.g. Malaysia's gazette PDFs) silently extract 0 clauses.
+```
+outputs/Singapore_P6_<timestamp>.csv     official 13 columns, one row per provision
+outputs/Singapore_P6_<timestamp>.json    same rows + OCR / timing / context metadata
+```
+
+**No API key?** Add `--no-llm`. The engine still crawls, OCRs, parses, maps (BM25) and
+writes both files — you get complete output with template rationales, so you can verify
+the pipeline end-to-end before configuring any endpoint.
+
+The economy argument is forgiving: `Singapore`, `SG`, `sg` and even `Singapre` all
+resolve (fuzzy-matched, with a note); an unrecognisable one exits with the supported list
+rather than a stack trace.
 
 ---
 
 ## Full Usage
 
 ```bash
-# All three Round-1 economies into one official CSV (+ JSON-LD + summary)
-LEXORA_LIVE=1 LEXORA_OCR=1 python scripts/run_submission.py -j all --budget 20 --secondary
-
-# Faster (parallelism knobs; the safe fast config is --jobs 3 --llm-workers 8)
-LEXORA_LIVE=1 LEXORA_OCR=1 python scripts/run_submission.py -j all --jobs 3 --llm-workers 8
-
-# Optional LLM lanes (need an OpenAI-compatible endpoint configured in .env)
-... --rationale-llm        # LLM-written mapping rationale (quote text still copied verbatim)
-... --metadata-llm         # LLM-assisted Last-Amended / Law-Number metadata
-... --verify-cells         # per-(clause×indicator) verifier (tightening only; currently over-strict, off by default)
-
-# Inspect discovery only (search → rank, no mapping)
-lexora discover -j sg
-
-# Manual fallbacks (bypass the crawler)
-lexora demo -j sg --url <pdf-or-html-url> --browser     # live-fetch one URL
-lexora demo -j sg --pdf path/to/act.pdf --source-url <url>   # local PDF
-
-# Evals
-python scripts/eval_discovery.py     # anti-overfitting discovery eval
-python scripts/eval_mapping.py       # section-level mapping hit@k (BM25 vs fused A/B)
+python main.py \
+  --economy "Malaysia" \
+  --pillar 6 \              # 6, 7, or all (default)
+  --output-dir outputs/ \
+  --budget 20 \             # max instruments to map
+  --llm-workers 8           # parallel LLM calls
 ```
 
-Optional extras: `pip install -e ".[browser]" && playwright install chromium` (Singapore
-SSO, which 403s plain HTTP). Network-touching tests are offline by default
-(`httpx.MockTransport`); run the live ones with `LEXORA_LIVE=1 pytest -m live`.
+### All three Round-1 economies in one file
+
+```bash
+LEXORA_LIVE=1 LEXORA_OCR=1 python scripts/run_submission.py -j all --budget 20 \
+    --verify-clauses --rationale-llm --metadata-llm --amendment-llm --llm-workers 16
+```
+
+| Flag | What it adds |
+| :---- | :---- |
+| `--verify-clauses` | **The relevance decision.** Per-clause 9-in-1 LLM judge: each candidate clause is judged yes/no against *all* indicators at once. This is what `main.py` uses by default. |
+| `--verify-cells` | Older per-(clause × indicator) verifier. Tightening only. |
+| `--rationale-llm` | LLM-written Mapping Rationale (the quote itself is still copied verbatim from the parsed clause, never generated). |
+| `--metadata-llm` | LLM-assisted Law Number / Last Amended extraction, source-verified. |
+| `--amendment-llm` | Amendment-currency adjudication (flags provisions whose cited law was since amended). |
+| `--secondary` | Use third-party trackers to *guide* discovery. They are never cited. |
+
+### Other entry points
+
+```bash
+lexora discover -j sg                                        # discovery only (search → rank)
+lexora demo -j sg --url <pdf-or-html-url> --browser          # map one live URL
+lexora demo -j sg --pdf path/to/act.pdf --source-url <url>   # map a local PDF (bypass crawler)
+
+python scripts/eval_discovery.py    # discovery eval vs the official legal inventory
+python scripts/eval_mapping.py      # section-level mapping eval vs the provision gold
+```
 
 ---
 
@@ -145,19 +164,37 @@ OCR is enabled with `LEXORA_OCR=1` and language-configured with `LEXORA_OCR_LANG
 
 ## Output Format
 
-### CSV — official 13 columns, exact order (judges validate programmatically)
+Every run writes **both** deliverable files, named `<Economy>_P<pillar>_<timestamp>`.
 
-`economy`, `law_name`, `law_number_ref`, `last_amended`, `indicator_id`, `article`,
-`discovery_tag`, `location_reference`, `verbatim_snippet`, `mapping_rationale`,
-`source_url`, `confidence`, `notes`.
+### CSV — official 13 columns, exact order
 
-### JSON-LD
+Header text and order match `OUTPUT_TEMPLATE_31MAY.xlsx` byte for byte (judges validate
+programmatically — do not rename or reorder).
 
-`run_submission.py` also emits a JSON-LD dump of every citation, the official 6-field
-technical JSON sidecar (`export/json_exporter.py` — `source_pdf_path`, `pdf_is_scanned`,
-`ocr_quality_cer`, `processing_time_seconds`, `model_version`, `retrieval_method`,
-`raw_context_before/after`, one flat object per provision so JSON rows == CSV rows), and a
-`.summary.json` run report.
+| # | Column | Required | Notes |
+| :---- | :---- | :---- | :---- |
+| 1 | `Economy` | Required | Official UN country name |
+| 2 | `Law Name` | Required | Full official statute name + year |
+| 3 | `Law Number / Ref` | Optional | e.g. `Act 709` |
+| 4 | `Last Amended` | Required | Year; blank if never amended |
+| 5 | `Indicator ID` | Required | RDTII code, e.g. `P6-I4` |
+| 6 | `Article / Section` | Required | Article **and** paragraph, e.g. `s. 26(1)` |
+| 7 | `Discovery Tag` | Required | `NEW` = found independently; `KNOWN` = in the sample kit |
+| 8 | `Location Reference` | Optional | PDF page no. \| HTML anchor |
+| 9 | `Verbatim Snippet` | Required | Copied from the parsed clause — never model-generated |
+| 10 | `Mapping Rationale` | Optional | Why it maps, max 300 chars |
+| 11 | `Source URL` | Required | Direct link on the official portal |
+| 12 | `Confidence` | Optional | 0.00–1.00 |
+| 13 | `Notes` | Optional | OCR issues, bilingual source, cross-references |
+
+### JSON — same rows, richer metadata
+
+One flat object per provision (JSON rows == CSV rows), carrying what CSV cannot hold:
+`source_pdf_path`, `pdf_is_scanned`, `ocr_quality_cer`, `processing_time_seconds`,
+`model_version`, `retrieval_method`, `raw_context_before` / `raw_context_after`.
+
+`scripts/run_submission.py` additionally emits a JSON-LD dump and a `.summary.json` run
+report (instruments discovered, NEW/KNOWN split, indicators covered).
 
 ---
 
@@ -221,6 +258,9 @@ marginal cost is ~$0. Everything except the LLM is self-hosted, so the open-weig
 
 ```
 Lexora/
+├── main.py            # ← reviewer entry point: --economy <name> --pillar <6|7|all>
+├── requirements.txt   # pinned runtime deps (engine + LLM client + OCR + browser)
+├── .env.example       # copy to .env; LLM endpoint + feature switches
 ├── src/lexora/
 │   ├── models/        # Pydantic data contracts (citation, clause, source, indicator, secondary)
 │   ├── collect/       # Stage 1 — crawler, discovery, per-portal strategies, secondary/ trackers
@@ -250,17 +290,28 @@ Add a new economy by writing one YAML under `configs/jurisdictions/` — see
 
 Honest by design — these guide where to be cautious.
 
-- **OCR is opt-in:** real runs **must** set `LEXORA_OCR=1`, or scanned-only statutes drop
-  to 0 clauses with no flag. Submission runs set it on by default.
-- **Per-cell LLM verifier (`--verify-cells`):** kills the "empty-attribution law scored
-  against all 9 indicators" false positives. Calibrated (MY A/B: 209→46 citations, precision
-  0.45→0.90 at unchanged recall) but kept **off by default** until the instrument→indicator
-  gold is lawyer-validated, since its absolute precision/coverage is scored against that gold.
+- **Recall is bounded by what the judge sees, not by the parser.** Retrieval pools the top
+  `LEXORA_MAP_POOL_K` (default 40) clauses per indicator and the LLM judge decides
+  membership over that pool. A relevant provision ranked below the pool is never judged.
+  Measured retrieval ceiling on our flagship gold: pool 3 → 38%, 20 → 76%, 40 → 95%.
+- **Confidence is relative, not calibrated:** it is a normalised retrieval score, not a
+  probability. Treat < 0.80 as review-flagged.
+- **Delegated legislation:** the engine retrieves principal statutes and discovers
+  amendments, but does not exhaustively follow cross-references into subordinate
+  regulations.
 - **Australia portal anti-bot:** `legislation.gov.au` applies cumulative per-IP throttling
-  and can serve an HTML decoy under load; mitigated with per-host throttle + `--serial-fetch`.
-- **Confidence is relative, not calibrated:** treat scores below 0.80 as review-flagged.
-- **Secondary sources are never citable:** third-party trackers only *guide* discovery
-  (USE 1/2/3); they never become a citation.
+  and can serve an HTML decoy under load; mitigated with a per-host throttle and
+  `--serial-fetch`.
+- **Bilingual corpora:** Malaysia's portal mixes English and Malay; non-English provisions
+  in a mixed PDF may be missed. Non-Latin scripts (CJK, Thai) are tokenised but not yet
+  validated against gold.
+- **Secondary sources are never citable:** third-party trackers only *guide* discovery;
+  they never become a citation.
+- **Windows, non-ASCII paths:** `pip` decodes `requirements.txt` with the *locale* codec,
+  so we keep that file pure ASCII (a stray em dash makes `pip install -r` die with
+  `UnicodeDecodeError` on a cp936/cp932 box). An editable install (`pip install -e .`) also
+  breaks under a non-ASCII home directory, because the `.pth` file is written UTF-8 and read
+  back as cp936. The Quick Start path (`pip install -r requirements.txt`) is unaffected.
 
 ---
 

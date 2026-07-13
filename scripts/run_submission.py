@@ -64,10 +64,19 @@ def run_one(
     use_secondary: bool = False,
     verify_cells: bool = False,
     verify_clauses: bool = False,
+    pillars: list[int] | None = None,
 ) -> MapResult:
-    """Run the production multi-instrument map for one economy."""
+    """Run the production multi-instrument map for one economy.
+
+    ``pillars`` restricts the indicator set (e.g. ``[6]`` for cross-border data flows
+    only); ``None`` means all mandatory pillars — the Round-1 default.
+    """
     profile = load_profile(JURIS / f"{iso.lower()}.yaml")
     indicators = load_indicators(INDICATORS)
+    if pillars:
+        indicators = [i for i in indicators if i.pillar in pillars]
+        if not indicators:
+            raise SystemExit(f"no RDTII indicators for pillar(s) {pillars}")
     secondary = []
     if use_secondary:
         from lexora.collect.secondary import gather_signals
@@ -154,6 +163,32 @@ def run_one(
         )
     _account("verifier", getattr(verifier, "_client", None) if verifier is not None else None)
     return result, tokens
+
+
+def write_outputs(result: MapResult, out_csv: Path) -> int:
+    """Write one economy's run to the official CSV + the JSON sidecar (and JSON-LD).
+
+    The single exporter shared by ``main.py`` (the reviewer's one-command entry point)
+    and this script's multi-economy run, so both emit byte-identical formats. Returns
+    the number of CSV rows."""
+    out_csv.parent.mkdir(parents=True, exist_ok=True)
+    n = to_csv(result.citations, out_csv)
+    to_jsonld(result.citations, out_csv.with_suffix(".jsonld"))
+    cfg = load_config()
+    use_dense = os.environ.get("LEXORA_MAP_DENSE", "").lower() in ("1", "true", "yes", "on")
+    json_out = out_csv.with_suffix(".json")
+    to_submission_json(
+        result.documents, json_out, model_version=f"llm:{cfg.llm_model}", use_dense=use_dense,
+    )
+    tagged = {}
+    for c in result.citations:
+        tag = getattr(c.discovery_tag, "value", str(c.discovery_tag))
+        tagged[tag] = tagged.get(tag, 0) + 1
+    inds = len({c.indicator_id for c in result.citations})
+    print(f"\nWrote {n} provision(s) -> {out_csv}")
+    print(f"                        -> {json_out}")
+    print(f"  indicators covered: {inds}/9   discovery tags: {tagged or '{}'}")
+    return n
 
 
 def summarize(iso: str, result: MapResult) -> dict:

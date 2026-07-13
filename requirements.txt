@@ -1,21 +1,51 @@
-# Runtime dependencies — kept in sync with pyproject.toml [project.dependencies].
-# Install with: pip install -e .
-# Or pinned: pip install -r requirements.txt
-pydantic>=2.6
-pyyaml>=6.0
-httpx>=0.27
-typer>=0.12
-rich>=13.7
-beautifulsoup4>=4.12
-lxml>=5.0
-pymupdf>=1.24
-rapidfuzz>=3.6
-rank-bm25>=0.2.2
-numpy>=1.26
+# Lexora - runtime dependencies, PINNED (hackathon rubric: no "latest").
+#
+#     pip install -r requirements.txt
+#
+# This is the reviewer's install: it pulls the core engine, the LLM client AND the OCR
+# stack, so `python main.py --economy Singapore --pillar 6` works on both text PDFs and
+# scanned/image PDFs straight after this one command. Nothing else is required.
+#
+# Versions are the ones this build was verified against (clean venv, Python 3.12,
+# 2026-07-13), pinned with == so a judge reproduces our run exactly.
+#
+# NOTE: this file is deliberately pure ASCII. pip decodes requirements.txt with the
+# LOCALE encoding, so a non-ASCII character (e.g. an em dash) makes `pip install -r`
+# die with UnicodeDecodeError on a cp936/cp932 Windows box. Keep it ASCII-only.
 
-# Optional extras (install via pip install -e ".[browser]" / ".[api]" / ".[embeddings]" ...):
-#   browser    : playwright>=1.44   (headless-browser fetch for SG SSO / AU SPA; then `playwright install chromium`)
-#   api        : fastapi, uvicorn   (audit UI)
-#   embeddings : sentence-transformers, torch (planned hybrid retrieval)
-#   ocr        : pytesseract, Pillow
-#   llm        : openai
+# --- core engine ---
+pydantic==2.13.4
+pyyaml==6.0.3
+httpx[socks]==0.28.1
+typer==0.26.8
+rich==15.0.0
+beautifulsoup4==4.15.0
+lxml==6.1.1
+pymupdf==1.28.0          # text-PDF extraction
+rapidfuzz==3.14.5        # fuzzy economy names (mis-spelt input) + title matching
+rank-bm25==0.2.2         # lexical clause retrieval
+numpy==2.5.1
+
+# --- LLM client (any OpenAI-compatible endpoint: OpenAI, vLLM, Ollama, llama.cpp) ---
+# The engine reads LEXORA_LLM_BASE_URL / _API_KEY / _MODEL from .env - see .env.example.
+# No vendor lock-in: swapping to a self-hosted open-weight model is a config change.
+openai==2.45.0
+
+# --- OCR for scanned / image-only legal PDFs (open-source, no API key, no torch) ---
+# RapidOCR runs PP-OCR models on onnxruntime and ships its own weights, so OCR works
+# offline out of the box. Required for the scanned-PDF walkthrough.
+rapidocr-onnxruntime==1.4.4
+onnxruntime==1.27.0
+opencv-python==5.0.0.93
+pillow==12.3.0
+
+# --- headless-browser fetch --------------------------------------------------------
+# Required for Singapore (SSO returns 403 to a plain HTTP client) and the Australian
+# SPA. After installing, fetch the engine once:  playwright install chromium
+playwright==1.61.0
+
+# --- optional (NOT needed for the Quick Start) -------------------------------------
+# Dense-retrieval channel (BM25 is the default, and the measured best on our gold):
+#   pip install fastembed==0.8.0
+#
+# Dev / tests:  pip install -r requirements-dev.txt
