@@ -73,18 +73,48 @@ def _reading_order(items: list[tuple[list, str, float]]) -> list[tuple[str, floa
     return [(text, float(score)) for _box, text, score in ordered]
 
 
+def _register_cuda_dlls() -> None:
+    """Put the pip-installed NVIDIA runtime on PATH, once, before ORT loads its CUDA EP.
+
+    cuDNN pulls its sublibraries (``cudnn_engines_tensor_ir64_9.dll``) at RUN time with
+    LoadLibrary, which searches PATH. ``ort.preload_dlls()`` only pins the main dll and
+    ``os.add_dll_directory`` does not cover LoadLibrary, so without this the CUDA provider
+    is created happily and then dies on the first Conv with
+    ``CUDNN_STATUS_SUBLIBRARY_LOADING_FAILED`` -- and ORT silently retries on CPU. That is
+    why OCR ran on the CPU for months while reporting "+cuda"."""
+    global _CUDA_DLLS_REGISTERED
+    if _CUDA_DLLS_REGISTERED:
+        return
+    _CUDA_DLLS_REGISTERED = True
+    try:
+        import nvidia
+    except ImportError:
+        return  # no pip-installed CUDA runtime; a system CUDA on PATH still works
+    root = Path(nvidia.__file__).parent
+    bins = [str(root / sub / "bin") for sub in
+            ("cudnn", "cublas", "cuda_runtime", "cufft", "curand", "cusparse", "cusolver")
+            if (root / sub / "bin").is_dir()]
+    if bins:
+        os.environ["PATH"] = os.pathsep.join(bins) + os.pathsep + os.environ.get("PATH", "")
+
+
+_CUDA_DLLS_REGISTERED = False
+
+
 def _ocr_cuda_ready() -> bool:
     """True if the ONNX Runtime CUDA provider is usable for OCR.
 
-    ``LEXORA_OCR_GPU`` = ``0``/``cpu`` forces CPU; otherwise the GPU is used when
-    present. As with the embedder, ``preload_dlls()`` must run first or the CUDA
-    provider lists as available but silently falls back to CPU."""
+    ``LEXORA_OCR_GPU`` = ``0``/``cpu`` forces CPU; otherwise the GPU is used when present.
+    Availability is necessary but NOT sufficient — the provider can list as available and
+    still fail at the first convolution (see :func:`_register_cuda_dlls`), so the engine
+    verifies the real providers after building and reports what it actually got."""
     pref = os.environ.get("LEXORA_OCR_GPU", "auto").lower()
     if pref in ("0", "cpu", "false", "no", "off"):
         return False
     try:
         import contextlib
 
+        _register_cuda_dlls()
         import onnxruntime as ort
 
         with contextlib.suppress(Exception):
@@ -94,37 +124,114 @@ def _ocr_cuda_ready() -> bool:
         return False
 
 
+def _patch_rapidocr_cuda_kwargs() -> None:
+    """Make ``cls_use_cuda`` / ``rec_use_cuda`` actually reach the ORT session.
+
+    rapidocr-onnxruntime <= 1.2.x (the newest build for Python 3.13) strips the ``det_``
+    prefix from every kwarg but strips ``cls_``/``rec_`` only for a whitelist of keys. So
+    ``cls_use_cuda`` arrives at ``OrtInferSession`` still prefixed, while it reads
+    ``config["use_cuda"]`` -- which stays False. Detection lands on the GPU, classification
+    and RECOGNITION (the expensive stage) stay on the CPU, and nothing says so.
+
+    1.3+ fixed this upstream, so patch only the broken versions. Also make the whitelist
+    strippers tolerate a missing ``model_path`` (they index it unconditionally, which is
+    the ``KeyError: 'model_path'`` raised by passing ``det_use_cuda`` alone)."""
+    from rapidocr_onnxruntime.utils import UpdateParameters
+
+    if getattr(UpdateParameters, "_lexora_patched", False):
+        return
+
+    def _stripper(prefix: str):
+        def _update(self, config, sub: dict):  # noqa: ANN001
+            if sub:
+                sub = {(k[len(prefix):] if k.startswith(prefix) else k): v
+                       for k, v in sub.items()}
+                if not sub.get("model_path"):
+                    sub["model_path"] = config["model_path"]
+                config.update(sub)
+            return config
+        return _update
+
+    UpdateParameters.update_det_params = _stripper("det_")
+    UpdateParameters.update_cls_params = _stripper("cls_")
+    UpdateParameters.update_rec_params = _stripper("rec_")
+    UpdateParameters._lexora_patched = True
+
+
+def _session_providers(ocr) -> dict[str, str]:
+    """The execution provider each of the three models really ended up on.
+
+    The session hangs off a different attribute per model (det/cls: ``.infer.session``;
+    rec: ``.session.session``), so probe both shapes."""
+    out: dict[str, str] = {}
+    for label, attr in (("det", "text_detector"), ("cls", "text_cls"),
+                        ("rec", "text_recognizer")):
+        model = getattr(ocr, attr, None)
+        if model is None:
+            continue
+        holder = getattr(model, "infer", None) or getattr(model, "session", None)
+        session = getattr(holder, "session", None)
+        if session is not None and hasattr(session, "get_providers"):
+            provs = session.get_providers()
+            out[label] = provs[0] if provs else "?"
+    return out
+
+
 class _RapidEngine:
     """RapidOCR (PP-OCR models on ONNX Runtime). Lazy, single shared instance.
 
-    Runs on GPU when onnxruntime-gpu + CUDA are present (det/cls/rec all on CUDA),
-    falling back to CPU otherwise — recognized text is identical either way."""
+    Runs on GPU when onnxruntime-gpu + a working CUDA/cuDNN runtime are present (det, cls
+    and rec all on CUDA — measured 5.6x faster on a scanned statute, identical text), and
+    falls back to CPU otherwise. ``name`` reports the providers the sessions ACTUALLY got,
+    never what was requested."""
 
     def __init__(self) -> None:
         import rapidocr_onnxruntime as _r
 
         self._RapidOCR = _r.RapidOCR
         self._ocr = None
-        self._cuda = _ocr_cuda_ready()
+        self._want_cuda = _ocr_cuda_ready()
         try:
             from importlib.metadata import version
 
-            ver = version("rapidocr-onnxruntime")
+            self._ver = version("rapidocr-onnxruntime")
         except Exception:
-            ver = getattr(_r, "__version__", "?")
-        self.name = f"rapidocr:{ver}{'+cuda' if self._cuda else ''}"
+            self._ver = getattr(_r, "__version__", "?")
+        # Provisional; _build() overwrites it with the observed providers.
+        self.name = f"rapidocr:{self._ver}"
+
+    def _build(self) -> None:
+        import logging
+
+        log = logging.getLogger(__name__)
+        ocr = None
+        if self._want_cuda:
+            try:
+                _patch_rapidocr_cuda_kwargs()
+                ocr = self._RapidOCR(
+                    det_use_cuda=True, det_model_path=None,
+                    cls_use_cuda=True, cls_model_path=None,
+                    rec_use_cuda=True, rec_model_path=None,
+                )
+            except Exception as exc:  # never silently: a CPU fallback is a 5x slowdown
+                log.warning("OCR: CUDA requested but engine build failed (%s: %s); "
+                            "falling back to CPU", type(exc).__name__, exc)
+                ocr = None
+        if ocr is None:
+            ocr = self._RapidOCR()
+        self._ocr = ocr
+
+        provs = _session_providers(ocr)
+        on_cuda = {k for k, v in provs.items() if v.startswith("CUDA")}
+        if self._want_cuda and len(on_cuda) < len(provs):
+            log.warning("OCR: CUDA available but only %s reached the GPU (%s) — the rest "
+                        "run on CPU", sorted(on_cuda) or "nothing", provs)
+        suffix = "+cuda" if provs and len(on_cuda) == len(provs) else ""
+        self.name = f"rapidocr:{self._ver}{suffix}"
 
     def recognize(self, image: np.ndarray) -> list[tuple[str, float]]:
         if self._ocr is None:
-            if self._cuda:
-                try:
-                    self._ocr = self._RapidOCR(
-                        det_use_cuda=True, cls_use_cuda=True, rec_use_cuda=True
-                    )
-                except Exception:
-                    self._ocr = self._RapidOCR()
-            else:
-                self._ocr = self._RapidOCR()
+            self._build()
         result, _elapse = self._ocr(image)
         if not result:
             return []
