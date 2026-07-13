@@ -24,7 +24,7 @@ import threading
 import time
 from typing import Any
 
-from lexora.config import load_config
+from lexora.config import env_value, load_config
 
 
 class LlmResponseError(RuntimeError):
@@ -72,6 +72,18 @@ class LlmClient:
         self.use_json_mode = os.environ.get("LEXORA_LLM_JSON_MODE", "1").lower() not in (
             "0", "false", "no", "off",
         )
+        # Some reasoning backends (e.g. Zhipu glm-5.2) spend the whole completion
+        # budget on hidden thinking tokens and return an EMPTY body at the default
+        # max_tokens — and even when given room, run 5-15x slower and burn ~10x the
+        # completion tokens. Setting LEXORA_LLM_DISABLE_THINKING=1 sends Zhipu's
+        # ``thinking: {type: disabled}`` extra param, which restores fast, compact,
+        # non-empty JSON replies at no measured quality loss. Default off = no
+        # change for endpoints that don't understand the param.
+        # Read via env_value (process env, then .env) — unlike os.environ.get, this
+        # honours the dotenv file the rest of the config uses.
+        self.disable_thinking = env_value(
+            "LEXORA_LLM_DISABLE_THINKING", "0"
+        ).lower() in ("1", "true", "yes", "on")
         # Backoff (seconds) slept between failed retry attempts, doubled each
         # attempt and capped. Default 0 = retry immediately (our endpoint is not
         # rate-limited, and temperature escalation — not waiting — is what breaks
@@ -215,6 +227,8 @@ class LlmClient:
         }
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
+        if self.disable_thinking:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
         return kwargs
 
 
