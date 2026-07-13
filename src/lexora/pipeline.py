@@ -128,6 +128,24 @@ def _map_use_rerank() -> bool:
     return os.environ.get("LEXORA_MAP_RERANK", "").lower() in ("1", "true", "yes", "on")
 
 
+def _map_pool_k() -> int:
+    """How many clauses per indicator enter the per-clause judge's candidate pool.
+
+    This is a RECALL GATE, not an output cap: whatever the judge admits from the pool
+    ships (see :func:`_per_clause_specs`). It exists only so a 1804-clause Act (AU
+    Criminal Code) is not judged clause-by-clause — the flagships (~140 clauses) are
+    effectively judged whole at the default.
+
+    40 because that is where the measured retrieval ceiling saturates over the SG/MY
+    flagship gold (pool 3 -> 38%, 10 -> 62%, 20 -> 76%, 40 -> 95%); a gold section can
+    sit deep (MY 7.1 s.45 at BM25 rank 38) because gold is a relevance SET, not a
+    ranking. Raising it costs one LLM call per extra clause and can only add recall."""
+    try:
+        return max(1, int(os.environ.get("LEXORA_MAP_POOL_K", "40")))
+    except ValueError:
+        return 40
+
+
 def _maybe_ocr_fill(
     pages: list[PdfPage], source: Path | bytes
 ) -> tuple[list[PdfPage], dict]:
@@ -1287,20 +1305,40 @@ def _per_clause_specs(
 ) -> list[dict]:
     """Build materialization specs via the per-clause 9-in-1 judge.
 
-    Pool the candidate clauses every indicator retrieves (union — so a clause
-    surfaced under one indicator can still be judged for another, removing the
-    attribution ceiling), judge each pooled clause ONCE against all indicators,
-    then for each supported indicator keep the clause if it passes that indicator's
-    boundary rule, capped to ``top_k`` per indicator by retrieval score and gated
-    by ``rel_floor`` (the multi-section precision gate)."""
+    This lane asks a MEMBERSHIP question — "is this clause relevant to this indicator,
+    yes/no" — not a RANKING one. That is the same question the legal group answered when
+    they annotated gold: they worked from a three-channel union pool plus a whole-Act
+    section index (``scripts/eval_mapping.py``), so gold is a *set* of relevant sections
+    per indicator, not a top-3 list. A ranking cutoff cannot approximate a set: it forces
+    exactly ``top_k`` citations onto every indicator, padding the ones with no relevant
+    provision (false positives on indicators the legal group marked N/A) while truncating
+    the ones with many (MY 7.1 has 9 gold sections; only 3 could ever be emitted).
+
+    So retrieval is demoted to a pure RECALL GATE — take a wide pool (``pool_k``, default
+    40, tunable via ``LEXORA_MAP_POOL_K``) — and the judge's 0/1 verdict is the ONLY thing
+    that decides what ships. No ``top_k`` truncation, no ``rel_floor``.
+
+    Measured on the flagships, whole-act 0/1 beats top_k=3 on BOTH axes at once:
+    MY gold recall 24-29% -> 53-59% with citations 80 -> 32; SG 67% with ZERO off-gold
+    picks; and on both, every indicator the legal group marked N/A came back EMPTY —
+    the padding those N/A false positives came from is gone.
+
+    ``min_score`` still gates pool entry, and each indicator's boundary rule still applies
+    (both tightening-only). ``top_k``/``rel_floor`` are accepted for signature
+    compatibility with the ranking lane and deliberately unused."""
     ind_by_id = {i.submission_id: i for i in indicators}
+    # Recall gate: a wide per-indicator pool, unioned. Wide because the judge — not the
+    # rank — decides: a gold section sitting at BM25 rank 38 (MY 7.1 s.45) is unreachable
+    # at top_k=3 no matter how good the judge is. Measured retrieval ceiling over both
+    # flagships: pool 3 -> 38%, 20 -> 76%, 40 -> 95%.
+    pool_k = _map_pool_k()
     # Pool: clause_id -> best RAW retrieval score; plus the per-(indicator,clause)
     # raw score. Scores stay RAW (``_materialize`` normalizes); gate on normalized.
     pool_score: dict[str, float] = {}
     pair_score: dict[tuple[str, str], float] = {}
     for indicator in indicators:
         for hit in retrieve_candidates(
-            indicator, profile, index, top_k=top_k,
+            indicator, profile, index, top_k=pool_k, pool_k=max(pool_k, 20),
             use_semantic=use_semantic, reranker=reranker,
         ):
             if _normalize_score(hit.score) < min_score:
@@ -1338,15 +1376,14 @@ def _per_clause_specs(
             score = pair_score.get((sid, cid), pool_score[cid])
             by_indicator.setdefault(sid, []).append((cid, score))
 
+    # Every clause the judge admitted ships. No top_k truncation (it would cap an
+    # indicator whose gold is a 9-section set) and no rel_floor (it would drop a genuinely
+    # relevant provision merely for scoring below the best one — retrieval rank is a recall
+    # aid here, not evidence). The judge already said no to everything else; sorting is
+    # cosmetic, so the strongest-retrieved section still reads first.
     specs: list[dict] = []
     for sid, items in by_indicator.items():
         items.sort(key=lambda t: t[1], reverse=True)
-        items = items[:top_k]
-        if rel_floor > 0.0 and len(items) > 1:
-            cutoff = rel_floor * _normalize_score(items[0][1])
-            items = [items[0]] + [
-                it for it in items[1:] if _normalize_score(it[1]) >= cutoff
-            ]
         for cid, score in items:
             specs.append(dict(
                 indicator=ind_by_id[sid], clause=clause_by_id[cid],
