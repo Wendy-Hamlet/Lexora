@@ -172,13 +172,20 @@ def _maybe_ocr_fill(
         return pages, meta
     if all(p.has_text_layer for p in pages):
         return pages, meta
-    from lexora.extract.ocr_extractor import ocr_fill_pages
+    from lexora.extract.ocr_extractor import make_engine, ocr_fill_pages
 
-    filled, page_conf = ocr_fill_pages(pages, source)
+    # Build the engine here rather than letting ocr_fill_pages do it lazily, so the audit
+    # trail can record the engine that ACTUALLY ran -- version and execution provider
+    # included ("rapidocr:1.2.3+cuda" vs "rapidocr:1.2.3"). The field used to be filled
+    # from LEXORA_OCR_ENGINE, i.e. the *configured* name, so it read "rapidocr" whether
+    # the pages went through the GPU or the CPU, and a silent CPU fallback was invisible.
+    # Both guards above have already passed, so importing the backend now is not eager.
+    engine = make_engine()
+    filled, page_conf = ocr_fill_pages(pages, source, engine=engine)
     if page_conf:
         meta["scanned"] = True
         meta["ocr_quality_cer"] = round(sum(page_conf.values()) / len(page_conf), 4)
-        meta["ocr_engine"] = os.environ.get("LEXORA_OCR_ENGINE", "rapidocr").lower()
+        meta["ocr_engine"] = engine.name
     return filled, meta
 
 

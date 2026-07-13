@@ -1,0 +1,40 @@
+{
+  "document": "cc1ef72d1150598df4ca61c9c370e22c9eb342368e076679b4e3c44233063a14.pdf",
+  "economy": "Malaysia",
+  "pillar": 6,
+  "measured_on": "2026-07-13",
+  "pages": 95,
+  "characters": 148091,
+  "ocr": {
+    "engine": "none",
+    "pages": 0,
+    "scanned": false,
+    "cost_usd": 0.0
+  },
+  "embedding": {
+    "model": "BAAI/bge-m3",
+    "tokens": 0,
+    "note": "dense channel OFF by default (BM25 retrieval)",
+    "cost_usd": 0.0
+  },
+  "crawling": {
+    "engine": "self-hosted (requests/browser)",
+    "cost_usd": 0.0
+  },
+  "llm": {
+    "model": "GLM-5.2",
+    "calls": 25,
+    "input_tokens": 59602,
+    "output_tokens": 4520,
+    "price_in_per_1m_usd": 1.18,
+    "price_out_per_1m_usd": 4.13,
+    "rate_note": "reference commercial rate; our own endpoint is not billed per token",
+    "cost_usd": 0.089
+  },
+  "total_cost_usd": 0.089,
+  "total_cost_usd_open_weight_swap": 0.0,
+  "open_weight_note": "Llama-class + Tesseract, all self-hosted -> $0 API (compute only)",
+  "citations": 11,
+  "processing_time_seconds": 139.7,
+  "llm_used": true
+}

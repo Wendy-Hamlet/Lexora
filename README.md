@@ -200,55 +200,71 @@ report (instruments discovered, NEW/KNOWN split, indicators covered).
 
 ## Actual Cost Per Document
 
-*Required by the hackathon rubric for UN sustainability assessment. **Measured from a real
-run, not estimated** — token counts come from the live LLM client accounting, page counts
-from the parsed PDF, time from a wall-clock around the run.*
-
-Our stack is almost entirely **self-hosted**, so its marginal API cost is ~$0; the LLM is
-the only metered API. Reproduce on any local PDF:
+*Required by the hackathon rubric for UN sustainability assessment. **Measured from real
+runs, not estimated** — token counts come from the live LLM client's accounting, page counts
+from the parsed PDF, wall-clock from a timer around the run. Reproduce any row:*
 
 ```bash
 PYTHONPATH=src python tools/cost_logger.py \
-  --pdf data/raw/my/<hash>.pdf --economy my --pillar 6
-# writes logs/cost_report.json + prints the table below
+  --pdf data/raw/my/<hash>.pdf --economy my --pillar 6 \
+  --price-in 1.180 --price-out 4.130      # GLM-5.2 list price, see below
+# writes logs/cost_report.json and prints the table
 ```
 
-### Measured results
+Everything except the LLM runs locally, so **the LLM is the only metered component**. We
+benchmark **two** documents, because the cost profile of a text PDF and a scanned one differ
+in where the time goes (not in what they cost):
 
-| Component | Engine used | Measured cost |
+| | **Text PDF** | **Scanned PDF** |
 | :---- | :---- | :---- |
-| OCR | RapidOCR (bundled ONNX, local CPU) | $0.0000 |
-| Embedding | BAAI/bge-m3 (local; dense channel off by default) | $0.0000 |
-| LLM mapping | gpt-5.4 (metadata + rationale + per-cell verify) | $0.0179 |
-| Crawling | self-hosted (requests / browser) | $0.0000 |
-| **Total (current stack)** |  | **$0.018 per document** |
-| **Total (open-weight swap)** | Llama-class + Tesseract (all self-hosted) | **$0.000 per document** |
+| Document | Malaysia **PDPA 2010** (Act 709) | Malaysia **Computer Crimes Act 1997** (Act 563) |
+| Size | 95 pages · 148,091 chars | 12 pages · 572 embedded images · **0-char text layer** |
+| OCR | not needed (text layer present) | **required** — RapidOCR, CER 0.87 |
+| Citations produced | 11 | 4 |
+| LLM calls | 25 | 15 |
+| Tokens (in / out) | 59,602 / 4,520 | 21,434 / 1,972 |
+| **Wall-clock** | **139.7 s** | **101.7 s** |
+| **Cost (current stack)** | **$0.089** | **$0.033** |
+| **Cost (open-weight swap)** | **$0.000** | **$0.000** |
 
-**Measured on:** 2026-06-22 · **Benchmark document:** Malaysia PDPA 2010 (Act 709), 100 pages,
-~149k characters, scanned (OCR ran on all 100 pages) · **Token counts:** Input 24,548 · Output
-3,722 (27 LLM calls) · **Wall-clock:** 150.3 s per document.
+| Component | Engine used | Metered? | Cost |
+| :---- | :---- | :---- | :---- |
+| Crawling | self-hosted (httpx / Playwright) | no | $0.0000 |
+| OCR | RapidOCR — PP-OCR on ONNX Runtime, **GPU** (`rapidocr:1.2.3+cuda`) | no | $0.0000 |
+| Embedding | BAAI/bge-m3, local (dense channel off by default) | no | $0.0000 |
+| Parsing / retrieval | BM25, local | no | $0.0000 |
+| **LLM mapping** | **GLM-5.2** (relevance judge + rationale + metadata) | **yes** | **$0.033 – $0.089** |
 
-Only the per-token **rate** is a parameter — measured tokens × rate. The figure above prices
-the LLM at a reference commercial rate ($0.50 / $1.50 per 1M input/output tokens); **our own
-endpoint is not billed per token** (500M tokens/day, no per-call charge), so our *actual*
-marginal cost is ~$0. Everything except the LLM is self-hosted, so the open-weight swap is
-**$0 API per document** (compute only).
+**Measured on:** 2026-07-13 · **LLM:** GLM-5.2 via an OpenAI-compatible gateway, priced at
+its list rate **¥8 / ¥28 per 1M input/output tokens** = **$1.180 / $4.130** at 6.78 CNY/USD
+(2026-07-13). Cost is simply `tokens x rate` — only the *rate* is a parameter, so a judge can
+re-price our token counts against any model.
 
-### Cost log excerpt (`logs/cost_report.json`)
+**Open-weight swap = $0.000 per document.** OCR, embedding, parsing, retrieval and crawling
+are already self-hosted; pointing `LEXORA_LLM_BASE_URL` at a local Ollama/vLLM server (see
+*Swapping the LLM*) removes the only metered call. Compute only, no API spend.
+
+**On GPU.** OCR dominates wall-clock on scanned corpora, so it runs on the GPU when a CUDA
+runtime is present — measured **5.6x** faster than CPU on the scanned benchmark (3.2 → 0.6
+s/page), with identical recognised text. `LEXORA_OCR_GPU=0` forces CPU. The `ocr_engine`
+field in the JSON sidecar reports the provider that actually ran (`+cuda` or not), so a CPU
+fallback is never silent.
+
+### Cost log excerpt (`logs/cost_report_scanned.json`)
 
 ```json
 {
-  "document": "MY_PDPA_Act709_100pages.pdf",
-  "measured_on": "2026-06-22",
-  "pages": 100,
-  "ocr":       { "engine": "rapidocr",   "pages": 100, "scanned": true, "cost_usd": 0.0 },
+  "document": "MY_ComputerCrimesAct1997_Act563.pdf",
+  "measured_on": "2026-07-13",
+  "pages": 12,
+  "ocr":       { "engine": "rapidocr:1.2.3+cuda", "pages": 12, "scanned": true, "cost_usd": 0.0 },
   "embedding": { "model": "BAAI/bge-m3", "tokens": 0, "cost_usd": 0.0 },
-  "llm":       { "model": "gpt-5.4", "calls": 27, "input_tokens": 24548,
-                 "output_tokens": 3722, "cost_usd": 0.0179 },
-  "total_cost_usd": 0.0179,
+  "llm":       { "model": "GLM-5.2", "calls": 15, "input_tokens": 21434,
+                 "output_tokens": 1972, "cost_usd": 0.0334 },
+  "total_cost_usd": 0.0334,
   "total_cost_usd_open_weight_swap": 0.0,
-  "citations": 9,
-  "processing_time_seconds": 150.3
+  "citations": 4,
+  "processing_time_seconds": 101.7
 }
 ```
 
