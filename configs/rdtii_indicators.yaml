@@ -22,6 +22,374 @@
 # possible_scores: 0 = no/low compliance cost ... 1 = heavily regulated.
 
 pillars:
+  - pillar: 1
+    name: "Tariffs and Trade Defence"
+    indicators:
+      - submission_id: "P1-I4"
+        rdtii_id: "1.4"
+        name: "Trade defence measures including anti-dumping, countervailing duties and safeguards on ICT-related goods imported by other economies within the considered United Nations region"
+        long_definition: >
+          Trade defence measures including anti-dumping, countervailing duties and safeguards on
+          ICT-related goods imported by other economies within the considered United Nations
+          region. Official scoring criteria: 1) More than three measures 2) Three measures 3) Two
+          measures 4) One measure 5) No measure (0.25 for each measure, up to 1)
+        description: >
+          Trade defence measures including anti-dumping, countervailing duties and safeguards on
+          ICT-related goods imported by other economies within the considered United Nations
+          region.
+        scoring_criteria: >
+          1) More than three measures 2) Three measures 3) Two measures 4) One measure 5) No
+          measure (0.25 for each measure, up to 1) Possible scores: 1 / 0.75 / 0.50 / 0.25 / 0.
+        possible_scores: [1, 0.75, 0.50, 0.25, 0]
+
+  - pillar: 2
+    name: "Public Procurement"
+    indicators:
+      - submission_id: "P2-I1"
+        rdtii_id: "2.1"
+        name: "Foreign exclusions from public procurement related to ICT goods and digital services"
+        long_definition: >
+          Foreign exclusions from public procurement related to ICT goods and digital services.
+          Official scoring criteria: 1) For any legislative measure excludes foreign firms from
+          public procurement under any circumstances, or more than one measure under category (2)
+          2) For any legislative measure excludes a specific (group) of foreign firm(s) from
+          public procurement 3) No measure (when there is only a legal basis that grants the
+          government the power to exclude foreign firms)
+        description: >
+          Foreign exclusions from public procurement related to ICT goods and digital services.
+        scoring_criteria: >
+          1) For any legislative measure excludes foreign firms from public procurement under any
+          circumstances, or more than one measure under category (2) 2) For any legislative
+          measure excludes a specific (group) of foreign firm(s) from public procurement 3) No
+          measure (when there is only a legal basis that grants the government the power to
+          exclude foreign firms) Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P2-I2"
+        rdtii_id: "2.2"
+        name: "Specific requirements on source codes, encryption and trade secrets"
+        long_definition: >
+          Specific requirements on source codes, encryption and trade secrets. Official scoring
+          criteria: 1) For any requirement to surrender patents, source codes or trade secrets as
+          a condition for participating in tenders 2) For any requirement to use specific
+          encryption to win tenders 3) No measure
+        description: >
+          Specific requirements on source codes, encryption and trade secrets.
+        scoring_criteria: >
+          1) For any requirement to surrender patents, source codes or trade secrets as a
+          condition for participating in tenders 2) For any requirement to use specific encryption
+          to win tenders 3) No measure Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P2-I3"
+        rdtii_id: "2.3"
+        name: "Limitations in procurement bidding"
+        long_definition: >
+          Limitations in procurement bidding. Official scoring criteria: 1) For any measure that
+          directly discriminate against foreign bidders OR more than one measure under category
+          (2) 2) For any measures measure that applies to all bidders, such as local content
+          requirements and performance-based conditions 3) No measure (when there is only a legal
+          basis that grants the government the power to impose limitations in procurement bidding)
+        description: >
+          Limitations in procurement bidding.
+        scoring_criteria: >
+          1) For any measure that directly discriminate against foreign bidders OR more than one
+          measure under category (2) 2) For any measures measure that applies to all bidders, such
+          as local content requirements and performance-based conditions 3) No measure (when there
+          is only a legal basis that grants the government the power to impose limitations in
+          procurement bidding) Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+
+  - pillar: 3
+    name: "Foreign Direct Investment"
+    indicators:
+      - submission_id: "P3-I1"
+        rdtii_id: "3.1"
+        name: "Foreign equity limits in sectors relevant to digital trade"
+        long_definition: >
+          Foreign equity limits in sectors relevant to digital trade. Exception: Not cover foreign
+          equity cap in telecom sector (covered under Pillar 5) and e-commerce sector (covered
+          under Pillar 12) Official scoring criteria: 1) Ban (0%) in at least one sector OR if
+          only a minority stake in more than one sector 2) A minority stake (1-50%) allowed in one
+          sector 3) A controlling stake (51-99%) allowed OR restrictions only exist in SOEs 4)
+          Full ownership (100%) allowed in relevant for digital trade
+        description: >
+          Foreign equity limits in sectors relevant to digital trade.
+        scoring_criteria: >
+          1) Ban (0%) in at least one sector OR if only a minority stake in more than one sector
+          2) A minority stake (1-50%) allowed in one sector 3) A controlling stake (51-99%)
+          allowed OR restrictions only exist in SOEs 4) Full ownership (100%) allowed in relevant
+          for digital trade Possible scores: 1 / 0.8 / 0.5 / 0.
+        possible_scores: [1, 0.8, 0.5, 0]
+      - submission_id: "P3-I2"
+        rdtii_id: "3.2"
+        name: "Joint venture requirements"
+        long_definition: >
+          Joint venture requirements. Official scoring criteria: 1) For any measure 2) No measure
+        description: >
+          Joint venture requirements.
+        scoring_criteria: >
+          1) For any measure 2) No measure Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P3-I3"
+        rdtii_id: "3.3"
+        name: "Nationality or residency requirements for board of directors or managers"
+        long_definition: >
+          Nationality or residency requirements for board of directors or managers. Official
+          scoring criteria: 1) For any measure 2) No measure
+        description: >
+          Nationality or residency requirements for board of directors or managers.
+        scoring_criteria: >
+          1) For any measure 2) No measure Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P3-I4"
+        rdtii_id: "3.4"
+        name: "Screening of investment and acquisitions"
+        long_definition: >
+          Screening of investment and acquisitions. Exception: Anti-trust measures related to M&A
+          are not considered a restriction, unless discriminatory. Official scoring criteria: 1) A
+          case that the screening mechanism has been used to block an investment in a sector
+          relevant for digital trade 2) Two or more investment screening mechanisms 3) A screening
+          mechanism 4) No screening mechanism
+        description: >
+          Screening of investment and acquisitions.
+        scoring_criteria: >
+          1) A case that the screening mechanism has been used to block an investment in a sector
+          relevant for digital trade 2) Two or more investment screening mechanisms 3) A screening
+          mechanism 4) No screening mechanism Possible scores: 1 / 0.5 / 0.25 / 0.
+        possible_scores: [1, 0.5, 0.25, 0]
+      - submission_id: "P3-I5"
+        rdtii_id: "3.5"
+        name: "Commercial presence requirements to offer cross-border services in sectors relevant to digital trade"
+        long_definition: >
+          Commercial presence requirements to offer cross-border services in sectors relevant to
+          digital trade. Official scoring criteria: 1) For any measure 2) No measure
+        description: >
+          Commercial presence requirements to offer cross-border services in sectors relevant to
+          digital trade.
+        scoring_criteria: >
+          1) For any measure 2) No measure Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+
+  - pillar: 4
+    name: "Intellectual Property Rights"
+    indicators:
+      - submission_id: "P4-I1"
+        rdtii_id: "4.1"
+        name: "Patent application issues"
+        long_definition: >
+          Patent application issues. Official scoring criteria: 1) Differential treatment between
+          local and foreign firms, requirements to appoint local representative, and a rejection
+          of patent application in a discriminatory manner. 2) Non-transparent process, high
+          filing fees, high registration costs, substantive examination, and the requirement to
+          file a patent locally before filing abroad. 3) No restriction
+        description: >
+          Patent application issues.
+        scoring_criteria: >
+          1) Differential treatment between local and foreign firms, requirements to appoint local
+          representative, and a rejection of patent application in a discriminatory manner. 2)
+          Non-transparent process, high filing fees, high registration costs, substantive
+          examination, and the requirement to file a patent locally before filing abroad. 3) No
+          restriction Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P4-I2"
+        rdtii_id: "4.2"
+        name: "Patent enforcement issues: civil and administrative procedures and remedies; and provisional measures"
+        long_definition: >
+          Patent enforcement issues: civil and administrative procedures and remedies; and
+          provisional measures. Official scoring criteria: 1) Abesence of civil and administrative
+          procedures and remedies, and provisional measures 2) Adopt civil and administrative
+          procedures and remedies, or provisional measures 3) Adopt civil and administrative
+          procedures and remedies, and provisional measures
+        description: >
+          Patent enforcement issues: civil and administrative procedures and remedies; and
+          provisional measures.
+        scoring_criteria: >
+          1) Abesence of civil and administrative procedures and remedies, and provisional
+          measures 2) Adopt civil and administrative procedures and remedies, or provisional
+          measures 3) Adopt civil and administrative procedures and remedies, and provisional
+          measures Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P4-I3"
+        rdtii_id: "4.3"
+        name: "Patent enforcement issues: others"
+        long_definition: >
+          Patent enforcement issues: others. Official scoring criteria: 1) For any restriction
+          with high impact, when the issue affecting all circumstances and sectors, OR more than
+          one measure of category (2) 2) For any restriction with limited impact, when the issue
+          affecting to a specific circumstance or sector 3) No restriction
+        description: >
+          Patent enforcement issues: others.
+        scoring_criteria: >
+          1) For any restriction with high impact, when the issue affecting all circumstances and
+          sectors, OR more than one measure of category (2) 2) For any restriction with limited
+          impact, when the issue affecting to a specific circumstance or sector 3) No restriction
+          Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P4-I5"
+        rdtii_id: "4.5"
+        name: "Lack of copyright framework and exceptions"
+        long_definition: >
+          Lack of copyright framework and exceptions. Official scoring criteria: 1) Lack of
+          copyright legal framework OR lack of copyright exceptions 2) Unclear copyright
+          exceptions, such as three-step test and other types of copyright exceptions 3) Clear
+          copyright exceptions following fair use or fair dealing model
+        description: >
+          Lack of copyright framework and exceptions.
+        scoring_criteria: >
+          1) Lack of copyright legal framework OR lack of copyright exceptions 2) Unclear
+          copyright exceptions, such as three-step test and other types of copyright exceptions 3)
+          Clear copyright exceptions following fair use or fair dealing model Possible scores: 1 /
+          0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P4-I6"
+        rdtii_id: "4.6"
+        name: "Online copyright enforcement issues: civil and administrative procedures and remedies; and provisional measures"
+        long_definition: >
+          Online copyright enforcement issues: civil and administrative procedures and remedies;
+          and provisional measures. Official scoring criteria: 1) Abesence of civil and
+          administrative procedures and remedies, and provisional measures 2) Adopt civil and
+          administrative procedures and remedies, or provisional measures 3) Adopt civil and
+          administrative procedures and remedies, and provisional measures
+        description: >
+          Online copyright enforcement issues: civil and administrative procedures and remedies;
+          and provisional measures.
+        scoring_criteria: >
+          1) Abesence of civil and administrative procedures and remedies, and provisional
+          measures 2) Adopt civil and administrative procedures and remedies, or provisional
+          measures 3) Adopt civil and administrative procedures and remedies, and provisional
+          measures Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P4-I9"
+        rdtii_id: "4.9"
+        name: "Mandatory disclosure of trade secrets, such as souce code and algorithms"
+        long_definition: >
+          Mandatory disclosure of trade secrets, such as souce code and algorithms. Official
+          scoring criteria: 1) For any disclosure requirement affecting an entire sector or all
+          sectors horizontally OR More than one measure of category (2) 2) For any disclosure
+          requirement of limited impact affecting only specific types of products or specific
+          circumstance (i.e., disclosure due to court order, regulatory proceedings, or national
+          threat provision for certain companies) 3) No measure OR when the Government mandates to
+          disclose trade secrets when necessary to protect the public interest and safeguards
+          against unfair commercial use
+        description: >
+          Mandatory disclosure of trade secrets, such as souce code and algorithms.
+        scoring_criteria: >
+          1) For any disclosure requirement affecting an entire sector or all sectors horizontally
+          OR More than one measure of category (2) 2) For any disclosure requirement of limited
+          impact affecting only specific types of products or specific circumstance (i.e.,
+          disclosure due to court order, regulatory proceedings, or national threat provision for
+          certain companies) 3) No measure OR when the Government mandates to disclose trade
+          secrets when necessary to protect the public interest and safeguards against unfair
+          commercial use Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P4-I10"
+        rdtii_id: "4.10"
+        name: "Lack of effective trade secrets legal framework"
+        long_definition: >
+          Lack of effective trade secrets legal framework. Official scoring criteria: 1) Lack of
+          trade secrets legal framework that is able to provide effective protection 2) Limited
+          practice/scope addressing protection of trade secrets OR practices with certain clauses
+          included in the IP law/ relevant law 3) Presence of effective protection of trade
+          secrets protection in any forms
+        description: >
+          Lack of effective trade secrets legal framework.
+        scoring_criteria: >
+          1) Lack of trade secrets legal framework that is able to provide effective protection 2)
+          Limited practice/scope addressing protection of trade secrets OR practices with certain
+          clauses included in the IP law/ relevant law 3) Presence of effective protection of
+          trade secrets protection in any forms Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+
+  - pillar: 5
+    name: "Telecom Regulations & Competition"
+    indicators:
+      - submission_id: "P5-I1"
+        rdtii_id: "5.1"
+        name: "Lack of passive infrastructure sharing"
+        long_definition: >
+          Lack of passive infrastructure sharing. Official scoring criteria: 1) No passive
+          infrastructure sharing obligation 2) Passive sharing is not mandated, but it is
+          practiced in the market 3) Passive sharing is mandated
+        description: >
+          Lack of passive infrastructure sharing.
+        scoring_criteria: >
+          1) No passive infrastructure sharing obligation 2) Passive sharing is not mandated, but
+          it is practiced in the market 3) Passive sharing is mandated Possible scores: 1 / 0.5 /
+          0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P5-I2"
+        rdtii_id: "5.2"
+        name: "Foreign equity limits in telecom sector"
+        long_definition: >
+          Foreign equity limits in telecom sector. Official scoring criteria: 1) Ban (0%) OR if
+          only a minority stake in more than one measures 2) A minority stake (1-50%) allowed 3) A
+          controlling stake (51-99%) allowed OR restrictions only exist in SOEs 4) Full ownership
+          (100%) allowed in telecommunication sector
+        description: >
+          Foreign equity limits in telecom sector.
+        scoring_criteria: >
+          1) Ban (0%) OR if only a minority stake in more than one measures 2) A minority stake
+          (1-50%) allowed 3) A controlling stake (51-99%) allowed OR restrictions only exist in
+          SOEs 4) Full ownership (100%) allowed in telecommunication sector Possible scores: 1 /
+          0.8 / 0.5 / 0.
+        possible_scores: [1, 0.8, 0.5, 0]
+      - submission_id: "P5-I3"
+        rdtii_id: "5.3"
+        name: "Shares owned by the Government in telecom companies"
+        long_definition: >
+          Shares owned by the Government in telecom companies. Official scoring criteria: 1) At
+          least one companies with government shares above 50% OR more than one measure of
+          category (2) 2) One company with government shares between 1% and 50% 3) No shares owned
+          by the government in telecom companies
+        description: >
+          Shares owned by the Government in telecom companies.
+        scoring_criteria: >
+          1) At least one companies with government shares above 50% OR more than one measure of
+          category (2) 2) One company with government shares between 1% and 50% 3) No shares owned
+          by the government in telecom companies Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P5-I4"
+        rdtii_id: "5.4"
+        name: "Lack of functional/accounting separation"
+        long_definition: >
+          Lack of functional/accounting separation. Official scoring criteria: 1) No
+          funcation/accounting separation is mandated 2) Only accounting separation is mandated 3)
+          Only functional seperation is mandated 4) Both accounting and functional separations are
+          mandated
+        description: >
+          Lack of functional/accounting separation.
+        scoring_criteria: >
+          1) No funcation/accounting separation is mandated 2) Only accounting separation is
+          mandated 3) Only functional seperation is mandated 4) Both accounting and functional
+          separations are mandated Possible scores: 1 / 0.5 / 0.25 / 0.
+        possible_scores: [1, 0.5, 0.25, 0]
+      - submission_id: "P5-I5"
+        rdtii_id: "5.5"
+        name: "Licensing requirements in telecom sector for operators"
+        long_definition: >
+          Licensing requirements in telecom sector for operators. Official scoring criteria: 1)
+          For any strict licensing scheme (e.g., discrimination for foreign providers, minimum
+          capital requirements, and mandatory performances requirements) 2) No strict licensing
+          scheme
+        description: >
+          Licensing requirements in telecom sector for operators.
+        scoring_criteria: >
+          1) For any strict licensing scheme (e.g., discrimination for foreign providers, minimum
+          capital requirements, and mandatory performances requirements) 2) No strict licensing
+          scheme Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P5-I7"
+        rdtii_id: "5.7"
+        name: "Lack of independent telecom authority"
+        long_definition: >
+          Lack of independent telecom authority. Official scoring criteria: 1) No independent
+          telecom authority 2) Independent telecom authority is established
+        description: >
+          Lack of independent telecom authority.
+        scoring_criteria: >
+          1) No independent telecom authority 2) Independent telecom authority is established
+          Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+
   - pillar: 6
     name: "Cross-border Data Policies"
     indicators:
@@ -442,3 +810,433 @@ pillars:
           - "interception of communications"
           - "criminal procedure code search and seizure"
           - "production order requiring disclosure of data"
+  - pillar: 8
+    name: "Internet Intermediary Liability"
+    indicators:
+      - submission_id: "P8-I1"
+        rdtii_id: "8.1"
+        name: "Lack of safe harbour for copyright infringements"
+        long_definition: >
+          Lack of safe harbour for copyright infringements. Official scoring criteria: 1) No
+          intermediary liability framework in place 2) Sectoral framework in place that limits
+          liablity for intermediaries 3) Hoirzontal framework in place that limits liability for
+          intermediaries
+        description: >
+          Lack of safe harbour for copyright infringements.
+        scoring_criteria: >
+          1) No intermediary liability framework in place 2) Sectoral framework in place that
+          limits liablity for intermediaries 3) Hoirzontal framework in place that limits
+          liability for intermediaries Possible scores: 1 / 0.50 / 0.
+        possible_scores: [1, 0.50, 0]
+      - submission_id: "P8-I2"
+        rdtii_id: "8.2"
+        name: "Lack of safe harbour for other illegal activities"
+        long_definition: >
+          Lack of safe harbour for other illegal activities. Official scoring criteria: 1) No
+          intermediary liability framework in place 2) Sectoral framework in place that limits
+          liablity for intermediaries 3) Hoirzontal framework in place that limits liability for
+          intermediaries
+        description: >
+          Lack of safe harbour for other illegal activities.
+        scoring_criteria: >
+          1) No intermediary liability framework in place 2) Sectoral framework in place that
+          limits liablity for intermediaries 3) Hoirzontal framework in place that limits
+          liability for intermediaries Possible scores: 1 / 0.50 / 0.
+        possible_scores: [1, 0.50, 0]
+      - submission_id: "P8-I3"
+        rdtii_id: "8.3"
+        name: "User identify requirements"
+        long_definition: >
+          User identify requirements. Official scoring criteria: 1) User identity requirement to
+          connect to the Internet or access online services 2) Used identity requirement for SIM
+          registration 3) No restrictions
+        description: >
+          User identify requirements.
+        scoring_criteria: >
+          1) User identity requirement to connect to the Internet or access online services 2)
+          Used identity requirement for SIM registration 3) No restrictions Possible scores: 1 /
+          0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P8-I4"
+        rdtii_id: "8.4"
+        name: "Monitoring requirements"
+        long_definition: >
+          Monitoring requirements. Official scoring criteria: 1) Any monitoring requirement
+          (monitor the users’ activities or remove or block content) 2) Any requirement to active
+          monitoring of users’ activities without any legal obligation to remove or block the
+          content 3) No measure
+        description: >
+          Monitoring requirements.
+        scoring_criteria: >
+          1) Any monitoring requirement (monitor the users’ activities or remove or block content)
+          2) Any requirement to active monitoring of users’ activities without any legal
+          obligation to remove or block the content 3) No measure Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+
+  - pillar: 9
+    name: "Content Access"
+    indicators:
+      - submission_id: "P9-I1"
+        rdtii_id: "9.1"
+        name: "Blocking or filtering commercial web content"
+        long_definition: >
+          Blocking or filtering commercial web content. Exception: Not score political content,
+          criminal content (e.g., child pornography), aged-restricted content, defamation and
+          other non-commercial content. Official scoring criteria: 1) Any blocking measure 2) Any
+          filtering measure 3) No cases of blocking nor filtering (except internationally agreed
+          illegal content/child pornography)
+        description: >
+          Blocking or filtering commercial web content.
+        scoring_criteria: >
+          1) Any blocking measure 2) Any filtering measure 3) No cases of blocking nor filtering
+          (except internationally agreed illegal content/child pornography) Possible scores: 1 /
+          0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P9-I3"
+        rdtii_id: "9.3"
+        name: "Online advertising requirements"
+        long_definition: >
+          Online advertising requirements. Exception: Not score requirements that advertising
+          should not be misleading Official scoring criteria: 1) Any restriction on online
+          advertising 2) No restriction
+        description: >
+          Online advertising requirements.
+        scoring_criteria: >
+          1) Any restriction on online advertising 2) No restriction Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P9-I4"
+        rdtii_id: "9.4"
+        name: "Licensing requirements for online content providers and applications (social media platforms, new providers, VPN, cloud servics, etc.)"
+        long_definition: >
+          Licensing requirements for online content providers and applications (social media
+          platforms, new providers, VPN, cloud servics, etc.). Exception: Not cover license for
+          telecommunication facilities and service providers (captured under Pillar 5), License
+          for e-commerce platform (captured under Pillar 12) Official scoring criteria: 1) Any
+          strict licence requirement/ cases of more than one measure in category (2) 2) Any
+          licensing scheme 3) No restriction
+        description: >
+          Licensing requirements for online content providers and applications (social media
+          platforms, new providers, VPN, cloud servics, etc.).
+        scoring_criteria: >
+          1) Any strict licence requirement/ cases of more than one measure in category (2) 2) Any
+          licensing scheme 3) No restriction Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+
+  - pillar: 10
+    name: "Non-technical NTMs"
+    indicators:
+      - submission_id: "P10-I1"
+        rdtii_id: "10.1"
+        name: "Import ban applied to ICT goods and online services (e.g. network equipment, servers, handsets, applications, and data processing)"
+        long_definition: >
+          Import ban applied to ICT goods and online services (e.g. network equipment, servers,
+          handsets, applications, and data processing). Official scoring criteria: 1) Ban on more
+          than one ICT goods or digital services 2) Ban on one specific product or services 3) No
+          measure
+        description: >
+          Import ban applied to ICT goods and online services (e.g. network equipment, servers,
+          handsets, applications, and data processing).
+        scoring_criteria: >
+          1) Ban on more than one ICT goods or digital services 2) Ban on one specific product or
+          services 3) No measure Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P10-I2"
+        rdtii_id: "10.2"
+        name: "Other import restrictions on ICT goods and online services"
+        long_definition: >
+          Other import restrictions on ICT goods and online services. Official scoring criteria:
+          1) Import restrictions that potentially block trade (e.g., quotas) OR at least two
+          measures of category (2) 2) Import estrictions that add regulatory compliance costs to
+          trade in ICT goods and online services (e.g., licenses, permits, authorization,
+          registration for ICT goods and labelling requirements and import controls) 3) No
+          restriction
+        description: >
+          Other import restrictions on ICT goods and online services.
+        scoring_criteria: >
+          1) Import restrictions that potentially block trade (e.g., quotas) OR at least two
+          measures of category (2) 2) Import estrictions that add regulatory compliance costs to
+          trade in ICT goods and online services (e.g., licenses, permits, authorization,
+          registration for ICT goods and labelling requirements and import controls) 3) No
+          restriction Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P10-I3"
+        rdtii_id: "10.3"
+        name: "Local content requirements"
+        long_definition: >
+          Local content requirements. Official scoring criteria: 1) At least one LCR at sectoral
+          or horizontal level (i.e. HS-4 (e.g.telephony equipment)) and HS-2 levels) OR at least
+          two LCRs of category (2) 2) At least one LCR at product level (i.e. HS-6 and HS-8 levels
+          (e.g. mobile phones and smartphones) 3) No measure
+        description: >
+          Local content requirements.
+        scoring_criteria: >
+          1) At least one LCR at sectoral or horizontal level (i.e. HS-4 (e.g.telephony
+          equipment)) and HS-2 levels) OR at least two LCRs of category (2) 2) At least one LCR at
+          product level (i.e. HS-6 and HS-8 levels (e.g. mobile phones and smartphones) 3) No
+          measure Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P10-I4"
+        rdtii_id: "10.4"
+        name: "Export restrictions on ICTgoods and online services"
+        long_definition: >
+          Export restrictions on ICTgoods and online services. Official scoring criteria: 1)
+          Export restriction 2) No restriction
+        description: >
+          Export restrictions on ICTgoods and online services.
+        scoring_criteria: >
+          1) Export restriction 2) No restriction Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+
+  - pillar: 11
+    name: "Standards and Procedures"
+    indicators:
+      - submission_id: "P11-I1"
+        rdtii_id: "11.1"
+        name: "Lack of transparent technical standards"
+        long_definition: >
+          Lack of transparent technical standards. Official scoring criteria: 1) Not allowed
+          foreigners to participate in the standard-setting bodies, OR non transparent
+          standard-setting 2) No restriction
+        description: >
+          Lack of transparent technical standards.
+        scoring_criteria: >
+          1) Not allowed foreigners to participate in the standard-setting bodies, OR non
+          transparent standard-setting 2) No restriction Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P11-I2"
+        rdtii_id: "11.2"
+        name: "Self-certification limitations for product safety (radio transmissions, EMC/EMI)"
+        long_definition: >
+          Self-certification limitations for product safety (radio transmissions, EMC/EMI).
+          Official scoring criteria: 1) Not allow SDoC and third-party certification 2) SDoC is
+          not allowed, but accept 3rd party-certification from CABs from a number of countries
+          with MRA 3) SDoC is allowed for foreign business
+        description: >
+          Self-certification limitations for product safety (radio transmissions, EMC/EMI).
+        scoring_criteria: >
+          1) Not allow SDoC and third-party certification 2) SDoC is not allowed, but accept 3rd
+          party-certification from CABs from a number of countries with MRA 3) SDoC is allowed for
+          foreign business Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P11-I3"
+        rdtii_id: "11.3"
+        name: "Product screening and testing requirements"
+        long_definition: >
+          Product screening and testing requirements. Official scoring criteria: 1) Measure in
+          place and used for products in scope 2) Measure in place, but acceptance of 3rd party
+          testing results 3) No requirement
+        description: >
+          Product screening and testing requirements.
+        scoring_criteria: >
+          1) Measure in place and used for products in scope 2) Measure in place, but acceptance
+          of 3rd party testing results 3) No requirement Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P11-I4"
+        rdtii_id: "11.4"
+        name: "Deviation from international encryption standards (ISO, IEC, ITU, FIPS, AES, TDES, and ECC)"
+        long_definition: >
+          Deviation from international encryption standards (ISO, IEC, ITU, FIPS, AES, TDES, and
+          ECC). Official scoring criteria: 1) For any measure or known case 2) No restriction
+        description: >
+          Deviation from international encryption standards (ISO, IEC, ITU, FIPS, AES, TDES, and
+          ECC).
+        scoring_criteria: >
+          1) For any measure or known case 2) No restriction Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+
+  - pillar: 12
+    name: "Online Sales and Transactions"
+    indicators:
+      - submission_id: "P12-I1"
+        rdtii_id: "12.1"
+        name: "Foreign equity limits in e-commerce sector"
+        long_definition: >
+          Foreign equity limits in e-commerce sector. Official scoring criteria: 1) A minority
+          stakes (1-50%) allowed 2) A controlling stake (51-99%) allowed 3) Full ownership (100%)
+          allowed in e-commerce sector
+        description: >
+          Foreign equity limits in e-commerce sector.
+        scoring_criteria: >
+          1) A minority stakes (1-50%) allowed 2) A controlling stake (51-99%) allowed 3) Full
+          ownership (100%) allowed in e-commerce sector Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P12-I2"
+        rdtii_id: "12.2"
+        name: "Online purchases and delivery limitations"
+        long_definition: >
+          Online purchases and delivery limitations. Exception: Not score limitations on online
+          purchases and delivery applied specifically to products related to consumer protection,
+          notably restrictions on alcoholic beverages, tobacco, and pharmaceuticals. Official
+          scoring criteria: 1) Any measure limits the number of products that can be purchases
+          online AND restrictions to delivery of products bought online 2) No measure
+        description: >
+          Online purchases and delivery limitations.
+        scoring_criteria: >
+          1) Any measure limits the number of products that can be purchases online AND
+          restrictions to delivery of products bought online 2) No measure Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P12-I3"
+        rdtii_id: "12.3"
+        name: "Licensing scheme for e-commerce providers (B2B and B2C)"
+        long_definition: >
+          Licensing scheme for e-commerce providers (B2B and B2C). Exception: Licenses pertiaining
+          to other aspects of e-commerce businesses, such as license to operate online payment
+          services and delivery are not captured. Official scoring criteria: 1) Any license for
+          e-commerce providers 2) No license
+        description: >
+          Licensing scheme for e-commerce providers (B2B and B2C).
+        scoring_criteria: >
+          1) Any license for e-commerce providers 2) No license Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P12-I4.1"
+        rdtii_id: "12.4.1"
+        name: "Online payment limitations: mandate local bank account"
+        long_definition: >
+          Online payment limitations: mandate local bank account. Official scoring criteria: 1)
+          Requirements to use a local bank account 2) No restriction
+        description: >
+          Online payment limitations: mandate local bank account.
+        scoring_criteria: >
+          1) Requirements to use a local bank account 2) No restriction Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P12-I4.2"
+        rdtii_id: "12.4.2"
+        name: "Online payment limitations: mandate currency used for international payments"
+        long_definition: >
+          Online payment limitations: mandate currency used for international payments. Official
+          scoring criteria: 1) Requirements on the currency used for international payments 2) No
+          restriction
+        description: >
+          Online payment limitations: mandate currency used for international payments.
+        scoring_criteria: >
+          1) Requirements on the currency used for international payments 2) No restriction
+          Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P12-I4.3"
+        rdtii_id: "12.4.3"
+        name: "Online payment limitations: deviate national standards"
+        long_definition: >
+          Online payment limitations: deviate national standards. Official scoring criteria: 1)
+          National standards for payment security that deviate from international standards 2) No
+          restriction
+        description: >
+          Online payment limitations: deviate national standards.
+        scoring_criteria: >
+          1) National standards for payment security that deviate from international standards 2)
+          No restriction Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P12-I4.4"
+        rdtii_id: "12.4.4"
+        name: "Online payment limitations: licensing requirements"
+        long_definition: >
+          Online payment limitations: licensing requirements. Official scoring criteria: 1)
+          Licensing requirements with restrictive conditions 2) No restriction
+        description: >
+          Online payment limitations: licensing requirements.
+        scoring_criteria: >
+          1) Licensing requirements with restrictive conditions 2) No restriction Possible scores:
+          1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P12-I4.5"
+        rdtii_id: "12.4.5"
+        name: "Online payment limitations: ceiling on the maximum amount"
+        long_definition: >
+          Online payment limitations: ceiling on the maximum amount. Official scoring criteria: 1)
+          Ceilings on the maximum amount that can be paid by electronic payment methods 2) No
+          restriction
+        description: >
+          Online payment limitations: ceiling on the maximum amount.
+        scoring_criteria: >
+          1) Ceilings on the maximum amount that can be paid by electronic payment methods 2) No
+          restriction Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P12-I4.6"
+        rdtii_id: "12.4.6"
+        name: "Online payment limitations: mandate specific intermediaries"
+        long_definition: >
+          Online payment limitations: mandate specific intermediaries. Official scoring criteria:
+          1) Requirements mandating the use of specific intermediaries for online payments 2) No
+          restriction
+        description: >
+          Online payment limitations: mandate specific intermediaries.
+        scoring_criteria: >
+          1) Requirements mandating the use of specific intermediaries for online payments 2) No
+          restriction Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P12-I4.7"
+        rdtii_id: "12.4.7"
+        name: "Online payment limitations: others restrictions"
+        long_definition: >
+          Online payment limitations: others restrictions. Official scoring criteria: 1) Other
+          restrctions 2) No restriction
+        description: >
+          Online payment limitations: others restrictions.
+        scoring_criteria: >
+          1) Other restrctions 2) No restriction Possible scores: 1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P12-I5"
+        rdtii_id: "12.5"
+        name: "Low De Minimis"
+        long_definition: >
+          Low De Minimis. Official scoring criteria: 1) No De Minimis 2) De Minimis below < 200
+          USD 3) De Minimis ≥ 200 USD
+        description: >
+          Low De Minimis.
+        scoring_criteria: >
+          1) No De Minimis 2) De Minimis below < 200 USD 3) De Minimis ≥ 200 USD Possible scores:
+          1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P12-I6"
+        rdtii_id: "12.6"
+        name: "Imposition of custom duties on electronic transmission"
+        long_definition: >
+          Imposition of custom duties on electronic transmission. Official scoring criteria: 1)
+          Imposition of custom duties on electronic transmission 2) Legal mechanisms or
+          regulations applicable to impose custom duties on electronic transmission 3) No
+          restriction
+        description: >
+          Imposition of custom duties on electronic transmission.
+        scoring_criteria: >
+          1) Imposition of custom duties on electronic transmission 2) Legal mechanisms or
+          regulations applicable to impose custom duties on electronic transmission 3) No
+          restriction Possible scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P12-I7"
+        rdtii_id: "12.7"
+        name: "Domain name requirements"
+        long_definition: >
+          Domain name requirements. Official scoring criteria: 1) Physical presence required,
+          requirements to the registrater a local domain name to conduct electronic retail 2)
+          Local representative required 3) No restriction
+        description: >
+          Domain name requirements.
+        scoring_criteria: >
+          1) Physical presence required, requirements to the registrater a local domain name to
+          conduct electronic retail 2) Local representative required 3) No restriction Possible
+          scores: 1 / 0.5 / 0.
+        possible_scores: [1, 0.5, 0]
+      - submission_id: "P12-I8"
+        rdtii_id: "12.8"
+        name: "Local presence requirements for online service providers"
+        long_definition: >
+          Local presence requirements for online service providers. Official scoring criteria: 1)
+          Local presence requirement for at least one sector 2) No requirement
+        description: >
+          Local presence requirements for online service providers.
+        scoring_criteria: >
+          1) Local presence requirement for at least one sector 2) No requirement Possible scores:
+          1 / 0.
+        possible_scores: [1, 0]
+      - submission_id: "P12-I9"
+        rdtii_id: "12.9"
+        name: "Lack of legal framework for online consumer protection"
+        long_definition: >
+          Lack of legal framework for online consumer protection. Official scoring criteria: 1) No
+          consumer protection legal framework applicable to online commerce 2) Consumer protection
+          law applicable to online commerce
+        description: >
+          Lack of legal framework for online consumer protection.
+        scoring_criteria: >
+          1) No consumer protection legal framework applicable to online commerce 2) Consumer
+          protection law applicable to online commerce Possible scores: 1 / 0.
+        possible_scores: [1, 0]

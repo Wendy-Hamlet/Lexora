@@ -72,11 +72,10 @@ def run_one(
     only); ``None`` means all mandatory pillars — the Round-1 default.
     """
     profile = load_profile(JURIS / f"{iso.lower()}.yaml")
-    indicators = load_indicators(INDICATORS)
-    if pillars:
-        indicators = [i for i in indicators if i.pillar in pillars]
-        if not indicators:
-            raise SystemExit(f"no RDTII indicators for pillar(s) {pillars}")
+    # None -> load_indicators' default, the mandatory scope (pillars 6 + 7).
+    indicators = load_indicators(INDICATORS, pillars=pillars)
+    if pillars and not indicators:
+        raise SystemExit(f"no RDTII indicators for pillar(s) {pillars}")
     secondary = []
     if use_secondary:
         from lexora.collect.secondary import gather_signals

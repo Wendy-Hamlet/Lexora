@@ -71,9 +71,12 @@ def main() -> None:
         description="Map an economy's laws to RDTII Pillar 6 / 7 indicators, end to end.")
     ap.add_argument("--economy", required=True,
                     help="Economy name or ISO code, e.g. Singapore | SG | Malaysia")
-    ap.add_argument("--pillar", default="all", choices=["6", "7", "all"],
-                    help="RDTII pillar: 6 (cross-border data flows), 7 (data protection), "
-                         "or all (default)")
+    ap.add_argument("--pillar", default="all",
+                    choices=[*(str(i) for i in range(1, 13)), "all"],
+                    help="RDTII pillar. 'all' (default) = the hackathon's mandatory scope, "
+                         "pillars 6 (cross-border data) + 7 (data protection). The other ten "
+                         "pillars are defined and selectable, but have no lawyer-validated "
+                         "gold yet -- treat their output as a pilot.")
     ap.add_argument("--output-dir", type=Path, default=REPO / "outputs",
                     help="Where the CSV/JSON land (default: outputs/)")
     ap.add_argument("--budget", type=int, default=20,
@@ -87,8 +90,15 @@ def main() -> None:
 
     iso = resolve_economy(args.economy)
     economy = ISO_TO_COUNTRY[iso]
+    # "all" means the mandatory scope (6+7), not all twelve: the other pillars are
+    # defined but unvalidated, and fanning discovery over 61 indicators is not what a
+    # reviewer running the documented command expects.
     pillars = None if args.pillar == "all" else [int(args.pillar)]
     ptag = "6-7" if args.pillar == "all" else args.pillar
+    if pillars and pillars[0] not in (6, 7):
+        print(f"note: pillar {pillars[0]} is outside the hackathon's mandatory scope (6, 7). "
+              "It is defined from the official RDTII methodology but has no lawyer-validated "
+              "gold -- treat this run as a pilot.\n")
 
     # The crawl is live by design (Task 1 is "no manual steps"), so opt the run in
     # rather than making the reviewer discover an env var.
