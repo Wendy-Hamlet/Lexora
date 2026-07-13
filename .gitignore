@@ -63,3 +63,6 @@ outputs/
 *.safetensors
 *.gguf
 *.onnx
+
+# AI agent working records (thread logs, task plans) - local only, never shipped.
+.agent_record/
