@@ -1,0 +1,83 @@
+[
+  {
+    "iso": "sg",
+    "economy": "Singapore",
+    "instruments": 54,
+    "new_instruments": 20,
+    "known_instruments": 34,
+    "fetched_ok": 152,
+    "docs_with_clauses": 133,
+    "citations": 291,
+    "indicators_covered": [
+      "P6-I4",
+      "P7-I1",
+      "P7-I2",
+      "P7-I3",
+      "P7-I4",
+      "P7-I5"
+    ],
+    "n_indicators_covered": 6,
+    "review_rows": 0,
+    "amendment_review_rows": 0,
+    "currency_breakdown": {
+      "CURRENT": 146,
+      "UNKNOWN": 145
+    }
+  },
+  {
+    "iso": "au",
+    "economy": "Australia",
+    "instruments": 43,
+    "new_instruments": 20,
+    "known_instruments": 23,
+    "fetched_ok": 83,
+    "docs_with_clauses": 75,
+    "citations": 228,
+    "indicators_covered": [
+      "P6-I1",
+      "P6-I2",
+      "P6-I4",
+      "P7-I1",
+      "P7-I2",
+      "P7-I3",
+      "P7-I4",
+      "P7-I5"
+    ],
+    "n_indicators_covered": 8,
+    "review_rows": 0,
+    "amendment_review_rows": 1,
+    "currency_breakdown": {
+      "CURRENT": 121,
+      "AMENDED": 1,
+      "UNKNOWN": 106
+    }
+  },
+  {
+    "iso": "my",
+    "economy": "Malaysia",
+    "instruments": 39,
+    "new_instruments": 15,
+    "known_instruments": 19,
+    "fetched_ok": 60,
+    "docs_with_clauses": 54,
+    "citations": 150,
+    "indicators_covered": [
+      "P6-I2",
+      "P6-I4",
+      "P7-I1",
+      "P7-I2",
+      "P7-I3",
+      "P7-I4",
+      "P7-I5"
+    ],
+    "n_indicators_covered": 7,
+    "review_rows": 0,
+    "amendment_review_rows": 7,
+    "currency_breakdown": {
+      "CURRENT": 68,
+      "AMENDED": 6,
+      "UNKNOWN": 75,
+      "STALE_RISK": 1
+    }
+  }
+]
