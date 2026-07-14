@@ -8,10 +8,15 @@ from __future__ import annotations
 
 import pytest
 
-from lexora.classify.judge_cache import JudgeCache, cache_enabled, catalogue_fingerprint
-from lexora.classify.verifier import Verifier
+from lexora.classify.judge_cache import JudgeCache, cache_enabled, prompt_fingerprint
+from lexora.classify.verifier import _PER_CLAUSE_SYSTEM, Verifier
 from lexora.models.clause import CanonicalSpan, Clause
 from lexora.models.indicator import RDTIIIndicator
+
+
+def catalogue_fingerprint(indicators, system: str = _PER_CLAUSE_SYSTEM) -> str:
+    """Render the real template with a sentinel clause, exactly as the Verifier does."""
+    return prompt_fingerprint(system, Verifier._clause_prompt(_clause(""), indicators))
 
 
 def _ind(sub: str, long_def: str = "long definition") -> RDTIIIndicator:
@@ -83,6 +88,31 @@ def test_indicator_order_is_part_of_the_prompt():
     """The catalogue is rendered in list order, so a reordering is a different prompt."""
     assert catalogue_fingerprint([_ind("P6-I4"), _ind("P7-I5")]) != \
         catalogue_fingerprint([_ind("P7-I5"), _ind("P6-I4")])
+
+
+def test_changing_the_instructions_invalidates():
+    """The system prompt is part of the question. Reword it and the old verdicts are stale."""
+    assert catalogue_fingerprint(INDS) != \
+        catalogue_fingerprint(INDS, system=_PER_CLAUSE_SYSTEM + " Prefer abstaining.")
+
+
+def test_changing_the_template_invalidates():
+    """The killer case. On 2026-07-14 the clause moved from the top of the prompt to the
+    bottom (to expose a cacheable prefix). Same indicators, same clause -- a fingerprint
+    over the indicator DATA alone would have been identical, and the cache would have
+    answered the new prompt with verdicts taken under the old one. The fingerprint hashes
+    the RENDERED template, so a reordering like that one changes the key."""
+    rendered_now = Verifier._clause_prompt(_clause(), INDS)
+    # the pre-2026-07-14 layout: clause first, catalogue after
+    lines = [f"CLAUSE ({_clause().structural_path}):", _clause().span.text, "", "INDICATORS:"]
+    for i in INDS:
+        lines.append(f"- {i.submission_id} ({i.name}): {i.description}"
+                     f"\n  Definition (scope + boundaries): {i.long_definition}")
+    rendered_before = "\n".join(lines)
+
+    assert rendered_now != rendered_before
+    assert prompt_fingerprint(_PER_CLAUSE_SYSTEM, rendered_now) != \
+        prompt_fingerprint(_PER_CLAUSE_SYSTEM, rendered_before)
 
 
 def test_failures_are_never_cached(tmp_path, monkeypatch):

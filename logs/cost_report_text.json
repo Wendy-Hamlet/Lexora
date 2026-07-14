@@ -2,7 +2,7 @@
   "document": "cc1ef72d1150598df4ca61c9c370e22c9eb342368e076679b4e3c44233063a14.pdf",
   "economy": "Malaysia",
   "pillar": 6,
-  "measured_on": "2026-07-13",
+  "measured_on": "2026-07-14",
   "pages": 95,
   "characters": 148091,
   "ocr": {
@@ -23,18 +23,27 @@
   },
   "llm": {
     "model": "GLM-5.2",
-    "calls": 25,
-    "input_tokens": 59602,
-    "output_tokens": 4520,
+    "calls": 110,
+    "input_tokens": 345607,
+    "output_tokens": 11961,
+    "cached_input_tokens": 166666,
+    "cache_hit_rate": 0.482,
+    "failed_calls": 0,
     "price_in_per_1m_usd": 1.18,
+    "price_cached_in_per_1m_usd": 0.295,
     "price_out_per_1m_usd": 4.13,
     "rate_note": "reference commercial rate; our own endpoint is not billed per token",
-    "cost_usd": 0.089
+    "cost_usd": 0.3097
   },
-  "total_cost_usd": 0.089,
+  "judge_cache": {
+    "clauses_judged_by_llm": 91,
+    "clauses_served_from_cache": 0,
+    "enabled": false
+  },
+  "total_cost_usd": 0.3097,
   "total_cost_usd_open_weight_swap": 0.0,
   "open_weight_note": "Llama-class + Tesseract, all self-hosted -> $0 API (compute only)",
-  "citations": 11,
-  "processing_time_seconds": 139.7,
+  "citations": 18,
+  "processing_time_seconds": 85.5,
   "llm_used": true
 }

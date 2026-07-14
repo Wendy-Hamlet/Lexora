@@ -111,7 +111,8 @@ def main() -> None:
     print(f"  LLM lanes: {'ON' if use_llm else 'OFF (--no-llm)'}   OCR: ON")
     print("  crawling official portal -> extracting -> parsing -> mapping ...\n")
 
-    result = run_one(
+    # run_one returns (MapResult, token accounting) -- unpack both, and report the spend.
+    result, tokens = run_one(
         iso,
         budget=args.budget,
         verify=False,
@@ -127,7 +128,15 @@ def main() -> None:
     args.output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     out_csv = args.output_dir / f"{economy}_P{ptag}_{stamp}.csv"
-    write_outputs(result, out_csv)
+    write_outputs(result, out_csv)   # prints the row count and both file paths
+
+    if tokens.get("calls"):
+        cached = tokens.get("cached_prompt", 0)
+        share = f", {cached / tokens['prompt']:.0%} of prompt served from cache" if cached else ""
+        print(f"  LLM: {tokens['calls']} call(s), {tokens['total']:,} tokens{share}")
+    if tokens.get("failed"):
+        print(f"  WARNING: {tokens['failed']} LLM call(s) failed. Those clauses were dropped, "
+              "never guessed — the output is short, not wrong.")
 
 
 if __name__ == "__main__":

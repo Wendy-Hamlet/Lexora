@@ -180,14 +180,16 @@ def run_one(
 
     # Verdict cache: a run that answered most clauses from cache is NOT a run that judged
     # them cheaply, and a reader must be able to tell the two apart. Report the split.
-    jc = getattr(verifier, "_cache", None) if verifier is not None else None
-    if jc is not None and (jc.hits or jc.misses):
+    judged = getattr(verifier, "judged", 0) if verifier is not None else 0
+    from_cache = getattr(verifier, "from_cache", 0) if verifier is not None else 0
+    if judged or from_cache:
+        total = judged + from_cache
         print(
-            f"  judge cache [{iso}]: {jc.hits} hit / {jc.misses} miss "
-            f"({jc.hit_rate:.0%} served from cache, {jc.writes} new verdict(s) stored)"
+            f"  judge cache [{iso}]: {from_cache}/{total} clause(s) served from cache "
+            f"({from_cache / total:.0%}), {judged} judged by the LLM"
         )
-        tokens["cache_hits"] = jc.hits
-        tokens["cache_misses"] = jc.misses
+        tokens["clauses_judged"] = judged
+        tokens["clauses_from_cache"] = from_cache
     return result, tokens
 
 

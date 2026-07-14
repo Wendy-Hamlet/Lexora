@@ -205,8 +205,14 @@ def run_demo_pipeline(
     rationale_gen: RationaleGenerator | None = None,
     meta_extractor: MetadataExtractor | None = None,
     enforced_only: bool = True,
+    llm_workers: int = 1,
 ) -> DemoArtifacts:
-    """Run extract→structure→retrieve→cite for one local PDF."""
+    """Run extract→structure→retrieve→cite for one local PDF.
+
+    ``llm_workers`` matters here for the same reason it does in the multi-instrument
+    path: under the per-clause 0/1 judge the LLM is called once per pooled clause, so a
+    serial run of a large Act waits on hundreds of round trips. It changes wall-clock
+    only -- token counts, and therefore cost, are identical at any concurrency."""
     dest_dir = dest_dir or (Path("data") / "raw" / profile.iso_code.lower())
     document = ingest_local_file(
         pdf_path,
@@ -225,6 +231,7 @@ def run_demo_pipeline(
         clauses, document, profile, indicators, legal_form, top_k, min_score,
         verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
         document_text=document_text, enforced_only=enforced_only,
+        llm_workers=llm_workers,
     )
     return DemoArtifacts(
         document=document, clauses=clauses, citations=citations, pages=pages,

@@ -155,10 +155,11 @@ The client is abstracted in `src/lexora/classify/llm_client.py`.
 
 | Engine | Config | Notes |
 | :---- | :---- | :---- |
-| RapidOCR (ONNX) | `LEXORA_OCR_ENGINE=rapidocr` (default) | Bundled, CPU-fast, stable on Windows + py3.13 |
+| RapidOCR (ONNX) | `LEXORA_OCR_ENGINE=rapidocr` (default) | Bundled weights, no API key. CPU by default; **`pip install -r requirements-gpu.txt` moves it to an NVIDIA GPU (~5x)** |
 | PaddleOCR | `LEXORA_OCR_ENGINE=paddleocr` | GPU-server path (`paddlepaddle-gpu`) |
 
-OCR is enabled with `LEXORA_OCR=1` and language-configured with `LEXORA_OCR_LANG`.
+OCR is enabled with `LEXORA_OCR=1` (on by default in `main.py` and `run_submission.py`) and
+language-configured with `LEXORA_OCR_LANG`. `LEXORA_OCR_GPU=0` pins it to the CPU.
 
 ---
 
@@ -219,54 +220,136 @@ in where the time goes (not in what they cost):
 | :---- | :---- | :---- |
 | Document | Malaysia **PDPA 2010** (Act 709) | Malaysia **Computer Crimes Act 1997** (Act 563) |
 | Size | 95 pages · 148,091 chars | 12 pages · 572 embedded images · **0-char text layer** |
-| OCR | not needed (text layer present) | **required** — RapidOCR, CER 0.87 |
-| Citations produced | 11 | 4 |
-| LLM calls | 25 | 15 |
-| Tokens (in / out) | 59,602 / 4,520 | 21,434 / 1,972 |
-| **Wall-clock** | **139.7 s** | **101.7 s** |
-| **Cost (current stack)** | **$0.089** | **$0.033** |
+| OCR | not needed (text layer present) | **required** — RapidOCR on GPU (`rapidocr:1.4.4+cuda`) |
+| Clauses judged | 91 | 12 |
+| Citations produced | 11–18 (see *Determinism*) | 1 |
+| LLM calls | 103–110 | 14 |
+| Input tokens (**of which cached**) | ~345,000 (**48–51%**) | ~43,600 (**21–49%**) |
+| Output tokens | ~11,000 | ~1,300 |
+| **Wall-clock** | **77–86 s** | **40–46 s** |
+| **Cost, first run** | **$0.29 – $0.31** | **$0.038 – $0.049** |
+| **Cost, re-run** (verdict cache) | **$0.031** | ~**$0.000** |
 | **Cost (open-weight swap)** | **$0.000** | **$0.000** |
+
+Ranges, not point estimates, and both spreads are real. The **cache hit rate** is best-effort
+on the provider's side and varies run to run, which moves the cost. The **citation count**
+varies because the model does — see below.
 
 | Component | Engine used | Metered? | Cost |
 | :---- | :---- | :---- | :---- |
 | Crawling | self-hosted (httpx / Playwright) | no | $0.0000 |
-| OCR | RapidOCR — PP-OCR on ONNX Runtime, **GPU** (`rapidocr:1.2.3+cuda`) | no | $0.0000 |
+| OCR | RapidOCR — PP-OCR on ONNX Runtime, GPU (`rapidocr:1.4.4+cuda`) | no | $0.0000 |
 | Embedding | BAAI/bge-m3, local (dense channel off by default) | no | $0.0000 |
 | Parsing / retrieval | BM25, local | no | $0.0000 |
-| **LLM mapping** | **GLM-5.2** (relevance judge + rationale + metadata) | **yes** | **$0.033 – $0.089** |
+| **LLM mapping** | **GLM-5.2** (relevance judge + rationale + metadata) | **yes** | **$0.038 – $0.292** |
 
-**Measured on:** 2026-07-13 · **LLM:** GLM-5.2 via an OpenAI-compatible gateway, priced at
-its list rate **¥8 / ¥28 per 1M input/output tokens** = **$1.180 / $4.130** at 6.78 CNY/USD
-(2026-07-13). Cost is simply `tokens x rate` — only the *rate* is a parameter, so a judge can
-re-price our token counts against any model.
+**Measured on:** 2026-07-14, `--llm-workers 16`, verdict cache bypassed (`LEXORA_JUDGE_CACHE=0`)
+so these are true cold costs. **LLM:** GLM-5.2 via an OpenAI-compatible gateway.
+
+### Three rates, not two
+
+The provider bills **three** ways, and a two-rate model gets this wrong:
+
+| | ¥ / 1M | $ / 1M @ 6.78 |
+| :---- | ----: | ----: |
+| Input (fresh) | ¥8 | $1.180 |
+| **Input served from the prompt cache** | **¥2** | **$0.295** |
+| Output | ¥28 | $4.130 |
+
+The relevance judge asks about **one clause against all nine indicators**, so every call
+carries the same 3,051-token indicator catalogue — **95% of the prompt is identical on every
+call**. The prompt puts that catalogue **first** and the clause **last**, so it lands in the
+provider's cacheable prefix: ~50% of all input tokens bill at the ¥2 rate. Ordering it the
+other way round (clause first) breaks the prefix and costs ~40% more for byte-identical work.
+
+`tools/cost_logger.py` reports `cached_input_tokens` and prices all three rates. Only the
+*rates* are parameters (`--price-in`, `--price-cached`, `--price-out`), so a judge can
+re-price our measured token counts against any model.
+
+### Determinism: your numbers will not exactly match ours, and here is why
+
+**Read this before comparing your output to our submitted CSV.**
+
+The relevance decision is an LLM judgement, and **the LLM is not deterministic even at
+`temperature=0`**. We ran the same 95-page Act through the same code three times, cold, and
+got **11, 14 and 18 citations**. Nothing in the pipeline changed between runs — same prompt,
+same retrieval pool, same clauses. Frontier MoE backends simply do not guarantee a
+reproducible sample, and GLM-5.2 is one.
+
+We are telling you this rather than quietly hoping you run it once:
+
+* **Our submitted CSV is one sample**, not a fixed point. A re-run will produce a similar,
+  not identical, set of provisions.
+* **What IS stable** is everything the LLM does not decide: which laws are discovered, which
+  are fetched, how they are parsed into clauses, which clauses are retrieved into the pool,
+  and the verbatim text of every snippet (sliced from the source by character offset — the
+  model never writes text that ships). Re-run those and they reproduce exactly.
+* **Where the variance lands** is the marginal, weakly-supported provisions — the clauses a
+  human annotator would also argue about. The flagship mappings (MY PDPA s.129 → P6-I4,
+  AU APP 8 → P6-I4) come back every time.
+
+**The verdict cache below removes this variance for anyone re-running our work.**
+
+### The verdict cache
+
+A per-clause verdict is a pure function of `(model, the rendered prompt, clause text)`.
+Nothing else reaches the judge. So verdicts are cached in `data/cache/judge.sqlite`, keyed by
+a hash of exactly that — **edit an indicator's long definition, reword the instructions,
+reorder the prompt, swap the model, or re-parse a clause one character differently, and the
+model is asked again.** Backend failures are never cached (caching a failure would turn one
+outage into a permanently missing citation).
+
+It was built to cut cost — a re-run of the text benchmark drops from **$0.31 to $0.031** and
+from 86 s to 19 s. But its more important effect is the one above: **it pins the first
+verdict, so a re-run reproduces the previous output exactly instead of resampling.** It is
+the difference between a pipeline you can re-run and one you can only run.
+
+- `LEXORA_JUDGE_CACHE=0` bypasses it entirely — that is how the cold costs above were measured,
+  and how you reproduce them.
+- Every run prints its split (`N served from cache / M judged by the LLM`) and the cost report
+  carries `judge_cache`, so a warm run can never be passed off as a cold one.
+- The cache ships **empty** (gitignored). Your first run pays the cold cost and judges every
+  clause itself; your second run is free and identical to your first.
 
 **Open-weight swap = $0.000 per document.** OCR, embedding, parsing, retrieval and crawling
 are already self-hosted; pointing `LEXORA_LLM_BASE_URL` at a local Ollama/vLLM server (see
 *Swapping the LLM*) removes the only metered call. Compute only, no API spend.
 
 **On GPU.** OCR dominates wall-clock on scanned corpora, so it runs on the GPU when a CUDA
-runtime is present — measured **5.6x** faster than CPU on the scanned benchmark (3.2 → 0.6
-s/page), with identical recognised text. `LEXORA_OCR_GPU=0` forces CPU. The `ocr_engine`
-field in the JSON sidecar reports the provider that actually ran (`+cuda` or not), so a CPU
-fallback is never silent.
+runtime is present — measured **5.6x** faster than CPU, with identical recognised text.
+The CPU wheel is the default (see `requirements-gpu.txt` to switch). The engine reads back
+the providers its sessions **actually** got and only calls itself `+cuda` when detection,
+classification and recognition are all on CUDA; the `ocr_engine` field in the JSON sidecar
+carries that name, so a silent CPU fallback is impossible. `LEXORA_OCR_GPU=0` forces CPU.
 
 ### Cost log excerpt (`logs/cost_report_scanned.json`)
 
 ```json
 {
   "document": "MY_ComputerCrimesAct1997_Act563.pdf",
-  "measured_on": "2026-07-13",
+  "measured_on": "2026-07-14",
   "pages": 12,
-  "ocr":       { "engine": "rapidocr:1.2.3+cuda", "pages": 12, "scanned": true, "cost_usd": 0.0 },
+  "ocr":       { "engine": "rapidocr:1.4.4+cuda", "pages": 12, "scanned": true, "cost_usd": 0.0 },
   "embedding": { "model": "BAAI/bge-m3", "tokens": 0, "cost_usd": 0.0 },
-  "llm":       { "model": "GLM-5.2", "calls": 15, "input_tokens": 21434,
-                 "output_tokens": 1972, "cost_usd": 0.0334 },
-  "total_cost_usd": 0.0334,
+  "llm":       { "model": "GLM-5.2", "calls": 14, "failed_calls": 0,
+                 "input_tokens": 43560, "cached_input_tokens": 8966, "cache_hit_rate": 0.206,
+                 "output_tokens": 1281,
+                 "price_in_per_1m_usd": 1.18, "price_cached_in_per_1m_usd": 0.295,
+                 "price_out_per_1m_usd": 4.13,
+                 "cost_usd": 0.0488 },
+  "judge_cache": { "clauses_judged_by_llm": 12, "clauses_served_from_cache": 0, "enabled": false },
+  "total_cost_usd": 0.0488,
   "total_cost_usd_open_weight_swap": 0.0,
-  "citations": 4,
-  "processing_time_seconds": 101.7
+  "citations": 1,
+  "processing_time_seconds": 40.3
 }
 ```
+
+`clauses_served_from_cache: 0` is what makes this a cold measurement — every one of the 12
+clauses was judged by the model. A re-run reports the split the other way and costs ~$0.00.
+`failed_calls` is reported separately because a rejected call bills nothing and returns
+nothing: a run whose every request was refused would otherwise print a tidy `$0.0000` table
+and look like a bargain.
 
 ---
 
@@ -306,6 +389,13 @@ Add a new economy by writing one YAML under `configs/jurisdictions/` — see
 
 Honest by design — these guide where to be cautious.
 
+- **The relevance judgement is not reproducible run-to-run.** The same Act, judged three
+  times by the same code at `temperature=0`, yielded 11 / 14 / 18 citations. This is the
+  backend, not the pipeline (see *Determinism* above). The variance sits in marginal
+  provisions; flagship mappings are stable. The verdict cache pins a run's verdicts so
+  re-runs are exact, and a sampling-and-vote judge (union over N samples, as
+  `classify/brute_judge.py` already does for discovery) would narrow it at ~N× the cost —
+  **not yet done for the per-clause judge.**
 - **Recall is bounded by what the judge sees, not by the parser.** Retrieval pools the top
   `LEXORA_MAP_POOL_K` (default 40) clauses per indicator and the LLM judge decides
   membership over that pool. A relevant provision ranked below the pool is never judged.

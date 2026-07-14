@@ -10,10 +10,12 @@ calls; a re-run to validate a retrieval tweak, or a rehearsal for the live pitch
 every one of them. This cache makes the second run of an unchanged question free.
 
 WHAT IT IS NOT: it is not a way to ship a stale verdict. The key is a hash over the model
-id, the full indicator catalogue (every long definition, verbatim), and the clause text. If
-a definition is edited, a boundary rule reworded, the model swapped, or the parser emits a
-clause with one character different, the key changes and the model is asked again. There is
-no path by which a cached answer outlives the question that produced it.
+id, the clause text, and the RENDERED PROMPT the judge would send (system instructions plus
+the full indicator catalogue, every long definition verbatim, laid out by the real
+template). Edit a definition, reword a boundary rule, reorder the prompt, change the
+instructions, swap the model, or re-parse a clause one character differently -- any of them
+changes the key and the model is asked again. There is no path by which a cached answer
+outlives the question that produced it.
 
 Failures are never cached. A backend error yields ``None`` (the caller drops the clause);
 storing that would turn one outage into a permanently missing citation.
@@ -34,7 +36,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:  # pragma: no cover
     from lexora.models.clause import Clause
-    from lexora.models.indicator import RDTIIIndicator
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS verdicts (
@@ -59,23 +60,25 @@ def default_path() -> Path:
     return Path(__file__).resolve().parents[3] / "data" / "cache" / "judge.sqlite"
 
 
-def catalogue_fingerprint(indicators: list[RDTIIIndicator]) -> str:
-    """Hash the exact indicator text the judge is shown.
+def prompt_fingerprint(system: str, rendered_prompt: str) -> str:
+    """Hash the whole question the model is asked, minus the clause under test.
 
-    Everything the prompt puts in front of the model, in prompt order. Editing a long
-    definition -- the boundary rules that decide 6.4-vs-6.1 -- must invalidate every verdict
-    taken under the old wording, so the definitions go in verbatim rather than by id.
+    ``rendered_prompt`` is the real user prompt, produced by the real template with a
+    SENTINEL clause substituted for the live one. Hashing the rendered text -- rather than
+    the indicator data it was built from -- means the template itself is covered: field
+    order, section headers, instruction wording, everything.
+
+    That distinction is not academic. On 2026-07-14 the clause was moved from the top of
+    the user prompt to the bottom, to expose a cacheable prefix. The indicators did not
+    change and the clause did not change, so a fingerprint over the catalogue DATA would
+    have been byte-identical -- and the cache would have answered the new question with
+    verdicts taken under the old one. A cached verdict must die with any change to the
+    question, and how you ask is part of what you ask.
     """
     h = hashlib.sha256()
-    for i in indicators:
-        h.update(i.submission_id.encode())
-        h.update(b"\0")
-        h.update((i.name or "").encode())
-        h.update(b"\0")
-        h.update((i.description or "").encode())
-        h.update(b"\0")
-        h.update((getattr(i, "long_definition", "") or "").encode())
-        h.update(b"\x01")
+    h.update(system.encode())
+    h.update(b"\x02")
+    h.update(rendered_prompt.encode())
     return h.hexdigest()
 
 

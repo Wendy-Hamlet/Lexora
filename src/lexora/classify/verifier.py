@@ -22,7 +22,7 @@ test suite and a bare install never need a server.
 from __future__ import annotations
 
 from lexora.models.citation import ClaimLabel, EvidenceClaim
-from lexora.models.clause import Clause
+from lexora.models.clause import CanonicalSpan, Clause
 from lexora.models.indicator import RDTIIIndicator
 
 _CLAUSE_TEXT_CAP = 1200  # keep the prompt bounded; statutes have huge clauses
@@ -121,6 +121,20 @@ _PER_CLAUSE_SCHEMA = {
     "required": ["indicators"],
 }
 
+# Stand-in clause used ONLY to render the prompt template for fingerprinting the verdict
+# cache (see Verifier._prompt_fingerprint). Never sent to a model. Its content is
+# irrelevant, but it must never change: it is part of the cache key, so editing it would
+# invalidate every stored verdict for no reason.
+_SENTINEL_CLAUSE = Clause(
+    clause_id="__fingerprint__",
+    document_id="__fingerprint__",
+    structural_path="__fingerprint__",
+    span=CanonicalSpan(
+        span_id="__fingerprint__", document_id="__fingerprint__",
+        char_start=0, char_end=0, text="",
+    ),
+)
+
 
 class Verifier:
     """Wraps an LLM client to judge (indicator, candidate clauses).
@@ -148,6 +162,12 @@ class Verifier:
         # Verdict cache (per_clause only; see judge_cache). None = disabled.
         self._cache = cache
         self._fingerprint: str | None = None
+        # Clauses this verifier actually put to the model, vs served from cache. Counted
+        # here rather than on the cache so the numbers survive the cache being switched
+        # off -- a cost report that says "0 clauses judged" because the cache is absent
+        # is not reporting a cold run, it is failing to report at all.
+        self.judged = 0
+        self.from_cache = 0
 
     def judge_clause(
         self,
@@ -173,13 +193,12 @@ class Verifier:
 
         key = None
         if self._cache is not None:
-            from lexora.classify.judge_cache import catalogue_fingerprint
-
             if self._fingerprint is None:
-                self._fingerprint = catalogue_fingerprint(indicators)
+                self._fingerprint = self._prompt_fingerprint(indicators)
             key = self._cache.key(self._model_id(), self._fingerprint, clause)
             cached = self._cache.get(key)
             if cached is not None:
+                self.from_cache += 1
                 # Intersect with the live ids: the fingerprint pins the catalogue, but a
                 # caller may legitimately pass a subset of it.
                 return cached & valid
@@ -197,12 +216,25 @@ class Verifier:
         if not isinstance(got, list):
             return None
         verdict = {str(x) for x in got if str(x) in valid}
+        self.judged += 1
         if self._cache is not None and key is not None:
             self._cache.put(key, self._model_id(), verdict)
         return verdict
 
     def _model_id(self) -> str:
         return str(getattr(self._client, "model", "") or "")
+
+    def _prompt_fingerprint(self, indicators: list[RDTIIIndicator]) -> str:
+        """Fingerprint the question, template and all.
+
+        Render the REAL prompt with a sentinel clause, so the hash covers not only the
+        indicator definitions but the template that presents them -- field order, headers,
+        wording. Changing how we ask can change the answer, so it must change the key.
+        """
+        from lexora.classify.judge_cache import prompt_fingerprint
+
+        probe = self._clause_prompt(_SENTINEL_CLAUSE, indicators)
+        return prompt_fingerprint(_PER_CLAUSE_SYSTEM, probe)
 
     def judge_each(
         self,

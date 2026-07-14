@@ -177,7 +177,8 @@ def main(argv=None) -> int:
     total = ocr_cost + embed_cost + crawl_cost + llm_cost
     cache_hit = cached_in / in_tokens if in_tokens else 0.0
     jc = getattr(verifier, "_cache", None) if verifier is not None else None
-    judged, from_cache = (jc.misses, jc.hits) if jc is not None else (0, 0)
+    judged = getattr(verifier, "judged", 0) if verifier is not None else 0
+    from_cache = getattr(verifier, "from_cache", 0) if verifier is not None else 0
 
     report = {
         "document": args.pdf.name,
