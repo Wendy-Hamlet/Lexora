@@ -10,6 +10,7 @@ import csv
 from collections.abc import Iterable
 from pathlib import Path
 
+from lexora.export.law_name import normalize_law_name
 from lexora.models.citation import Citation
 
 # (header label, Citation attribute) — order is the submission order.
@@ -34,6 +35,8 @@ def _value(citation: Citation, attr: str) -> str:
     v = getattr(citation, attr)
     if v is None:
         return ""
+    if attr == "title":
+        return normalize_law_name(v)
     # enums -> their value; everything else -> str
     return getattr(v, "value", str(v))
 

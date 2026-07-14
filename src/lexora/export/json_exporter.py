@@ -23,6 +23,8 @@ import json
 from collections.abc import Iterable
 from pathlib import Path
 
+from lexora.export.law_name import normalize_law_name
+
 SCHEMA_VERSION = "lexora-submission-json/v1"
 
 _OCR_NOTE = (
@@ -89,7 +91,7 @@ def to_submission_json(
             provisions.append({
                 # --- the 13 CSV-equivalent fields ---
                 "economy": c.economy,
-                "law_name": c.title or "",
+                "law_name": normalize_law_name(c.title),
                 "law_number_ref": c.law_number or "",
                 "last_amended": c.last_amended or "",
                 "indicator_id": c.indicator_id,
