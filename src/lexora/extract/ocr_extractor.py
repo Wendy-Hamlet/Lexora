@@ -31,7 +31,11 @@ from typing import Protocol
 
 import numpy as np
 
-from lexora.extract.pdf_text_extractor import PAGE_SEPARATOR, PdfPage
+from lexora.extract.pdf_text_extractor import (
+    PAGE_SEPARATOR,
+    PdfPage,
+    _strip_running_lines,
+)
 
 # Page-level mean confidence at/above which an OCR page may back a citation.
 CITABLE_THRESHOLD = 0.80
@@ -393,7 +397,15 @@ def ocr_fill_pages(
     Returns a NEW ``PdfPage`` list whose global char offsets are recomputed so
     the document text stays consistent (verbatim spans slice it by offset), plus
     a ``{page_number: confidence}`` map for the OCR'd pages so the caller can
-    mark sub-threshold pages UNVERIFIED_SCAN. Text-layer pages are untouched."""
+    mark sub-threshold pages UNVERIFIED_SCAN. Text-layer pages are untouched.
+
+    The running-head cleaner is re-run over the FILLED pages. It ran once already,
+    in `_pages_from_doc`, but a scanned page is blank there — so on an image-only
+    PDF the cross-page repetition test saw nothing at all, and every page header
+    ("Act 762", "Part 4" + a page number) survived into the text and then into the
+    verbatim quotes. Once OCR has filled the pages, the repetition is finally
+    visible, so this is the first point at which a scan CAN be cleaned. Offsets are
+    recomputed below from the cleaned text, so spans stay consistent."""
     blank = {p.page_number for p in pages if not p.has_text_layer}
     if not blank:
         return pages, {}
@@ -414,9 +426,11 @@ def ocr_fill_pages(
         else:
             specs.append((p.page_number, p.text, p.has_text_layer))
 
+    cleaned = _strip_running_lines([text for _, text, _ in specs])
+
     filled: list[PdfPage] = []
     cursor = 0
-    for pn, text, has_text in specs:
+    for (pn, _, has_text), text in zip(specs, cleaned, strict=True):
         filled.append(PdfPage(pn, text, cursor, cursor + len(text), has_text))
         cursor += len(text) + len(PAGE_SEPARATOR)
     return filled, page_conf

@@ -18,6 +18,7 @@ PAGE_SEPARATOR = "\n\n"
 
 _DIGITS = re.compile(r"\d+")
 _BARE_NUM = re.compile(r"\s*\d{1,4}\s*")  # a standalone page-number line
+_BAND = 2  # lines at the top / bottom of a page that a running head can occupy
 
 
 @dataclass
@@ -40,10 +41,32 @@ def _strip_running_lines(page_texts: list[str]) -> list[str]:
     line that differs only by page number still matches) and removed BEFORE char
     offsets are assigned, so the canonical text and every span stay consistent.
 
-    Conservative: needs ≥4 pages; only a distinctive line (≥10 non-space chars after
-    digit-stripping) repeating on ≥40% of pages is treated as a running line, plus a
-    short page-number / "Ed." companion line directly adjacent to one. Operative
-    clause text does not repeat verbatim on 40% of pages, so it is never removed."""
+    Needs ≥4 pages. Furniture is convicted on two independent signatures, because
+    neither alone covers the real documents:
+
+    1. DISTINCTIVE + REPEATED — a long line (≥10 non-space chars after digit-
+       stripping) on ≥40% of pages, anywhere on the page. Operative clause text does
+       not repeat verbatim on 40% of pages, so prose is never caught here.
+
+    2. POSITIONAL + REPEATED — a line in the page's top or bottom band on ≥40% of
+       pages, AT ANY LENGTH. Length alone cannot convict a short line (body text is
+       full of short lines), but *position* can: a header sits at the top of every
+       page; "(a)" does not. This is the only rule that reaches a header made solely
+       of short lines — Malaysia's statutes head each page with a bare "Act 762",
+       which rule 1 normalises to "act" (3 chars) and lets through.
+
+    Then the REST OF THE BLOCK: a short line adjacent to one already dropped, which
+    also repeats across pages. Headers wrap — Singapore's SSO stamps "Personal Data
+    Protection" / "Act 2012" as two lines, and dropping only the long half left
+    "Act 2012" behind, a fragment that reads exactly like a law number and which the
+    metadata extractor duly copied ("Act 2012" for "Act 26 of 2012"). Adjacency is
+    what keeps this safe: a short line only qualifies if it touches a line already
+    proven to be furniture. It subsumes the page-number and "2020 Ed." companions.
+
+    All of it runs BEFORE char offsets are assigned, so the canonical text and every
+    span stay consistent. On a scanned PDF the pages are blank here and nothing can
+    be detected; `ocr_extractor.ocr_fill_pages` re-runs this once OCR has filled them.
+    """
     n = len(page_texts)
     if n < 4:
         return page_texts
@@ -51,30 +74,50 @@ def _strip_running_lines(page_texts: list[str]) -> list[str]:
     def norm(line: str) -> str:
         return _DIGITS.sub("", line).strip().lower()
 
-    page_counts: Counter[str] = Counter()
-    for t in page_texts:
-        seen = {norm(ln) for ln in t.split("\n") if len(norm(ln)) >= 10}
-        page_counts.update(seen)
     threshold = max(3, int(0.4 * n))
-    running = {key for key, c in page_counts.items() if c >= threshold}
-    if not running:
+
+    def band_indices(lines: list[str]) -> set[int]:
+        """Indices of the top/bottom band. Empty when the page is too short for the
+        band to mean anything — on a 4-line page it would span the whole page, and
+        position would convict body text."""
+        filled = [i for i, ln in enumerate(lines) if norm(ln)]
+        if len(filled) <= 2 * _BAND:
+            return set()
+        return set(filled[:_BAND]) | set(filled[-_BAND:])
+
+    anywhere: Counter[str] = Counter()
+    in_band: Counter[str] = Counter()
+    for t in page_texts:
+        lines = t.split("\n")
+        anywhere.update({norm(ln) for ln in lines if norm(ln)})
+        in_band.update({norm(lines[i]) for i in band_indices(lines)})
+
+    running = {k for k, c in anywhere.items() if c >= threshold and len(k) >= 10}
+    positional = {k for k, c in in_band.items() if c >= threshold}
+    repeating = {k for k, c in anywhere.items() if c >= threshold}
+    if not running and not positional:
         return page_texts
 
     cleaned: list[str] = []
     for t in page_texts:
         lines = t.split("\n")
-        drop = [len(norm(ln)) >= 10 and norm(ln) in running for ln in lines]
-        # Also drop a short page-number / "Ed." line touching a dropped running line
-        # (the footer block is a number + "Ed." + the long phrase, in any order).
+        band = band_indices(lines)
+        drop = [
+            (len(norm(ln)) >= 10 and norm(ln) in running)
+            or (i in band and norm(ln) in positional)
+            for i, ln in enumerate(lines)
+        ]
         for i, ln in enumerate(lines):
             if drop[i]:
                 continue
             stripped = ln.strip()
-            short = len(stripped) <= 12 and (
-                _BARE_NUM.fullmatch(ln) or norm(ln) in running
+            companion = len(stripped) <= 12 and (
+                _BARE_NUM.fullmatch(ln) or norm(ln) in repeating
                 or re.fullmatch(r"\d{0,4}\s*ed\.?", stripped, re.I)
             )
-            if short and ((i > 0 and drop[i - 1]) or (i + 1 < len(lines) and drop[i + 1])):
+            if companion and (
+                (i > 0 and drop[i - 1]) or (i + 1 < len(lines) and drop[i + 1])
+            ):
                 drop[i] = True
         cleaned.append("\n".join(ln for ln, d in zip(lines, drop, strict=True) if not d))
     return cleaned

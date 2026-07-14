@@ -168,3 +168,73 @@ def test_resolve_doc_metadata_sentinel_yields_blank_no_anchor():
     extractor = MetadataExtractor(_FakeClient({"law_number": "<<NONE>>", "last_amended": "<<NONE>>"}))
     last_amended, law_number, _note = _resolve_doc_metadata(doc, text, profile, extractor)
     assert last_amended == "" and law_number == ""
+
+
+# --- the principal Act vs one of its amendments --------------------------------
+#
+# Singapore's SSO prints an ORDERED legislative history whose first entry is the
+# principal Act. The masthead does NOT carry the number: it wraps the title over
+# two lines ("Personal Data Protection" / "Act 2012"), and the page-furniture
+# cleaner used to drop only the long half — leaving "Act 2012", a fragment that
+# reads exactly like a law number and which the model duly copied.
+
+_SSO_PDPA = (
+    "THE STATUTES OF THE REPUBLIC OF SINGAPORE\n"
+    "PERSONAL DATA PROTECTION\nACT 2012\n2020 REVISED EDITION\n"
+    "... [body] ...\n"
+    "LEGISLATIVE HISTORY\n"
+    "This Legislative History is a service provided by the Law Revision Commission\n"
+    "on a best-efforts basis. It is not part of the Act.\n"
+    "1. Act 26 of 2012 - Personal Data Protection Act 2012\n"
+    "Bill : 24/2012\n"
+    "2. Act 40 of 2020 - Personal Data Protection (Amendment) Act 2020\n"
+)
+
+# This one was RENAMED, so its history opens with the OLD title.
+_SSO_CDCSA = (
+    "THE STATUTES OF THE REPUBLIC OF SINGAPORE\n"
+    "CHILD DEVELOPMENT CO-SAVINGS\nACT 2001\n2020 REVISED EDITION\n"
+    "... [body] ...\n"
+    "LEGISLATIVE HISTORY\n"
+    "(Formerly known as the Children Development Co-Savings Act (2002 Ed.))\n"
+    "This Legislative History is a service provided by the Law Revision Commission\n"
+    "on a best-efforts basis. It is not part of the Act.\n"
+    "1. Act 13 of 2001 - Children Development Co-Savings Act 2001\n"
+    "2. Act 46 of 2024 - Child Development Co-Savings (Amendment) Act 2024\n"
+)
+
+
+def test_masthead_fragment_is_overruled_by_the_history_block():
+    gen = MetadataExtractor(_FakeClient({"law_number": "Act 2012", "last_amended": "2020"}))
+    _, law_number, _ = gen.extract(_SSO_PDPA, "SG", "Personal Data Protection Act 2012")
+    assert law_number == "Act 26 of 2012"
+    assert gen.overridden == 1
+
+
+def test_an_amendments_number_is_not_taken_for_the_acts():
+    """The renamed Act: the model matched our title against entry 2 and reported a
+    2024 number for a 2001 Act. The year check catches it; the history block then
+    supplies the right one."""
+    gen = MetadataExtractor(_FakeClient({"law_number": "Act 46 of 2024", "last_amended": "2024"}))
+    last, law_number, _ = gen.extract(_SSO_CDCSA, "SG", "Child Development Co-Savings Act 2001")
+    assert law_number == "Act 13 of 2001"
+    assert last == "2024"          # last_amended IS the amendment year - untouched
+    assert gen.rejected == 1
+
+
+def test_year_check_is_silent_when_a_number_carries_no_year():
+    # Malaysia's "Act 709" encodes no year - it must not be rejected.
+    gen = MetadataExtractor(_FakeClient({"law_number": "Act 709", "last_amended": "2024"}))
+    _, law_number, _ = gen.extract(_TEXT, "MY", "Personal Data Protection Act 2010")
+    assert law_number == "Act 709"
+    assert gen.rejected == 0
+
+
+def test_no_history_block_leaves_the_model_answer_standing():
+    # Australia / Malaysia have no SSO-style ordered history -> nothing to override.
+    au = ("Privacy Act 1988\nNo. 119 of 1988\nCompilation No. 30\n"
+          "... [body] ...\nEndnotes\nAmendment history\n")
+    gen = MetadataExtractor(_FakeClient({"law_number": "No. 119 of 1988", "last_amended": "1988"}))
+    _, law_number, _ = gen.extract(au, "AU", "Privacy Act 1988")
+    assert law_number == "No. 119 of 1988"
+    assert gen.overridden == 0

@@ -25,6 +25,41 @@ def test_running_footer_repeated_across_pages_is_removed():
     assert all(b in p for b, p in zip(bodies, out, strict=True))
 
 
+def test_wrapped_running_head_is_removed_whole():
+    """Singapore's SSO wraps the running head over two lines:
+
+        Personal Data Protection
+        Act 2012
+
+    Only the first is distinctive enough (24 chars) to convict on repetition; the
+    second normalises to "act". Dropping the long half alone leaves a fragment that
+    reads exactly like a law number — and the metadata extractor, told to use only
+    what is printed, copied it: "Act 2012" instead of "Act 26 of 2012"."""
+    bodies = ["consent must be obtained.", "data must be protected.", "access may be refused.",
+              "breach must be notified.", "records must be accurate.", "transfers are restricted."]
+    pages = [f"Personal Data Protection\nAct 2012\n{b}\n{i}" for i, b in enumerate(bodies, 1)]
+    out = _strip_running_lines(pages)
+    assert all("Personal Data Protection" not in p for p in out)
+    assert all("Act 2012" not in p for p in out)  # the fragment, too
+    assert all(b in p for b, p in zip(bodies, out, strict=True))
+
+
+def test_a_repeating_short_line_far_from_the_head_survives():
+    """The companion rule is anchored by ADJACENCY: a short line only goes if it
+    touches a line already proven to be furniture. One sitting in the body does not."""
+    opens = ["consent is required where", "the transfer is allowed if", "notice must be given when",
+             "access may be refused where", "records are kept unless", "a breach occurs if"]
+    closes = ["the individual objects.", "safeguards are in place.", "the purpose changes.",
+              "an exemption applies.", "the period lapses.", "harm is likely."]
+    pages = [
+        f"Informal Consolidation of the Act\n{o}\n(a)\n{c}\n{i}"
+        for i, (o, c) in enumerate(zip(opens, closes, strict=True), 1)
+    ]
+    out = _strip_running_lines(pages)
+    assert all("Informal Consolidation" not in p for p in out)
+    assert all("(a)" in p for p in out)  # repeats on every page, but is body text
+
+
 def test_operative_line_is_not_mistaken_for_a_running_line():
     # A distinctive sentence that appears on only one page must survive.
     pages = ["header line repeats\nunique operative clause text here." for _ in range(5)]

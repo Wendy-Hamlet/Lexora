@@ -143,6 +143,50 @@ def _verify_in_text(value: str, text_lower: str) -> bool:
     return bool(runs) and all(run in text_lower for run in runs)
 
 
+# A law-number citation carrying its own year: "Act 26 of 2012", "No. 119 of 1988".
+_NUMBERED = re.compile(r"\b(?:Act|No\.?)\s*(\d+)\s+of\s+(\d{4})\b", re.I)
+# A title that ends in its year of enactment: "Personal Data Protection Act 2012".
+_TITLE_YEAR = re.compile(r"\b(1[6-9]\d{2}|20\d{2})\s*$")
+
+
+def year_agrees_with_title(law_number: str, title: str) -> bool:
+    """False only when both carry a year AND the years disagree.
+
+    The failure this catches: an amendment's number copied in place of the
+    principal Act's. Singapore's Child Development Co-Savings Act 2001 was RENAMED,
+    so its history block opens with the old name ("Children Development…"); the
+    model, matching on the title we gave it, skipped that entry and reported the
+    most recent amendment instead — "Act 46 of 2024" for a 2001 Act. A principal
+    Act's number always carries the year in its own title, so the years must agree.
+    Silent (True) when either side has no year: Malaysia's "Act 709" is a valid
+    number that simply does not encode one."""
+    n = _NUMBERED.search(law_number or "")
+    t = _TITLE_YEAR.search((title or "").strip())
+    if not n or not t:
+        return True
+    return n.group(2) == t.group(1)
+
+
+# SSO prints an ordered legislative history whose FIRST entry is always the
+# principal Act ("1. Act 26 of 2012 — Personal Data Protection Act 2012"), with the
+# amendments numbered after it. That ordering is the document's own authority on
+# which number is the Act's — far stronger than asking a model to pick. The gap
+# absorbs the Commission's disclaimer and any "(Formerly known as …)" line.
+_PRINCIPAL_IN_HISTORY = re.compile(
+    r"LEGISLATIVE\s+HISTORY\b.{0,500}?(?:^|\n)\s*1\.\s*(Act\s+\d+\s+of\s+\d{4})\b",
+    re.IGNORECASE | re.DOTALL,
+)
+
+
+def principal_act_number(text: str) -> str:
+    """The principal Act's number taken from the ordered legislative history, or "".
+
+    Structural, not generative — it reads the document's own numbering. Absent that
+    structure (Australia, Malaysia) it returns "" and the LLM answer stands."""
+    m = _PRINCIPAL_IN_HISTORY.search(text or "")
+    return re.sub(r"\s+", " ", m.group(1)).strip() if m else ""
+
+
 class MetadataExtractor:
     """Reads (last_amended, law_number) from a document's text via the LLM, then
     verifies each against the source. ``client`` is ``None`` for the inert
@@ -152,6 +196,7 @@ class MetadataExtractor:
         self._client = client
         self.extracted = 0
         self.rejected = 0
+        self.overridden = 0  # structural history beat the model's law_number
         self.error_count = 0
         self.last_error_type: str | None = None
 
@@ -196,6 +241,17 @@ class MetadataExtractor:
         if law_number and not _verify_in_text(law_number, text_lower):
             self.rejected += 1
             law_number = ""
+        # An amendment's number reported as the Act's own: the years disagree.
+        if law_number and not year_agrees_with_title(law_number, title):
+            self.rejected += 1
+            law_number = ""
+        # The document's ordered history outranks the model's choice, and also
+        # recovers a number the checks above just dropped.
+        principal = principal_act_number(document_text)
+        if principal and year_agrees_with_title(principal, title):
+            if principal != law_number:
+                self.overridden += 1
+            law_number = principal
         # last_amended must be a 4-digit year that is actually printed in the text.
         ym = _YEAR_RE.search(last_amended)
         if not ym or ym.group(0) not in text_lower:
