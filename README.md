@@ -372,10 +372,12 @@ Lexora/
 │   └── config.py      # env-driven runtime config (LexoraConfig)
 ├── configs/
 │   ├── jurisdictions/        # one YAML per economy (sg, au, my, _template)
-│   ├── rdtii_indicators.yaml # 9 in-scope P6/P7 indicators
+│   ├── rdtii_indicators.yaml # all 12 pillars defined; runs default to the 9 P6/P7 indicators
 │   ├── secondary_sources.yaml
 │   └── eval/                 # gold inventory, mapping gold, intrinsic parser fixtures
+├── submission/        # the CSV + JSON we submitted, and the run that produced them
 ├── scripts/           # run_submission.py (Round-1 entry), run_pipeline.py, eval_*.py
+├── tools/             # cost_logger.py — the measured cost-per-document benchmark
 ├── docs/              # architecture, anti_hallucination, citation_schema, jurisdiction_profile
 └── tests/
 ```
@@ -424,7 +426,7 @@ Honest by design — these guide where to be cautious.
 ## Running the Test Suite
 
 ```bash
-pytest                       # offline; ~325 tests
+pytest                       # offline; 434 tests, no network, no API key
 LEXORA_LIVE=1 pytest -m live # live portal tests
 ```
 
