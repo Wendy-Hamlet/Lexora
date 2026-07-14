@@ -99,6 +99,37 @@ def _register_cuda_dlls() -> None:
 
 
 _CUDA_DLLS_REGISTERED = False
+_GPU_HINT_SHOWN = False
+
+
+def _hint_if_gpu_wasted() -> None:
+    """Say something when there is an NVIDIA GPU but OCR is about to run on the CPU wheel.
+
+    This is the one failure the provider read-back cannot catch: the CPU build of
+    onnxruntime has no CUDA provider to fall back FROM, so every session is legitimately
+    on CPU and nothing looks wrong -- the run is just 5x slower for no reason. It is what
+    a fresh venv gets by default, and it cost us a full submission run to notice."""
+    global _GPU_HINT_SHOWN
+    if _GPU_HINT_SHOWN:
+        return
+    _GPU_HINT_SHOWN = True
+
+    import logging
+    import shutil
+    from importlib.metadata import PackageNotFoundError, version
+
+    if shutil.which("nvidia-smi") is None:
+        return  # no NVIDIA driver, so the CPU wheel is the right answer here
+    try:
+        version("onnxruntime-gpu")
+        return  # GPU wheel installed; whatever happened next, _build() reports it
+    except PackageNotFoundError:
+        pass
+    logging.getLogger(__name__).warning(
+        "OCR: this machine has an NVIDIA GPU, but onnxruntime is the CPU-only wheel, so "
+        "OCR will run ~5x slower than it needs to. To use the GPU: pip uninstall -y "
+        "onnxruntime && pip install -r requirements-gpu.txt  (set LEXORA_OCR_GPU=0 to "
+        "silence this and stay on the CPU deliberately)")
 
 
 def _ocr_cuda_ready() -> bool:
@@ -119,9 +150,12 @@ def _ocr_cuda_ready() -> bool:
 
         with contextlib.suppress(Exception):
             ort.preload_dlls()
-        return "CUDAExecutionProvider" in ort.get_available_providers()
+        if "CUDAExecutionProvider" in ort.get_available_providers():
+            return True
     except Exception:
         return False
+    _hint_if_gpu_wasted()
+    return False
 
 
 def _patch_rapidocr_cuda_kwargs() -> None:

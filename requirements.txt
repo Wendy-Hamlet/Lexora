@@ -34,6 +34,21 @@ openai==2.45.0
 # --- OCR for scanned / image-only legal PDFs (open-source, no API key, no torch) ---
 # RapidOCR runs PP-OCR models on onnxruntime and ships its own weights, so OCR works
 # offline out of the box. Required for the scanned-PDF walkthrough.
+#
+# This is the CPU runtime, so the file installs and runs on any machine. To put OCR on an
+# NVIDIA GPU (~5x faster on scanned statutes, identical recognised text), swap the runtime
+# AFTER installing this file:
+#
+#   pip uninstall -y onnxruntime
+#   pip install onnxruntime-gpu==1.22.0 nvidia-cudnn-cu12 nvidia-cublas-cu12 \
+#               nvidia-cuda-runtime-cu12 nvidia-cufft-cu12 nvidia-curand-cu12 \
+#               nvidia-cusparse-cu12 nvidia-cusolver-cu12
+#
+# The version pairing is load-bearing: onnxruntime-gpu 1.22.x links against CUDA 12, which
+# is what the cu12 wheels above ship. 1.23+ links against CUDA 13 and dies looking for
+# cublasLt64_13.dll, then falls back to CPU. The engine reports the providers its sessions
+# ACTUALLY got and only calls itself rapidocr:<ver>+cuda when all three models (det, cls,
+# rec) are on CUDA, so that fallback can never pass unnoticed. LEXORA_OCR_GPU=0 forces CPU.
 rapidocr-onnxruntime==1.4.4
 onnxruntime==1.27.0
 opencv-python==5.0.0.93
