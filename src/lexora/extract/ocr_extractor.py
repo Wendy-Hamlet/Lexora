@@ -161,12 +161,19 @@ def _patch_rapidocr_cuda_kwargs() -> None:
 def _session_providers(ocr) -> dict[str, str]:
     """The execution provider each of the three models really ended up on.
 
-    The session hangs off a different attribute per model (det/cls: ``.infer.session``;
-    rec: ``.session.session``), so probe both shapes."""
+    Two shapes to probe, and both matter. The model attribute is named ``text_det`` /
+    ``text_rec`` on rapidocr 1.4.x but ``text_detector`` / ``text_recognizer`` on older
+    builds; the ORT session then hangs off ``.infer.session`` (det, cls) or
+    ``.session.session`` (rec). A name we fail to resolve is a model we cannot see, and an
+    unseen model is one this dict silently omits -- which would let ``_build`` compare
+    ``len(on_cuda) == len(provs)`` over a single stage and stamp ``+cuda`` on an engine
+    whose expensive stages sat on the CPU. That is the exact lie this function exists to
+    prevent, so probe every alias."""
     out: dict[str, str] = {}
-    for label, attr in (("det", "text_detector"), ("cls", "text_cls"),
-                        ("rec", "text_recognizer")):
-        model = getattr(ocr, attr, None)
+    for label, aliases in (("det", ("text_det", "text_detector")),
+                           ("cls", ("text_cls", "text_classifier")),
+                           ("rec", ("text_rec", "text_recognizer"))):
+        model = next((m for m in (getattr(ocr, a, None) for a in aliases) if m), None)
         if model is None:
             continue
         holder = getattr(model, "infer", None) or getattr(model, "session", None)
