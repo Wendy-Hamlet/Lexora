@@ -91,8 +91,8 @@ _PER_CELL_SCHEMA = {
 
 
 _PER_CLAUSE_SYSTEM = (
-    "You are a legal-mapping auditor for the UN ESCAP RDTII framework. You are given ONE "
-    "statutory clause and the full list of indicators. Decide which indicators (if any) THIS "
+    "You are a legal-mapping auditor for the UN ESCAP RDTII framework. You are given the full "
+    "list of indicators, then ONE statutory clause. Decide which indicators (if any) THIS "
     "single clause substantively supports as direct primary-source evidence — not merely shares "
     "vocabulary with. A clause may support zero, one, or several indicators.\n"
     "Decision rule:\n"
@@ -255,16 +255,31 @@ class Verifier:
 
     @staticmethod
     def _clause_prompt(clause: Clause, indicators: list[RDTIIIndicator]) -> str:
-        """One clause + the full indicator catalogue (9-in-1 per clause)."""
+        """The full indicator catalogue, THEN one clause (9-in-1 per clause).
+
+        The order is load-bearing, and not for the model's sake. Prompt caching keys on a
+        common PREFIX: the provider bills a repeated prefix at a fraction of the input rate
+        (GLM: Y2 vs Y8 per 1M). The catalogue is 3,051 tokens and identical on every call;
+        the clause is 68-247. With the clause first, the very first token differs each time,
+        so nothing after it can ever match -- the catalogue was re-billed at full price on
+        all 22,445 calls of the 2026-07-14 run, 68.5M tokens of the 73.2M total (94%), and
+        the bill showed exactly the ~11% cache rate you would predict from the system prompt
+        alone. Catalogue first makes the whole 3,051-token prefix cacheable.
+
+        Putting the clause LAST also happens to be the better prompt (rules before the thing
+        being judged, and the judged text sits in the most recent position), but that is a
+        bonus -- the reason is the invoice.
+        """
         text = clause.span.text.strip().replace("\n", " ")
         if len(text) > _CLAUSE_TEXT_CAP:
             text = text[:_CLAUSE_TEXT_CAP] + " …"
-        lines = [f"CLAUSE ({clause.structural_path}):", text, "", "INDICATORS:"]
+        lines = ["INDICATORS:"]
         for i in indicators:
             b = f"- {i.submission_id} ({i.name}): {i.description}"
             if i.long_definition:
                 b += f"\n  Definition (scope + boundaries): {i.long_definition}"
             lines.append(b)
+        lines += ["", f"CLAUSE ({clause.structural_path}):", text]
         return "\n".join(lines)
 
     @staticmethod

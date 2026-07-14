@@ -76,6 +76,10 @@ def main(argv=None) -> int:
                     help="USD per 1M input tokens (reference commercial rate)")
     ap.add_argument("--price-out", type=float, default=DEFAULT_PRICE_OUT,
                     help="USD per 1M output tokens (reference commercial rate)")
+    ap.add_argument("--llm-workers", type=int, default=16,
+                    help="concurrent LLM calls, as the submission run uses (default 16). "
+                         "Affects wall-clock only; token counts (and therefore cost) are "
+                         "identical at any concurrency.")
     ap.add_argument("--no-llm", action="store_true",
                     help="measure the self-hosted infra only (no LLM stages)")
     ap.add_argument("--out", type=Path, default=REPO / "logs" / "cost_report.json")
@@ -113,6 +117,10 @@ def main(argv=None) -> int:
         # top_k is inert under the per_clause judge (relevance is a 0/1 membership call,
         # not a rank cutoff); passed only because the signature still takes it.
         top_k=3, verifier=verifier, rationale_gen=rationale, meta_extractor=meta,
+        # Token counts do not depend on concurrency, but wall-clock does -- and the
+        # submission runs the judge 16-way. Benchmarking it serially would report a
+        # processing time nobody would ever wait for.
+        llm_workers=args.llm_workers,
     )
     wall = time.perf_counter() - t0
 
@@ -123,6 +131,24 @@ def main(argv=None) -> int:
     in_tokens = p_meta + p_rat + p_ver
     out_tokens = c_meta + c_rat + c_ver
     calls = n_meta + n_rat + n_ver
+
+    # A rejected call bills nothing and accounts nothing, so a benchmark whose every
+    # request was refused looks identical to a free one: 0 calls, $0.00, and a tidy table.
+    # That is not a cheap run, it is no run. Refuse to publish a cost claim from it --
+    # the rubric says judges will verify these numbers against the code.
+    clients = [getattr(x, "_client", None) for x in (meta, rationale, verifier)]
+    failed = sum(getattr(c, "failed_calls", 0) for c in clients if c is not None)
+    errors = [getattr(c, "last_error", "") for c in clients
+              if c is not None and getattr(c, "failed_calls", 0)]
+    if use_llm and llm_available and failed and calls == 0:
+        print(f"\nERROR: every LLM call failed ({failed} rejected). This is NOT a $0.00 run.")
+        for e in dict.fromkeys(errors):
+            print(f"  {e}")
+        print("No cost report written.")
+        return 1
+    if failed:
+        print(f"\nwarning: {failed} LLM call(s) failed and are NOT in the cost below "
+              f"({errors[0] if errors else ''})")
 
     n_pages = len(art.pages)
     n_chars = len(art.document_text)
@@ -177,7 +203,8 @@ def main(argv=None) -> int:
     print("-" * 70)
     print(f"{'Total (current stack)':<56}{money(total):>14}")
     print(f"{'Total (open-weight swap)':<56}{money(0.0):>14}")
-    print(f"\nwrote {args.out.relative_to(REPO)}")
+    out = args.out.resolve()
+    print(f"\nwrote {out.relative_to(REPO) if out.is_relative_to(REPO) else out}")
     return 0
 
 

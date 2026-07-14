@@ -102,6 +102,14 @@ class LlmClient:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
+        # Calls that never produced a usable reply. Counted separately because a
+        # FAILED call bills nothing and accounts nothing, so a run whose every request
+        # was rejected looks, in the token counters, exactly like a run that made no
+        # requests at all: calls=0, cost $0.00. That is how a 403 ("team not allowed to
+        # access model") once presented itself as a free, successful cost benchmark.
+        # Anything reporting cost must read this too.
+        self.failed_calls = 0
+        self.last_error: str = ""
         self._account_lock = threading.Lock()
 
     def _account(self, resp) -> None:
@@ -113,6 +121,12 @@ class LlmClient:
             self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
             self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
             self.total_tokens += getattr(usage, "total_tokens", 0) or 0
+
+    def _account_failure(self, exc: BaseException) -> None:
+        """A call that produced nothing still happened. Record it (see ``failed_calls``)."""
+        with self._account_lock:
+            self.failed_calls += 1
+            self.last_error = f"{type(exc).__name__}: {exc}"[:300]
 
     def _ensure_client(self):
         if self._client is None:
@@ -164,6 +178,7 @@ class LlmClient:
                 # Plain (non-schema) calls preserve the old contract: surface the
                 # API error to the caller. Schema calls retry the whole request.
                 if json_schema is None:
+                    self._account_failure(exc)
                     raise
                 last_error = exc
                 self._backoff(i, len(plan))
@@ -187,9 +202,9 @@ class LlmClient:
                 return _parse_json_object(content)
             except (json.JSONDecodeError, TypeError, ValueError):
                 return {}
-        raise LlmResponseError(
-            f"no parseable response after {len(plan)} attempt(s)"
-        ) from last_error
+        err = LlmResponseError(f"no parseable response after {len(plan)} attempt(s)")
+        self._account_failure(last_error or err)
+        raise err from last_error
 
     def _attempt_plan(self, json_schema: dict | None) -> list[tuple[bool, float]]:
         """Ordered (json_mode, temperature) attempts for one :meth:`chat` call.
