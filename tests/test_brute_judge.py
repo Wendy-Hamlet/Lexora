@@ -51,6 +51,8 @@ def test_make_brute_judge_inert_when_disabled(monkeypatch):
 
 
 def test_make_brute_judge_uses_separate_brute_model(monkeypatch):
+    import os
+
     import lexora.config as cfgmod
     monkeypatch.setenv("LEXORA_BRUTE_JUDGE", "1")
     # reasoning backend in shared config; brute must still pick its own model
@@ -58,6 +60,12 @@ def test_make_brute_judge_uses_separate_brute_model(monkeypatch):
         cfgmod, "load_config",
         lambda: _cfg(base="https://x/v1", key="k", ua="UA", model="gpt-5.4"),
     )
+    # env_value reads the developer's real .env as well as the process env (by design --
+    # creds often live only there), so delenv alone does NOT establish "unset": a local
+    # LEXORA_BRUTE_MODEL would leak in and this test would assert on someone's laptop
+    # config. Pin it to the process env so "unset" means unset.
+    monkeypatch.setattr(cfgmod, "env_value",
+                        lambda name, default=None: os.environ.get(name, default))
     monkeypatch.delenv("LEXORA_BRUTE_MODEL", raising=False)
     j = make_brute_judge()
     assert j is not None and j.model == "deepseek-v4-flash"  # brute stays non-reasoning

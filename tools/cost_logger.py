@@ -93,7 +93,12 @@ def main(argv=None) -> int:
     use_llm = not args.no_llm
     meta = make_metadata_extractor(use_llm=use_llm)
     rationale = make_rationale_generator(use_llm=use_llm)
-    verifier = make_verifier(use_llm=use_llm, mode="per_cell")
+    # per_clause is what SHIPS: the 0/1 membership judge reads every clause in the recall
+    # pool and decides relevance for all indicators at once. It is also where nearly all
+    # the tokens go, so measuring per_cell here (as this did) reported the cost of a code
+    # path the submission does not take -- an order of magnitude low. The judges are told
+    # to verify cost claims against the code; the benchmark must run the code.
+    verifier = make_verifier(use_llm=use_llm, mode="per_clause")
     llm_available = use_llm and any(
         getattr(x, "_client", None) is not None for x in (meta, rationale, verifier)
     )
@@ -105,6 +110,8 @@ def main(argv=None) -> int:
     art = run_demo_pipeline(
         pdf_path=args.pdf, profile=profile, indicators=indicators,
         source_url="https://example.gov/benchmark.pdf", portal_name="cost-benchmark",
+        # top_k is inert under the per_clause judge (relevance is a 0/1 membership call,
+        # not a rank cutoff); passed only because the signature still takes it.
         top_k=3, verifier=verifier, rationale_gen=rationale, meta_extractor=meta,
     )
     wall = time.perf_counter() - t0
