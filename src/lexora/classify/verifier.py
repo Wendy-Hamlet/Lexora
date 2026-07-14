@@ -140,11 +140,14 @@ class Verifier:
       whole Act is noisy and buries sectoral provisions.
     """
 
-    def __init__(self, client, *, mode: str = "pick_one") -> None:
+    def __init__(self, client, *, mode: str = "pick_one", cache=None) -> None:
         self._client = client
         self.mode = mode
         self.error_count = 0
         self.last_error_type: str | None = None
+        # Verdict cache (per_clause only; see judge_cache). None = disabled.
+        self._cache = cache
+        self._fingerprint: str | None = None
 
     def judge_clause(
         self,
@@ -158,10 +161,29 @@ class Verifier:
         ids dropped). An empty set is a real "supports nothing". Returns ``None``
         only on a backend error / unparseable reply, which the caller treats as a
         skip (the clause contributes no citation) so an outage cannot fabricate
-        mappings."""
+        mappings.
+
+        The verdict is a pure function of (model, indicator catalogue, clause text), so it
+        is cached across runs when one is configured — see :mod:`lexora.classify.judge_cache`.
+        A failure is never cached: caching ``None`` would let one outage erase a citation
+        permanently."""
         if not indicators:
             return set()
         valid = {i.submission_id for i in indicators}
+
+        key = None
+        if self._cache is not None:
+            from lexora.classify.judge_cache import catalogue_fingerprint
+
+            if self._fingerprint is None:
+                self._fingerprint = catalogue_fingerprint(indicators)
+            key = self._cache.key(self._model_id(), self._fingerprint, clause)
+            cached = self._cache.get(key)
+            if cached is not None:
+                # Intersect with the live ids: the fingerprint pins the catalogue, but a
+                # caller may legitimately pass a subset of it.
+                return cached & valid
+
         try:
             data = self._client.chat(
                 _PER_CLAUSE_SYSTEM, self._clause_prompt(clause, indicators),
@@ -174,7 +196,13 @@ class Verifier:
         got = data.get("indicators") if isinstance(data, dict) else None
         if not isinstance(got, list):
             return None
-        return {str(x) for x in got if str(x) in valid}
+        verdict = {str(x) for x in got if str(x) in valid}
+        if self._cache is not None and key is not None:
+            self._cache.put(key, self._model_id(), verdict)
+        return verdict
+
+    def _model_id(self) -> str:
+        return str(getattr(self._client, "model", "") or "")
 
     def judge_each(
         self,
@@ -346,8 +374,22 @@ def make_verifier(
         from lexora.config import env_value
 
         model = env_value("LEXORA_BRUTE_MODEL", "deepseek-v4-flash")
+
+    # The verdict cache serves the per_clause lane only: that is the one asking a question
+    # with no state behind it (model + catalogue + clause text -> indicator set), and the
+    # one that fires tens of thousands of times per run. A cache failure must never take
+    # the run down with it, so fall back to an uncached judge.
+    cache = None
+    if mode == "per_clause":
+        from lexora.classify import judge_cache
+
+        if judge_cache.cache_enabled():
+            try:
+                cache = judge_cache.JudgeCache()
+            except Exception:  # unwritable path, locked db, ...
+                cache = None
     try:
-        return Verifier(llm_client.LlmClient(model=model), mode=mode)
+        return Verifier(llm_client.LlmClient(model=model), mode=mode, cache=cache)
     except Exception:
         return None
 

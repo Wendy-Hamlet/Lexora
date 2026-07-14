@@ -76,6 +76,13 @@ def main(argv=None) -> int:
                     help="USD per 1M input tokens (reference commercial rate)")
     ap.add_argument("--price-out", type=float, default=DEFAULT_PRICE_OUT,
                     help="USD per 1M output tokens (reference commercial rate)")
+    ap.add_argument("--price-cached", type=float, default=None,
+                    help="USD per 1M CACHED input tokens. Providers bill a repeated prompt "
+                         "prefix at a fraction of fresh input (GLM: Y2 vs Y8 per 1M), and "
+                         "our judge re-sends an identical 3,051-token indicator catalogue on "
+                         "every call -- so a two-rate model overstates the bill and hides "
+                         "the biggest lever on it. Defaults to 1/4 of --price-in, the ratio "
+                         "on the 2026-07 invoice.")
     ap.add_argument("--llm-workers", type=int, default=16,
                     help="concurrent LLM calls, as the submission run uses (default 16). "
                          "Affects wall-clock only; token counts (and therefore cost) are "
@@ -155,10 +162,22 @@ def main(argv=None) -> int:
     scanned = art.pdf_is_scanned
     ocr_engine = art.ocr_engine or (cfg_engine() if scanned else "")
 
-    llm_cost = (in_tokens / 1e6) * args.price_in + (out_tokens / 1e6) * args.price_out
+    # Three rates, because the invoice has three: fresh input, CACHED input (a repeated
+    # prompt prefix, billed at ~1/4), and output. The judge re-sends the same 3,051-token
+    # indicator catalogue every call, so which of the first two it lands in is the single
+    # largest term in this number.
+    cached_in = sum(getattr(c, "cached_prompt_tokens", 0) for c in clients if c is not None)
+    fresh_in = max(0, in_tokens - cached_in)
+    price_cached = args.price_cached if args.price_cached is not None else args.price_in / 4
+    llm_cost = ((fresh_in / 1e6) * args.price_in
+                + (cached_in / 1e6) * price_cached
+                + (out_tokens / 1e6) * args.price_out)
     # self-hosted components: $0 marginal API cost
     ocr_cost = embed_cost = crawl_cost = 0.0
     total = ocr_cost + embed_cost + crawl_cost + llm_cost
+    cache_hit = cached_in / in_tokens if in_tokens else 0.0
+    jc = getattr(verifier, "_cache", None) if verifier is not None else None
+    judged, from_cache = (jc.misses, jc.hits) if jc is not None else (0, 0)
 
     report = {
         "document": args.pdf.name,
@@ -175,9 +194,19 @@ def main(argv=None) -> int:
         "crawling": {"engine": "self-hosted (requests/browser)", "cost_usd": round(crawl_cost, 4)},
         "llm": {"model": cfg.llm_model, "calls": calls,
                 "input_tokens": in_tokens, "output_tokens": out_tokens,
-                "price_in_per_1m_usd": args.price_in, "price_out_per_1m_usd": args.price_out,
+                "cached_input_tokens": cached_in,
+                "cache_hit_rate": round(cache_hit, 3),
+                "failed_calls": failed,
+                "price_in_per_1m_usd": args.price_in,
+                "price_cached_in_per_1m_usd": round(price_cached, 4),
+                "price_out_per_1m_usd": args.price_out,
                 "rate_note": "reference commercial rate; our own endpoint is not billed per token",
                 "cost_usd": round(llm_cost, 4)},
+        # A run that answered most clauses from the verdict cache is not a run that judged
+        # them cheaply. Publish the split so a cached benchmark can never be mistaken for a
+        # cold one -- LEXORA_JUDGE_CACHE=0 reproduces the true cold cost.
+        "judge_cache": {"clauses_judged_by_llm": judged, "clauses_served_from_cache": from_cache,
+                        "enabled": jc is not None},
         "total_cost_usd": round(total, 4),
         "total_cost_usd_open_weight_swap": 0.0,
         "open_weight_note": "Llama-class + Tesseract, all self-hosted -> $0 API (compute only)",
@@ -193,7 +222,14 @@ def main(argv=None) -> int:
         return f"${x:.4f}"
     print(f"\nBenchmark: {args.pdf.name}  ({economy}, P{args.pillar})")
     print(f"  pages={n_pages}  chars={n_chars}  scanned={scanned}  citations={len(art.citations)}")
-    print(f"  wall-clock={wall:.1f}s   tokens: in={in_tokens:,} out={out_tokens:,} ({calls} calls)\n")
+    print(f"  wall-clock={wall:.1f}s   tokens: in={in_tokens:,} "
+          f"(of which {cached_in:,} cached = {cache_hit:.0%}) "
+          f"out={out_tokens:,} ({calls} calls)")
+    if jc is not None:
+        print(f"  judge cache: {from_cache} clause(s) served from cache, {judged} judged by LLM"
+              + ("   <-- NOT a cold-cost measurement; LEXORA_JUDGE_CACHE=0 to reproduce"
+                 if from_cache else ""))
+    print()
     print(f"{'Component':<22}{'Engine':<34}{'Measured cost':>14}")
     print("-" * 70)
     print(f"{'OCR':<22}{(ocr_engine or 'RapidOCR (local)'):<34}{money(ocr_cost):>14}")

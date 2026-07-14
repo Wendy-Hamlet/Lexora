@@ -40,6 +40,21 @@ def is_available() -> bool:
     return True
 
 
+def _cached_tokens(usage) -> int:
+    """Prompt tokens the provider served from its prefix cache, across dialects.
+
+    OpenAI/Zhipu nest it as ``prompt_tokens_details.cached_tokens``; DeepSeek returns a
+    flat ``prompt_cache_hit_tokens``. Read both: an unrecognised field is indistinguishable
+    from a cache that never hits, which is precisely the reading that would send us
+    chasing a saving we had already made (or miss one we had not)."""
+    d = getattr(usage, "prompt_tokens_details", None)
+    if d is not None:
+        n = getattr(d, "cached_tokens", None)
+        if n:
+            return int(n)
+    return int(getattr(usage, "prompt_cache_hit_tokens", 0) or 0)
+
+
 class LlmClient:
     """Thin wrapper over an OpenAI-compatible chat endpoint.
 
@@ -102,6 +117,13 @@ class LlmClient:
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.total_tokens = 0
+        # Prompt tokens the provider served from its prefix cache. These are billed at a
+        # FRACTION of fresh input (GLM: Y2 vs Y8 per 1M), so a two-rate cost model that
+        # ignores them overstates the bill -- and, worse, leaves the single biggest lever
+        # on our spend invisible. The judge re-sends an identical 3,051-token indicator
+        # catalogue on every one of ~22k calls; whether that block is cached or not is the
+        # difference between Y650 and Y250 a run. You cannot tune what you do not measure.
+        self.cached_prompt_tokens = 0
         # Calls that never produced a usable reply. Counted separately because a
         # FAILED call bills nothing and accounts nothing, so a run whose every request
         # was rejected looks, in the token counters, exactly like a run that made no
@@ -121,6 +143,7 @@ class LlmClient:
             self.prompt_tokens += getattr(usage, "prompt_tokens", 0) or 0
             self.completion_tokens += getattr(usage, "completion_tokens", 0) or 0
             self.total_tokens += getattr(usage, "total_tokens", 0) or 0
+            self.cached_prompt_tokens += _cached_tokens(usage)
 
     def _account_failure(self, exc: BaseException) -> None:
         """A call that produced nothing still happened. Record it (see ``failed_calls``)."""

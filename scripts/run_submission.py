@@ -113,21 +113,37 @@ def run_one(
         fetch_min_interval=fetch_min_interval, serial_fetch=serial_fetch,
         secondary_signals=secondary, amendment_extractor=amendment_extractor,
     )
-    tokens = {"calls": 0, "prompt": 0, "completion": 0, "total": 0}
+    tokens = {"calls": 0, "prompt": 0, "completion": 0, "total": 0, "cached_prompt": 0,
+              "failed": 0}
 
     def _account(label: str, client) -> None:
         """Print per-channel token usage and fold it into this economy's total."""
-        if client is None or not getattr(client, "calls", 0):
+        if client is None:
             return
+        failed = getattr(client, "failed_calls", 0)
+        if not getattr(client, "calls", 0):
+            if failed:
+                # Not a free channel -- a broken one. Say so; a silent zero here is how a
+                # wall of 403s once passed for a $0.00 run.
+                print(f"  LLM {label} [{iso}]: 0 successful call(s), {failed} FAILED "
+                      f"({getattr(client, 'last_error', '') [:90]})")
+                tokens["failed"] += failed
+            return
+        cached = getattr(client, "cached_prompt_tokens", 0)
+        share = f", {cached / client.prompt_tokens:.0%} of prompt cached" if cached else ""
         print(
             f"  LLM {label} tokens [{iso}]: {client.calls} call(s), "
             f"{client.total_tokens} tokens "
-            f"({client.prompt_tokens} prompt + {client.completion_tokens} completion)"
+            f"({client.prompt_tokens} prompt + {client.completion_tokens} completion"
+            f"{share})"
+            + (f"  [{failed} failed]" if failed else "")
         )
         tokens["calls"] += client.calls
         tokens["prompt"] += client.prompt_tokens
         tokens["completion"] += client.completion_tokens
         tokens["total"] += client.total_tokens
+        tokens["cached_prompt"] += cached
+        tokens["failed"] += failed
 
     if meta_extractor._client is not None:
         print(
@@ -161,6 +177,17 @@ def run_one(
             "run continued without fabricating citations."
         )
     _account("verifier", getattr(verifier, "_client", None) if verifier is not None else None)
+
+    # Verdict cache: a run that answered most clauses from cache is NOT a run that judged
+    # them cheaply, and a reader must be able to tell the two apart. Report the split.
+    jc = getattr(verifier, "_cache", None) if verifier is not None else None
+    if jc is not None and (jc.hits or jc.misses):
+        print(
+            f"  judge cache [{iso}]: {jc.hits} hit / {jc.misses} miss "
+            f"({jc.hit_rate:.0%} served from cache, {jc.writes} new verdict(s) stored)"
+        )
+        tokens["cache_hits"] = jc.hits
+        tokens["cache_misses"] = jc.misses
     return result, tokens
 
 
