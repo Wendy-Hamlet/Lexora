@@ -14,7 +14,8 @@ primary_language: "en"           # BCP 47
 additional_languages: []         # e.g. ["zh", "ms", "ta"]
 legal_system: "common"           # one of: civil | common | hybrid
 
-# OCR languages to load for scanned documents (Tesseract codes)
+# Advisory language hint for scanned pages (reserved field). The active OCR engine
+# is RapidOCR / PP-OCR on ONNX Runtime, whose bundled models read Latin/English.
 ocr_languages: ["eng"]
 
 # Keyword expansions for Pillar 6/7 retrieval, by language.

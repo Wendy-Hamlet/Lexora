@@ -41,8 +41,10 @@ These rules apply to every module. Violating them is a bug.
    ratified treaties are *citable evidence*. Ministry guidelines and secondary
    datasets are *discovery context only* — never cited as binding evidence unless
    they reproduce and link to a primary instrument.
-3. **Page-level OCR confidence.** Pages below threshold are tagged
-   `UNVERIFIED_SCAN` and cannot back a citation until manually corrected.
+3. **Page-level OCR confidence.** Pages below the citable threshold
+   (`OCR_CITABLE_THRESHOLD`, 0.85) are tagged `UNVERIFIED_SCAN`; a claim resting on
+   such a page is held as `LOW_OCR_CONFIDENCE` at the validator and cannot back a
+   citation until manually corrected.
 4. **No automatic precedence between conflicting instruments.** The system shows
    all candidates side by side, optionally sorted by legal form and date as a
    review hint. A human reviewer decides which one governs.

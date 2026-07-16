@@ -7,7 +7,7 @@ primary_language: "<bcp47>"       # e.g. en, ja, th, zh, ko, vi, id
 additional_languages: []
 legal_system: "civil"             # civil | common | hybrid
 
-ocr_languages: []                 # Tesseract codes, e.g. ["eng"], ["jpn"], ["tha"]
+ocr_languages: []                 # advisory hint (reserved); active engine is RapidOCR / PP-OCR
 
 keywords_by_indicator: {}         # see existing profiles for examples
 

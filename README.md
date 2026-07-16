@@ -2,7 +2,7 @@
 
 UN Global Hackathon on AI for Digital Trade Regulatory Analysis
 Team: **Verbatim Trade** | Round: 1
-Last updated: 2026-07-13
+Last updated: 2026-07-15
 
 > A verifiable AI system for mapping digital-trade regulations to the UN ESCAP **RDTII 2.1** framework.
 >
@@ -208,7 +208,7 @@ from the parsed PDF, wall-clock from a timer around the run. Reproduce any row:*
 ```bash
 PYTHONPATH=src python tools/cost_logger.py \
   --pdf data/raw/my/<hash>.pdf --economy my --pillar 6 \
-  --price-in 1.180 --price-out 4.130      # GLM-5.2 list price, see below
+  --price-in 1.180 --price-cached 0.295 --price-out 4.130   # GLM-5.2 list prices: fresh / cached / output
 # writes logs/cost_report.json and prints the table
 ```
 
@@ -241,26 +241,28 @@ varies because the model does — see below.
 | OCR | RapidOCR — PP-OCR on ONNX Runtime, GPU (`rapidocr:1.4.4+cuda`) | no | $0.0000 |
 | Embedding | BAAI/bge-m3, local (dense channel off by default) | no | $0.0000 |
 | Parsing / retrieval | BM25, local | no | $0.0000 |
-| **LLM mapping** | **GLM-5.2** (relevance judge + rationale + metadata) | **yes** | **$0.038 – $0.292** |
+| **LLM mapping** | **GLM-5.2** (relevance judge + rationale + metadata) | **yes** | **$0.038 – $0.31** |
 
 **Measured on:** 2026-07-14, `--llm-workers 16`, verdict cache bypassed (`LEXORA_JUDGE_CACHE=0`)
 so these are true cold costs. **LLM:** GLM-5.2 via an OpenAI-compatible gateway.
 
-### Three rates, not two
+### The three rates behind the bill
 
-The provider bills **three** ways, and a two-rate model gets this wrong:
+GLM-5.2 meters input in two tiers, plus output — and the cached tier, at a quarter of the
+fresh-input price, is the one worth engineering for:
 
 | | ¥ / 1M | $ / 1M @ 6.78 |
 | :---- | ----: | ----: |
-| Input (fresh) | ¥8 | $1.180 |
+| Input, fresh | ¥8 | $1.180 |
 | **Input served from the prompt cache** | **¥2** | **$0.295** |
 | Output | ¥28 | $4.130 |
 
 The relevance judge asks about **one clause against all nine indicators**, so every call
-carries the same 3,051-token indicator catalogue — **95% of the prompt is identical on every
-call**. The prompt puts that catalogue **first** and the clause **last**, so it lands in the
-provider's cacheable prefix: ~50% of all input tokens bill at the ¥2 rate. Ordering it the
-other way round (clause first) breaks the prefix and costs ~40% more for byte-identical work.
+carries the same 3,051-token indicator catalogue — **95% of the prompt is identical from one
+call to the next**. We put that catalogue **first** and the clause **last**, so the shared
+text lands in the provider's cacheable prefix and ~50% of all input tokens bill at the ¥2
+rate. Reverse the order — clause first — and the prefix breaks, costing ~40% more for
+byte-identical work.
 
 `tools/cost_logger.py` reports `cached_input_tokens` and prices all three rates. Only the
 *rates* are parameters (`--price-in`, `--price-cached`, `--price-out`), so a judge can
@@ -426,7 +428,7 @@ Honest by design — these guide where to be cautious.
 ## Running the Test Suite
 
 ```bash
-pytest                       # offline; 434 tests, no network, no API key
+pytest                       # offline; 449 tests, no network, no API key
 LEXORA_LIVE=1 pytest -m live # live portal tests
 ```
 

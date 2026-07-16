@@ -36,18 +36,18 @@ The LLM returns claims in this exact structure (validated by Pydantic):
 
 ```json
 {
-  "indicator_id": "6.1",
   "clause_id": "sg.pdpa.s26",
-  "quote_span_id": "sg.pdpa.s26.span0",
   "label": "match",
-  "confidence": 0.91
+  "confidence": 0.91,
+  "rationale": "s26 conditions transfer abroad on comparable protection"
 }
 ```
 
-Notice there is **no `quote` field**. Quote text is copied by the orchestrator
-from canonical storage using `clause_id` + the stored span offsets. The LLM
-literally cannot produce quote text, so it cannot hallucinate a quote — by
-construction, not by validation.
+The indicator under test is fixed by the call, not chosen by the model. Notice
+there is **no `quote` field**: quote text is copied by the orchestrator from
+canonical storage using `clause_id` + the stored span offsets. The LLM literally
+cannot produce quote text, so it cannot hallucinate a quote — by construction, not
+by validation.
 
 ## Validation gates
 
