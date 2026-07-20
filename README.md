@@ -243,10 +243,9 @@ varies because the model does — see below.
 | Parsing / retrieval | BM25, local | no | $0.0000 |
 | **LLM mapping** | **GLM-5.2** (relevance judge + rationale + metadata) | **yes** | **$0.038 – $0.31** |
 
-**Measured on:** 2026-07-14, `--llm-workers 16`, verdict cache bypassed (`LEXORA_JUDGE_CACHE=0`)
-so these are true cold costs, in a clean venv built from the pinned `requirements.txt`
-(Python 3.12.2, `rapidocr-onnxruntime==1.4.4`, `onnxruntime-gpu==1.22.0`) — the same
-environment the Quick Start produces. **LLM:** GLM-5.2 via an OpenAI-compatible gateway.
+**Measured on:** 2026-07-14, Python 3.12.2 in a clean venv from the pinned
+`requirements.txt`, `--llm-workers 16`, verdict cache bypassed (`LEXORA_JUDGE_CACHE=0`) so
+these are true cold costs. **LLM:** GLM-5.2 via an OpenAI-compatible gateway.
 
 ### The three rates behind the bill
 
