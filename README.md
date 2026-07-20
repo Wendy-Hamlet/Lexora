@@ -2,7 +2,7 @@
 
 UN Global Hackathon on AI for Digital Trade Regulatory Analysis
 Team: **Verbatim Trade** | Round: 1
-Last updated: 2026-07-20
+Last updated: 2026-07-15
 
 > A verifiable AI system for mapping digital-trade regulations to the UN ESCAP **RDTII 2.1** framework.
 >
@@ -220,14 +220,14 @@ in where the time goes (not in what they cost):
 | :---- | :---- | :---- |
 | Document | Malaysia **PDPA 2010** (Act 709) | Malaysia **Computer Crimes Act 1997** (Act 563) |
 | Size | 95 pages · 148,091 chars | 12 pages · 572 embedded images · **0-char text layer** |
-| OCR | not needed (text layer present) | **required** — RapidOCR on GPU (`rapidocr:1.2.3+cuda`) |
+| OCR | not needed (text layer present) | **required** — RapidOCR on GPU (`rapidocr:1.4.4+cuda`) |
 | Clauses judged | 91 | 12 |
-| Citations produced | 11–18 (see *Determinism*) | 1–3 (see *Determinism*) |
-| LLM calls | 103–110 | 14–16 |
-| Input tokens (**of which cached**) | ~345,000 (**48–51%**) | ~43,600–45,400 (**0–49%**) |
-| Output tokens | ~11,000 | ~1,300–1,500 |
-| **Wall-clock** | **77–86 s** | **37–46 s** |
-| **Cost, first run** | **$0.29 – $0.31** | **$0.038 – $0.060** |
+| Citations produced | 11–18 (see *Determinism*) | 1 |
+| LLM calls | 103–110 | 14 |
+| Input tokens (**of which cached**) | ~345,000 (**48–51%**) | ~43,600 (**21–49%**) |
+| Output tokens | ~11,000 | ~1,300 |
+| **Wall-clock** | **77–86 s** | **40–46 s** |
+| **Cost, first run** | **$0.29 – $0.31** | **$0.038 – $0.049** |
 | **Cost, re-run** (verdict cache) | **$0.031** | ~**$0.000** |
 | **Cost (open-weight swap)** | **$0.000** | **$0.000** |
 
@@ -238,14 +238,15 @@ varies because the model does — see below.
 | Component | Engine used | Metered? | Cost |
 | :---- | :---- | :---- | :---- |
 | Crawling | self-hosted (httpx / Playwright) | no | $0.0000 |
-| OCR | RapidOCR — PP-OCR on ONNX Runtime, GPU (`rapidocr:1.2.3+cuda`) | no | $0.0000 |
+| OCR | RapidOCR — PP-OCR on ONNX Runtime, GPU (`rapidocr:1.4.4+cuda`) | no | $0.0000 |
 | Embedding | BAAI/bge-m3, local (dense channel off by default) | no | $0.0000 |
 | Parsing / retrieval | BM25, local | no | $0.0000 |
 | **LLM mapping** | **GLM-5.2** (relevance judge + rationale + metadata) | **yes** | **$0.038 – $0.31** |
 
-**Measured on:** 2026-07-14 and re-measured 2026-07-20, `--llm-workers 16`, verdict cache
-bypassed (`LEXORA_JUDGE_CACHE=0`)
-so these are true cold costs. **LLM:** GLM-5.2 via an OpenAI-compatible gateway.
+**Measured on:** 2026-07-14, `--llm-workers 16`, verdict cache bypassed (`LEXORA_JUDGE_CACHE=0`)
+so these are true cold costs, in a clean venv built from the pinned `requirements.txt`
+(Python 3.12.2, `rapidocr-onnxruntime==1.4.4`, `onnxruntime-gpu==1.22.0`) — the same
+environment the Quick Start produces. **LLM:** GLM-5.2 via an OpenAI-compatible gateway.
 
 ### The three rates behind the bill
 
@@ -277,8 +278,7 @@ The relevance decision is an LLM judgement, and **the LLM is not deterministic e
 `temperature=0`**. We ran the same 95-page Act through the same code three times, cold, and
 got **11, 14 and 18 citations**. Nothing in the pipeline changed between runs — same prompt,
 same retrieval pool, same clauses. Frontier MoE backends simply do not guarantee a
-reproducible sample, and GLM-5.2 is one. The scanned 12-page Act behaves the same way: the
-07-14 run returned **1** citation and the 07-20 re-run returned **3**, off the same OCR text.
+reproducible sample, and GLM-5.2 is one.
 
 We are telling you this rather than quietly hoping you run it once:
 
@@ -331,21 +331,21 @@ carries that name, so a silent CPU fallback is impossible. `LEXORA_OCR_GPU=0` fo
 ```json
 {
   "document": "MY_ComputerCrimesAct1997_Act563.pdf",
-  "measured_on": "2026-07-20",
+  "measured_on": "2026-07-14",
   "pages": 12,
-  "ocr":       { "engine": "rapidocr:1.2.3+cuda", "pages": 12, "scanned": true, "cost_usd": 0.0 },
+  "ocr":       { "engine": "rapidocr:1.4.4+cuda", "pages": 12, "scanned": true, "cost_usd": 0.0 },
   "embedding": { "model": "BAAI/bge-m3", "tokens": 0, "cost_usd": 0.0 },
-  "llm":       { "model": "GLM-5.2", "calls": 16, "failed_calls": 0,
-                 "input_tokens": 45358, "cached_input_tokens": 0, "cache_hit_rate": 0.0,
-                 "output_tokens": 1470,
+  "llm":       { "model": "GLM-5.2", "calls": 14, "failed_calls": 0,
+                 "input_tokens": 43560, "cached_input_tokens": 8966, "cache_hit_rate": 0.206,
+                 "output_tokens": 1281,
                  "price_in_per_1m_usd": 1.18, "price_cached_in_per_1m_usd": 0.295,
                  "price_out_per_1m_usd": 4.13,
-                 "cost_usd": 0.0596 },
+                 "cost_usd": 0.0488 },
   "judge_cache": { "clauses_judged_by_llm": 12, "clauses_served_from_cache": 0, "enabled": false },
-  "total_cost_usd": 0.0596,
+  "total_cost_usd": 0.0488,
   "total_cost_usd_open_weight_swap": 0.0,
-  "citations": 3,
-  "processing_time_seconds": 37.2
+  "citations": 1,
+  "processing_time_seconds": 40.3
 }
 ```
 
