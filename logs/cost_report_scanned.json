@@ -2,11 +2,11 @@
   "document": "4248733e9fa0905d8631177de31cfeaae9c76a3c0b24d88f39e7264ade12e8d3.pdf",
   "economy": "Malaysia",
   "pillar": 7,
-  "measured_on": "2026-07-14",
+  "measured_on": "2026-07-20",
   "pages": 12,
-  "characters": 14048,
+  "characters": 13773,
   "ocr": {
-    "engine": "rapidocr:1.4.4+cuda",
+    "engine": "rapidocr:1.2.3+cuda",
     "pages": 12,
     "scanned": true,
     "cost_usd": 0.0
@@ -23,27 +23,27 @@
   },
   "llm": {
     "model": "GLM-5.2",
-    "calls": 14,
-    "input_tokens": 43560,
-    "output_tokens": 1281,
-    "cached_input_tokens": 8966,
-    "cache_hit_rate": 0.206,
+    "calls": 16,
+    "input_tokens": 45358,
+    "output_tokens": 1470,
+    "cached_input_tokens": 0,
+    "cache_hit_rate": 0.0,
     "failed_calls": 0,
     "price_in_per_1m_usd": 1.18,
     "price_cached_in_per_1m_usd": 0.295,
     "price_out_per_1m_usd": 4.13,
     "rate_note": "reference commercial rate; our own endpoint is not billed per token",
-    "cost_usd": 0.0488
+    "cost_usd": 0.0596
   },
   "judge_cache": {
     "clauses_judged_by_llm": 12,
     "clauses_served_from_cache": 0,
     "enabled": false
   },
-  "total_cost_usd": 0.0488,
+  "total_cost_usd": 0.0596,
   "total_cost_usd_open_weight_swap": 0.0,
   "open_weight_note": "Llama-class + Tesseract, all self-hosted -> $0 API (compute only)",
-  "citations": 1,
-  "processing_time_seconds": 40.3,
+  "citations": 3,
+  "processing_time_seconds": 37.2,
   "llm_used": true
 }
