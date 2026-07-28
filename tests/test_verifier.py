@@ -292,11 +292,62 @@ def test_pipeline_per_clause_assigns_only_supported_clause():
     assert {(c.indicator_id, c.clause_id) for c in cites} == {("P7-I3", "c1")}
 
 
-def test_pipeline_per_clause_error_yields_no_citation_for_clause():
+class FlakyClient:
+    """Raises on the first ``n_errors`` calls, then answers. Models an endpoint that is
+    intermittently bad rather than dead."""
+
+    def __init__(self, n_errors: int, response: dict):
+        self.remaining = n_errors
+        self.response = response
+
+    def chat(self, system: str, user: str, json_schema=None) -> dict:
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise RuntimeError("down")
+        return self.response
+
+
+def test_pipeline_per_clause_incidental_error_still_drops_that_clause(monkeypatch):
     from lexora.pipeline import _citations_from_clauses
 
-    # backend error -> judge_clause None -> that clause contributes nothing (never
-    # fabricates a mapping); with every clause erroring, no citations at all.
+    # One failure out of two is below the degrade threshold, so the old contract holds:
+    # the erroring clause contributes nothing and no mapping is fabricated for it.
+    monkeypatch.setenv("LEXORA_JUDGE_DEGRADE_AT", "0.5")
+    verifier = Verifier(FlakyClient(1, {"indicators": ["P7-I3"]}), mode="per_clause")
+    cites = _citations_from_clauses(
+        _candidates(), _doc(), _profile(), [_ind()], "statute", top_k=2, min_score=0.0,
+        verifier=verifier,
+    )
+    assert len(cites) == 1  # the one clause that was actually judged
+    assert "DEGRADED" not in cites[0].notes
+
+
+def test_pipeline_per_clause_systematic_failure_degrades_to_ranking_lane(monkeypatch):
+    from lexora.pipeline import _citations_from_clauses
+
+    # Every judgement fails. Dropping every clause would publish an EMPTY document that
+    # looks exactly like "this law has nothing" -- so the document falls back to the
+    # key-free BM25 lane instead, and every row says so.
+    monkeypatch.setenv("LEXORA_JUDGE_DEGRADE_AT", "0.5")
+    # The degraded lane's precision floor is measured separately (scripts/bench_fallback.py);
+    # switch it off here so this test covers the degrade path itself and does not silently
+    # become a test of whether two synthetic clauses clear a BM25 threshold.
+    monkeypatch.setenv("LEXORA_DEGRADED_MIN_SCORE", "0")
+    verifier = Verifier(FakeClient(RuntimeError("down")), mode="per_clause")
+    cites = _citations_from_clauses(
+        _candidates(), _doc(), _profile(), [_ind()], "statute", top_k=2, min_score=0.0,
+        verifier=verifier,
+    )
+    assert cites, "a dead judge must degrade, not silently publish nothing"
+    assert all("DEGRADED" in c.notes for c in cites)
+    assert all("LLM judge unavailable" in c.notes for c in cites)
+
+
+def test_pipeline_per_clause_degrade_gate_can_be_disabled(monkeypatch):
+    from lexora.pipeline import _citations_from_clauses
+
+    # No ratio can exceed 1.1, so the gate never fires and the pre-gate behaviour returns.
+    monkeypatch.setenv("LEXORA_JUDGE_DEGRADE_AT", "1.1")
     verifier = Verifier(FakeClient(RuntimeError("down")), mode="per_clause")
     cites = _citations_from_clauses(
         _candidates(), _doc(), _profile(), [_ind()], "statute", top_k=2, min_score=0.0,

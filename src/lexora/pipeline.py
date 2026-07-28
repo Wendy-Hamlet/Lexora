@@ -23,6 +23,7 @@ from __future__ import annotations
 import logging
 import math
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -126,6 +127,52 @@ def _map_use_rerank() -> bool:
     (measured: AU APP8 rank 3 -> 1). Opt-in because it needs the fastembed
     cross-encoder backend + a downloaded model; falls back to BM25 if unavailable."""
     return os.environ.get("LEXORA_MAP_RERANK", "").lower() in ("1", "true", "yes", "on")
+
+
+def _degraded_min_score() -> float:
+    """Relevance floor applied only after the judge has been declared dead. See the call
+    site for the measurement; ``LEXORA_DEGRADED_MIN_SCORE=0`` restores the shared floor."""
+    try:
+        return float(os.environ.get("LEXORA_DEGRADED_MIN_SCORE", "0.7"))
+    except ValueError:
+        return 0.7
+
+
+def _judge_breaker_at() -> int:
+    """Consecutive judge failures after which we stop calling it for this document.
+
+    Default 8: high enough that a handful of flaky replies on a healthy endpoint never
+    trips it (any success resets the counter), low enough that a dead endpoint is detected
+    in seconds rather than after every clause has exhausted its retry ladder.
+    ``LEXORA_JUDGE_BREAKER_AT=0`` disables the breaker.
+    """
+    try:
+        return max(0, int(os.environ.get("LEXORA_JUDGE_BREAKER_AT", "8")))
+    except ValueError:
+        return 8
+
+
+def _judge_is_dead(failed: int, asked: int) -> bool:
+    """True when this document's judge failures look SYSTEMATIC rather than incidental.
+
+    The per-clause lane drops a clause whose judgement errored, which is the right call for
+    one flaky reply -- an outage must not invent a mapping. But apply it to every clause and
+    a dead endpoint produces an empty document silently: zero calls, zero cost, zero
+    citations, no exception. That has happened once already (a 403 that printed itself as a
+    successful $0.0000 run), and an invalid key still reproduces it exactly.
+
+    Above the threshold the caller degrades the whole document to the key-free ranking lane
+    instead. Default 0.5: a single failure on a two-clause document is not evidence of an
+    outage, so require a majority. ``LEXORA_JUDGE_DEGRADE_AT=1.1`` disables the gate (no
+    ratio can exceed 1), restoring the old drop-everything behaviour.
+    """
+    if asked <= 0:
+        return False
+    try:
+        threshold = float(os.environ.get("LEXORA_JUDGE_DEGRADE_AT", "0.5"))
+    except ValueError:
+        threshold = 0.5
+    return failed / asked > threshold
 
 
 def _map_pool_k() -> int:
@@ -1284,13 +1331,42 @@ def _citations_from_clauses(
     # full-text skim gets wrong). This IS the relevance decision, so it replaces the
     # per-indicator verifier loop below.
     if verifier is not None and getattr(verifier, "mode", "pick_one") == "per_clause":
-        specs = _per_clause_specs(
+        specs, judge_failed, judge_asked = _per_clause_specs(
             indicators, profile, index, clause_by_id, verifier,
             top_k=top_k, min_score=min_score, rel_floor=rel_floor,
             use_semantic=_map_use_dense(), reranker=reranker,
             sec_notes=sec_notes, common=common, llm_workers=llm_workers,
         )
-        return _execute_specs(specs, llm_workers, rationale_gen)
+        if not _judge_is_dead(judge_failed, judge_asked):
+            return _execute_specs(specs, llm_workers, rationale_gen)
+        # Systematic judge failure: fall through to the key-free ranking lane below by
+        # dropping the verifier. That lane is measurably worse (BM25 + boundary rules reach
+        # 24-29% gold recall against the judge's 85%) but it is REAL, verbatim-grounded
+        # output instead of nothing -- and it is measurably better than any small-model
+        # fallback we tested, at zero latency and zero spend. Every row says so in Notes,
+        # because a degraded row that looks identical to a judged one is the failure this
+        # gate exists to prevent.
+        logger.warning(
+            "judge unavailable for %s: %d/%d clause judgements failed -> DEGRADED to the "
+            "BM25 ranking lane for this document (lower recall; rows are marked)",
+            document.title or document.source_url, judge_failed, judge_asked,
+        )
+        verifier = None
+        # The two lanes want OPPOSITE things from `min_score`, so the degraded lane gets its
+        # own floor. For the judge, the pool is a pure RECALL gate -- a clause it never sees
+        # it can never admit -- so the floor stays low (raising it to 0.7 would cut 29% of
+        # the judge calls but also make one reachable gold section unreachable). The ranking
+        # lane has no way to say "this indicator has nothing here": it emits top_k for every
+        # indicator, so a weak floor is exactly how a document ends up with citations on
+        # indicators the legal group marked N/A. Measured on the MY PDPA, lifting the floor
+        # to 0.7 here drops those provably-wrong rows from 16 to 10 and total citations from
+        # 25 to 19 with gold recall UNCHANGED at 38% -- pure precision, no cost.
+        min_score = max(min_score, _degraded_min_score())
+        common["meta_note"] = " | ".join(filter(None, [
+            common.get("meta_note", ""),
+            f"DEGRADED: LLM judge unavailable ({judge_failed}/{judge_asked} judgements "
+            f"failed); this row comes from BM25 retrieval + boundary rules, not the judge",
+        ]))
 
     for indicator in indicators:
         secondary_note = sec_notes.get(indicator.submission_id, "")
@@ -1443,12 +1519,40 @@ def _per_clause_specs(
             pool_score[hit.clause_id] = max(pool_score.get(hit.clause_id, 0.0), hit.score)
             pair_score[(indicator.submission_id, hit.clause_id)] = hit.score
     if not pool_score:
-        return []
+        return [], 0, 0
 
     pool_ids = list(pool_score)
 
+    # Circuit breaker. Without one the degrade gate below is useless in practice: each
+    # judgement retries the endpoint up to six times before giving up, so a dead backend
+    # makes the run take LONGER than a healthy one and the gate only fires after every
+    # clause has been through the full retry ladder. Measured on the MY PDPA: a 90-clause
+    # document did not finish in ten minutes against an invalid key. After
+    # ``_JUDGE_BREAKER_AT`` consecutive failures we stop calling for the rest of this
+    # document and report the remainder as failed, which is exactly what they would be.
+    breaker = {"consecutive": 0, "open": False}
+    breaker_lock = threading.Lock()
+    breaker_at = _judge_breaker_at()
+
     def _judge(cid: str) -> tuple[str, set[str] | None]:
-        return cid, verifier.judge_clause(clause_by_id[cid], indicators)
+        if breaker["open"]:
+            return cid, None
+        verdict = verifier.judge_clause(clause_by_id[cid], indicators)
+        with breaker_lock:
+            if verdict is None:
+                breaker["consecutive"] += 1
+                if breaker_at and breaker["consecutive"] >= breaker_at:
+                    if not breaker["open"]:
+                        logger.warning(
+                            "judge failed %d times in a row -> not calling it again for "
+                            "this document", breaker["consecutive"],
+                        )
+                    breaker["open"] = True
+            else:
+                # A success means the endpoint is alive; flaky replies must not accumulate
+                # across an otherwise healthy document into a false outage.
+                breaker["consecutive"] = 0
+        return cid, verdict
 
     if llm_workers > 1 and len(pool_ids) > 1:
         from concurrent.futures import ThreadPoolExecutor
@@ -1457,6 +1561,13 @@ def _per_clause_specs(
             verdicts = dict(ex.map(_judge, pool_ids))
     else:
         verdicts = dict(_judge(cid) for cid in pool_ids)
+
+    # A None verdict is a backend failure, and this lane deliberately DROPS such a clause
+    # rather than keeping it: an outage must never fabricate a mapping. Individually that is
+    # right; in bulk it is how a dead endpoint turns into an empty submission that looks like
+    # a cheap successful run (calls 0, cost 0.00, citations 0). Count them so the caller can
+    # tell "this document had nothing" apart from "we never got an answer".
+    failed = sum(1 for v in verdicts.values() if v is None)
 
     # Invert to indicator -> [(clause_id, score)], keeping only boundary-admitted
     # clauses; a judge-assigned indicator that never retrieved the clause uses the
@@ -1486,7 +1597,7 @@ def _per_clause_specs(
                 indicator=ind_by_id[sid], clause=clause_by_id[cid],
                 bm25_score=score, secondary_note=sec_notes.get(sid, ""), **common,
             ))
-    return specs
+    return specs, failed, len(pool_ids)
 
 
 def _materialize(
@@ -1563,11 +1674,22 @@ def _materialize(
     )
 
 
+# Scale of the tanh squash below. The original 5.0 was calibrated against an assumed
+# "strong match ~5+", which real documents do not resemble: measured on the MY PDPA, the
+# per-indicator top-3 BM25 scores run 20-82. tanh(20/5) is already 0.9993, so EVERY score
+# normalised to 1.000 and three things silently stopped working -- `min_score` and
+# `rel_floor` became knobs that cannot gate at any setting below 1.0 (which is why
+# rel_floor=0.6 and rel_floor=0 produced byte-identical output), and the Confidence column
+# saturated: all 669 rows of the Round 1 submission carry ~1.0.
+# 40.0 puts the observed range across a usable spread (20 -> 0.46, 40 -> 0.76, 80 -> 0.96).
+_SCORE_SCALE = 40.0
+
+
 def _normalize_score(score: float) -> float:
-    """Squash unbounded BM25 scores into [0, 1] for the Pydantic confidence
-    field. tanh(score/5) maps a strong-match BM25 score (~5+) into the high-0.9s
-    and never saturates to 1.0."""
-    return float(max(0.0, min(1.0, math.tanh(score / 5.0))))
+    """Squash unbounded BM25 scores into [0, 1] for the Pydantic confidence field and for
+    the ``min_score`` / ``rel_floor`` gates, which are documented as portable [0, 1]
+    relevance floors. See ``_SCORE_SCALE`` for why the scale is what it is."""
+    return float(max(0.0, min(1.0, math.tanh(score / _SCORE_SCALE))))
 
 
 __all__ = [
