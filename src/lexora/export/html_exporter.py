@@ -28,6 +28,7 @@ from collections.abc import Iterable
 from datetime import datetime
 from pathlib import Path
 
+from lexora.export import provenance
 from lexora.export.law_name import normalize_law_name
 from lexora.models.citation import Citation
 
@@ -36,6 +37,9 @@ _CSS = """
 *{box-sizing:border-box}
 body{font-family:-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
  margin:0;padding:0 20px 60px;color:var(--ink);background:var(--bg);line-height:1.55}
+.demo-banner{background:#b42318;color:#fff;font-weight:700;letter-spacing:.02em;
+ text-align:center;padding:11px 16px;margin:0 -20px 4px;font-size:15px;
+ border-bottom:3px solid #7a1610}
 header{max-width:1080px;margin:0 auto;padding:22px 0 6px}
 h1{margin:.1em 0;font-size:26px}
 .sub{color:var(--dim);margin:0 0 14px;font-size:14px}
@@ -198,6 +202,13 @@ def to_html(citations: Iterable[Citation], out_path: Path, *,
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">",
         '<meta name="viewport" content="width=device-width, initial-scale=1">',
         f"<title>{e(title)}</title><style>{_CSS}</style></head><body>",
+    ]
+    # The page is what a reviewer looks at during the live pitch, so it is where the
+    # replayed/live distinction has to be impossible to miss -- before any number is read,
+    # not in a footnote under it.
+    if provenance.is_demonstration():
+        parts.append(f'<div class="demo-banner">{e(provenance.BANNER)}</div>')
+    parts += [
         "<header>", f"<h1>{e(title)}</h1>",
         f'<p class="sub">Generated {datetime.now().strftime("%Y-%m-%d %H:%M")} · '
         "every row carries its verbatim text, character offsets and official source URL. "
