@@ -106,6 +106,34 @@ _PER_CLAUSE_SYSTEM = (
     "POLARITY: for indicators phrased as 'Lack of <framework>' (P7-I1 comprehensive "
     "data-protection framework; P7-I2 dedicated cybersecurity framework), a clause that PROVIDES "
     "or constitutes part of that framework IS supporting evidence.\n"
+    # The two rules below resolve a UNIT MISMATCH, measured on the MY PDPA against the legal
+    # group's provision-level gold (scripts/bench_judge.py). A framework indicator's official
+    # definition asks an ECONOMY-level yes/no ("does a comprehensive horizontal framework
+    # exist"), but our output unit is one clause. Judging each clause against an economy-level
+    # test, the model admitted only the umbrella provisions and dropped the constituent
+    # obligations: P7-I1 scored 2/9 gold sections. Spelling out that the whole is evidenced by
+    # its parts took it to 9/9. The second rule is the necessary brake -- without it the model
+    # reads "part of the framework" as the entire statute and marks 50 of 146 sections,
+    # machinery included (precision 20%); bounding it to substantive duties and rights keeps
+    # 9/9 while halving the output (30-33 citations, precision 33-37%) and, as a side effect,
+    # makes the verdict markedly more stable across identical runs (88% -> 97% of clauses).
+    "FRAMEWORK INDICATORS ARE EVIDENCED PROVISION BY PROVISION. Such an indicator's official "
+    "definition describes the framework as a WHOLE, but you are mapping ONE clause at a time, "
+    "and the whole is evidenced by each of its parts. So mark P7-I1 on EVERY clause that enacts "
+    "a core data-protection obligation or data-subject right - the data-protection principles, "
+    "notice and consent, security, retention, access, correction, withdrawal of consent, "
+    "sensitive/special categories, the regulator's enforcement powers, and cross-border transfer "
+    "each count INDIVIDUALLY and on their own. Do NOT reserve the mark for the umbrella or "
+    "principles clause, and do NOT drop a clause merely because it covers only one part of the "
+    "framework.\n"
+    "BUT A FRAMEWORK IS NOT ITS WHOLE STATUTE. Mark P7-I1 only where the clause states a "
+    "SUBSTANTIVE duty owed by data controllers/processors or a RIGHT held by data subjects. Do "
+    "NOT mark the statute's machinery: registration, licensing or certification procedure, "
+    "appeals and tribunal constitution, the regulator's appointment/staffing/funding, inspection "
+    "and search procedure, offences and penalties, service of notices, bare definitions, "
+    "commencement, savings and transitional provisions, and schedules of forms. If a clause "
+    "would read as 'how the regime is administered' rather than 'what a data controller must do "
+    "or what a data subject may demand', leave P7-I1 out.\n"
     "- Base your judgement ONLY on the provided clause text and the indicator definitions, not on "
     "outside knowledge. You may ONLY return submission_id values from the given list.\n"
     'Respond with a single JSON object: {"indicators": [<submission_id>, ...], '
