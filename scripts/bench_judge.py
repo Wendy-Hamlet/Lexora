@@ -45,12 +45,17 @@ from lexora.pipeline import _normalize_score  # noqa: E402
 INDICATORS = REPO / "configs" / "rdtii_indicators.yaml"
 GOLD_MY = REPO / "configs" / "eval" / "mapping_sections_legal_my.csv"
 
-# CNY per 1M tokens: (fresh input, cached input, output). Paratera list prices.
+# CNY per 1M tokens: (fresh input, cached input, output). DERIVED FROM THE INVOICE
+# (2026-07-28), not from a price page: every rate below is a billed line divided by its
+# billed token count, so the numbers reconcile with what we were actually charged.
 # A model missing here still reports tokens; only the cost line is suppressed.
 RATES = {
-    "GLM-5.2": (8.0, 2.0, 28.0),
-    "GLM-4.5-Flash": (0.0, 0.0, 0.0),
-    "DeepSeek-V4-Flash": (0.5, 0.1, 2.0),
+    "GLM-5.2": (8.0, 2.0, 28.0),          # confirmed to the cent on all three lines
+    "GLM-4.5-Flash": (0.0, 0.0, 0.0),     # genuinely free, all three lines billed 0
+    "DeepSeek-V4-Flash": (1.0, 0.2, 2.0),  # was guessed at 0.5/0.1; the invoice says 1.0/0.2
+    # Qwen has NO cached-input line on the invoice at all, which corroborates the measured
+    # 0% prefix-cache hit rate: Paratera does not cache this family. Priced as input-only.
+    "Qwen3.5-35B-A3B": (1.6, 1.6, 12.8),
 }
 
 
