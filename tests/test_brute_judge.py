@@ -68,8 +68,16 @@ def test_make_brute_judge_uses_separate_brute_model(monkeypatch):
                         lambda name, default=None: os.environ.get(name, default))
     monkeypatch.delenv("LEXORA_BRUTE_MODEL", raising=False)
     j = make_brute_judge()
-    assert j is not None and j.model == "deepseek-v4-flash"  # brute stays non-reasoning
+    # UNSET means "follow LEXORA_LLM_MODEL". It used to mean a hardcoded vendor model name,
+    # which broke the one promise the No-Vendor-Lock-in rubric tests: point the base URL at
+    # a local Ollama and set LEXORA_LLM_MODEL=llama3, exactly as the README says, and this
+    # lane still asked that server for a model it has never heard of.
+    assert j is not None and j.model == "gpt-5.4"
     assert j.user_agent == "UA"  # UA threaded from shared config
+
+    # The split is still available for anyone who needs it -- an explicit override wins.
+    monkeypatch.setenv("LEXORA_BRUTE_MODEL", "DeepSeek-V4-Flash")
+    assert make_brute_judge().model == "DeepSeek-V4-Flash"
 
 
 def test_relevant_unions_passes(monkeypatch):

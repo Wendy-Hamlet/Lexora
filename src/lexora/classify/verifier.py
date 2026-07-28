@@ -433,7 +433,15 @@ def make_verifier(
     if model is None and mode == "per_clause":
         from lexora.config import env_value
 
-        model = env_value("LEXORA_BRUTE_MODEL", "deepseek-v4-flash")
+        # LEXORA_BRUTE_MODEL is an OVERRIDE, not a second source of truth. It used to
+        # default to a hardcoded vendor model name, which quietly broke the one promise the
+        # No-Vendor-Lock-in rubric actually tests: someone who points LEXORA_LLM_BASE_URL at
+        # a local Ollama and sets LEXORA_LLM_MODEL=llama3 -- exactly what our README tells
+        # them to do -- still had this lane ask that server for `deepseek-v4-flash`. The
+        # server 404s, every judgement fails, and since this lane produces essentially all
+        # of our output, "swap the model by changing .env" was false for the only lane that
+        # matters. Empty (unset) now means "whatever LEXORA_LLM_MODEL says".
+        model = env_value("LEXORA_BRUTE_MODEL", "") or None
 
     # The verdict cache serves the per_clause lane only: that is the one asking a question
     # with no state behind it (model + catalogue + clause text -> indicator set), and the

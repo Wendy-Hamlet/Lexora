@@ -80,3 +80,25 @@ def test_html_has_no_banner_on_a_live_run(live, tmp_path: Path):
     out = tmp_path / "r.html"
     to_html([], out)
     assert provenance.BANNER not in out.read_text(encoding="utf-8")
+
+
+def test_config_swap_reaches_every_llm_lane(monkeypatch):
+    """The No-Vendor-Lock-in rubric tests one thing: 'can swap OpenAI API for Llama 3
+    (self-hosted) by changing a config value, not rewriting pipelines'. So the config value
+    has to reach EVERY lane -- including the per-clause judge, which produces essentially
+    all of our output and used to default to a hardcoded vendor model name regardless."""
+    from types import SimpleNamespace
+
+    import lexora.classify.llm_client as llm_client_mod
+    import lexora.config as cfgmod
+    from lexora.classify.verifier import make_verifier
+
+    # `llm_client` binds load_config at import time, so patch it where it is USED.
+    monkeypatch.setattr(cfgmod, "env_value", lambda name, default=None: default)
+    monkeypatch.setattr(llm_client_mod, "load_config", lambda: SimpleNamespace(
+        llm_base_url="http://localhost:11434/v1", llm_api_key="none", llm_model="llama3",
+        llm_max_tokens=512, llm_max_retries=1, llm_user_agent="",
+    ))
+    for mode in ("pick_one", "per_cell", "per_clause"):
+        v = make_verifier(use_llm=True, mode=mode)
+        assert v is not None and v._client.model == "llama3", mode

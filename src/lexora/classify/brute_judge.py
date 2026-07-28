@@ -217,7 +217,10 @@ def make_brute_judge(*, enabled: bool | None = None, model: str | None = None) -
     return BruteJudge(
         base_url=base,
         api_key=key,
-        model=model or env_value("LEXORA_BRUTE_MODEL", DEFAULT_BRUTE_MODEL),
+        # Same rule as the per-clause judge: an unset override means "whatever
+        # LEXORA_LLM_MODEL says", so a config-only swap to a self-hosted model
+        # reaches this lane too instead of asking that server for a vendor name.
+        model=model or env_value("LEXORA_BRUTE_MODEL", "") or cfg.llm_model,
         user_agent=cfg.llm_user_agent or "Mozilla/5.0",
         passes=int(env_value("LEXORA_BRUTE_PASSES", "2")),
     )
