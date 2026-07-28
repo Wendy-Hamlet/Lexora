@@ -38,7 +38,7 @@ sys.path.insert(0, str(REPO / "src"))
 
 from lexora.classify.boundaries import admits_clause  # noqa: E402
 from lexora.classify.retrieval import build_index, retrieve_candidates  # noqa: E402
-from lexora.classify.verifier import Verifier  # noqa: E402
+from lexora.classify.verifier import _CLAUSE_TEXT_CAP, Verifier  # noqa: E402
 from lexora.indicators import load_indicators  # noqa: E402
 from lexora.pipeline import _normalize_score  # noqa: E402
 
@@ -184,9 +184,59 @@ def cost_cny(model: str, prompt: int, cached: int, completion: int) -> float | N
     )
 
 
+_BINARY_SYSTEM = (
+    "You are a legal-mapping auditor for the UN ESCAP RDTII framework. You are given ONE "
+    "indicator definition and ONE statutory clause. Answer a single question: does this "
+    "clause's operative provision fall within THIS indicator's definition, as direct "
+    "primary-source evidence?\n"
+    "- An incidental mention, a bare definition with no operative rule, or a pure "
+    "cross-reference to another Act is NOT support.\n"
+    "- For an indicator phrased as 'Lack of <framework>', a clause that enacts a core "
+    "obligation or data-subject right of that framework IS support, on its own -- but the "
+    "statute's machinery (registration, appeals, penalties, transitional provisions) is not.\n"
+    "- Judge only the text given, not the rest of the Act and not outside knowledge.\n"
+    'Respond with a single JSON object: {"supports": true|false}.'
+)
+_BINARY_SCHEMA = {"type": "object", "properties": {"supports": {"type": "boolean"}},
+                  "required": ["supports"]}
+
+
+def judge_binary(client, clause, indicators) -> set[str] | None:
+    """One yes/no question per indicator instead of one 9-in-1 subset question.
+
+    The 9-in-1 asks a model to hold nine long definitions at once and emit the right
+    SUBSET -- a multi-label task over a ~3.5k-token context. Frontier models do it well;
+    small ones collapse to one or two answers regardless of the clause. Decomposed, each
+    call carries a single definition and asks a question with two possible answers, which
+    is squarely inside a 7B model's competence.
+
+    The trade is 9x the calls. For a metered frontier model that is the wrong trade. For a
+    self-hosted open-weight model -- the No-Vendor-Lock-in lane -- calls are free and only
+    wall-clock is spent, so it is exactly the right one.
+    """
+    out: set[str] = set()
+    text = clause.span.text.strip().replace("\n", " ")[:_CLAUSE_TEXT_CAP]
+    for ind in indicators:
+        user = (f"INDICATOR {ind.submission_id} ({ind.name}): {ind.description}\n"
+                f"{ind.long_definition or ''}\n\nCLAUSE:\n{text}")
+        try:
+            data = client.chat(_BINARY_SYSTEM, user, json_schema=_BINARY_SCHEMA)
+        except Exception:
+            return None
+        if isinstance(data, dict) and data.get("supports") is True:
+            out.add(ind.submission_id)
+    return out
+
+
 def run_pass(verifier, pool_ids, clause_by_id, indicators, workers: int,
-             samples: int = 1) -> tuple[dict, float]:
+             samples: int = 1, binary: bool = False) -> tuple[dict, float]:
     def _judge(cid):
+        if binary:
+            verdict = judge_binary(verifier._client, clause_by_id[cid], indicators)
+            if verdict:
+                verdict = {s for s in verdict
+                           if admits_clause(_RDTII_BY_SID[s], clause_by_id[cid].span.text)}
+            return cid, verdict
         verdict = verifier.judge_clause(clause_by_id[cid], indicators)
         for _ in range(samples - 1):
             # Self-consistency: the model is not deterministic even at temperature 0, so
@@ -234,6 +284,8 @@ def main() -> None:
     ap.add_argument("--thinking", choices=["on", "off"], default=None,
                     help="override LEXORA_LLM_DISABLE_THINKING for this bench")
     ap.add_argument("--max-tokens", type=int, default=0, help="override LEXORA_LLM_MAX_TOKENS")
+    ap.add_argument("--binary", action="store_true",
+                    help="ask one yes/no per indicator instead of the 9-in-1 subset")
     ap.add_argument("--samples", type=int, default=1,
                     help="self-consistency: union N independent verdicts per clause")
     ap.add_argument("--dry-run", action="store_true", help="pool stats only, no LLM calls")
@@ -299,7 +351,7 @@ def main() -> None:
         client = LlmClient(model=args.model or os.environ.get("LEXORA_BRUTE_MODEL"))
         verifier = Verifier(client, mode="per_clause", cache=None)
         verdicts, wall = run_pass(verifier, pool_ids, clause_by_id, indicators, args.workers,
-                                  samples=args.samples)
+                                  samples=args.samples, binary=args.binary)
         gold = load_gold(gold_path, args.iso)
         metrics = score_verdicts(verdicts, clause_by_id, gold)
         cached_share = client.cached_prompt_tokens / client.prompt_tokens if client.prompt_tokens else 0.0

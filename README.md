@@ -223,7 +223,55 @@ LEXORA_LLM_MODEL=llama3                            # or gpt-4o, Qwen2.5-7B-Instr
 LEXORA_LLM_API_KEY=not-needed-for-local            # real key for cloud
 ```
 
-The client is abstracted in `src/lexora/classify/llm_client.py`.
+The client is abstracted in `src/lexora/classify/llm_client.py`. The config value reaches
+**every** lane — `pick_one`, `per_cell` and the per-clause judge that produces essentially
+all of our output. `LEXORA_BRUTE_MODEL` exists to pin a *different* model for the judge, but
+it is an override: leave it unset and the judge follows `LEXORA_LLM_MODEL` like everything
+else. (It did not always. Until 2026-07-28 it defaulted to a hardcoded vendor model name, so
+following the instructions above pointed a local Ollama at a model it had never heard of and
+every judgement 404'd. `tests/test_provenance.py::test_config_swap_reaches_every_llm_lane`
+now pins this lane by lane.)
+
+### Open-source fallback (if commercial API)
+
+Swapping the endpoint works. **Swapping in a small open-weight model does not preserve the
+output**, and we would rather show the measurement than imply otherwise. Same document
+(MY PDPA), same 90-clause pool, same gold:
+
+| lane | gold recall | API calls | wall | cost |
+| :---- | ----: | ----: | ----: | ----: |
+| GLM-5.2, 9-in-1 (default) | **85 %** | 90 | 36 s | ¥1.13 |
+| **BM25 + boundary rules — no model at all** | **38 %** | **0** | **0.0 s** | **¥0** |
+| GLM-4.5-Flash, one yes/no per indicator | 15 % | 810 | 317 s | ¥0 |
+| GLM-4.5-Flash, 9-in-1 | 8 % | 90 | 59 s | ¥0 |
+| Qwen3.5-35B-A3B, 9-in-1 | 12 % | 90 | 38 s | ¥0.65 |
+| DeepSeek-V4-Flash, 9-in-1 | 6 % | 90 | 34 s | ¥0.06 |
+
+Two things follow, and neither is a slogan.
+
+**The 9-in-1 question is the problem, and decomposing it helps.** Asking a model to hold
+nine long indicator definitions at once and return the right *subset* is a multi-label task
+over a ~3.5k-token context. Small models collapse to one or two answers regardless of the
+clause. Asked one indicator at a time — a yes/no with a single definition in front of it —
+the same free model roughly doubles (8 % → 15 %, 1 → 8 citations). The trade is 9× the
+calls, which is the wrong trade for a metered frontier model and the right one for a
+self-hosted server where only wall-clock is spent. `scripts/bench_judge.py --binary`
+reproduces it.
+
+**But our open-source fallback is not a small model — it is no model.** The deterministic
+lane (BM25 retrieval + per-indicator boundary rules + the verbatim validator) reaches 38 %
+on the same gold with zero API calls and zero seconds, beating every small model we could
+test by more than 2×. It needs no key, no server, no GPU and no weights, it is what
+`--no-llm` has always run, and since 2026-07-28 the pipeline **falls back to it
+automatically** when the judge is systematically unreachable — with `DEGRADED: LLM judge
+unavailable` written into every affected row, so a degraded run can never be mistaken for a
+judged one.
+
+**What we did not test:** llama3 itself. We have no local Ollama host in this environment,
+so the open-weight numbers above come from small *hosted* models on an OpenAI-compatible
+endpoint. A 70B-class local model may well land between the free tier and GLM-5.2; we are
+not claiming otherwise, only reporting what we measured. The swap mechanism is exercised by
+tests; the quality claim is scoped to the models in the table.
 
 ## Swapping the OCR Engine
 
