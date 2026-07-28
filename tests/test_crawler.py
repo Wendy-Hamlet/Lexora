@@ -156,3 +156,29 @@ def test_live_fetch_real_government_pdf(tmp_path):
     assert res.document.http_status == 200
     assert res.is_pdf()
     assert len(res.body) > 10_000
+
+
+def test_replayed_fetch_keeps_the_recorded_retrieval_time():
+    """The audit trail must date a document to when the portal served it, not to now.
+
+    ``retrieval_timestamp`` is exported beside every citation. Replaying a recording
+    re-reads bytes the portal handed over earlier, possibly days earlier for a demo, so
+    stamping the run's own clock onto them would quietly overstate how fresh the source
+    is -- the one field a reviewer would use to check exactly that.
+    """
+    from datetime import datetime, timezone
+
+    recorded = datetime(2026, 7, 20, 9, 15, tzinfo=timezone.utc)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, content=b"<html>Act</html>",
+            headers={"content-type": "text/html",
+                     "x-lexora-recorded-at": recorded.isoformat()},
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = fetch("https://sso.agc.gov.sg/Act/PDPA2012", jurisdiction="SG",
+                       portal_name="SSO", source_type=SourceType.primary, client=client)
+
+    assert result.document.retrieval_timestamp == recorded

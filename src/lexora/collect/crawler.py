@@ -110,6 +110,16 @@ def _browser_render(url: str, *, timeout: float):
         return None
 
 
+def _parse_recorded_at(value: str | None) -> datetime | None:
+    """The replay layer's ``x-lexora-recorded-at`` header, or None on a live fetch."""
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value)
+    except ValueError:
+        return None
+
+
 def _space(host: str, min_interval: float) -> None:
     """Sleep so this call starts >= ``min_interval`` after the previous same-host
     hit. Lock-free spacing core — the CALLER must already hold ``_host_lock(host)``."""
@@ -215,6 +225,9 @@ def fetch(
         content_type = response.headers.get(
             "content-type", "application/octet-stream"
         ).split(";")[0].strip()
+        # A replayed response carries the instant the portal really served it; the
+        # audit trail must report that, not the moment we read it back off disk.
+        retrieved_at = _parse_recorded_at(response.headers.get("x-lexora-recorded-at"))
 
         # AU EPUB is split across document_1..N (a big Act keeps its Schedule —
         # e.g. the Criminal Code's computer offences — in the later parts); splice
@@ -253,7 +266,7 @@ def fetch(
     document = RawDocument(
         document_id=_document_id(jurisdiction, sha),
         source_url=final_url,
-        retrieval_timestamp=datetime.now(timezone.utc),
+        retrieval_timestamp=retrieved_at or datetime.now(timezone.utc),
         http_status=status,
         sha256=sha,
         content_type=content_type,

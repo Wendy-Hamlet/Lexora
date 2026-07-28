@@ -35,7 +35,17 @@ class RenderedResult:
 
 
 def is_available() -> bool:
-    """True if Playwright AND a Chromium build are installed and launchable."""
+    """True if Playwright AND a Chromium build are installed and launchable.
+
+    Under ``LEXORA_HTTP_CACHE=replay`` this answers True without touching Chromium:
+    the recording stands in for the browser, and callers gate the whole rendered leg
+    on this function — answering False there would silently drop Singapore's SSO
+    portal from an offline run rather than replay it.
+    """
+    from lexora.collect import http_cache
+
+    if http_cache.mode() == http_cache.REPLAY:
+        return True
     try:
         from playwright.sync_api import sync_playwright
     except Exception:
@@ -70,6 +80,13 @@ class BrowserSession:
         self._ctx = None
 
     def __enter__(self) -> BrowserSession:
+        from lexora.collect import http_cache
+
+        if http_cache.mode() == http_cache.REPLAY:
+            # Every render will be served from the recording, so launching Chromium
+            # would cost seconds and buy nothing — and an offline machine may not
+            # have it at all.
+            return self
         try:
             from playwright.sync_api import sync_playwright
         except Exception as exc:  # pragma: no cover - only without playwright
@@ -136,7 +153,24 @@ class BrowserSession:
         empty ``RenderedResult`` if every attempt raised — so a flaky single
         navigation degrades to an empty hit set rather than crashing the whole
         discovery sweep (its caller loop has no per-query guard).
+
+        This is the one place every rendered page passes through, so it is also where
+        the record/replay layer hooks in. Playwright runs its own network stack below
+        httpx, so :mod:`lexora.collect.http_cache` cannot see this leg from the
+        transport; the rendered DOM is stored by URL instead. A replay miss returns
+        the same empty result as a failed navigation, which callers already handle.
         """
+        from lexora.collect import http_cache
+
+        cache_mode = http_cache.mode()
+        if cache_mode == http_cache.REPLAY:
+            stored = http_cache.store().get_render(url)
+            if stored is None:
+                return RenderedResult(status=0, final_url=url, html="")
+            status, final_url, content_type, html = stored
+            return RenderedResult(status=status or 200, final_url=final_url,
+                                  html=html, content_type=content_type)
+
         result: RenderedResult | None = None
         for attempt in range(retries + 1):
             if attempt:
@@ -151,9 +185,12 @@ class BrowserSession:
                 continue
             if is_valid is None or is_valid(result.html):
                 break
-        return result if result is not None else RenderedResult(
-            status=0, final_url=url, html=""
-        )
+        if result is None:
+            return RenderedResult(status=0, final_url=url, html="")
+        if cache_mode == http_cache.RECORD and result.html:
+            http_cache.store().put_render(url, result.status, result.final_url,
+                                          result.content_type, result.html)
+        return result
 
     def __exit__(self, *exc) -> None:
         try:

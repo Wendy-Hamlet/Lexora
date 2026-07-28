@@ -47,6 +47,7 @@ data/raw/
 data/canonical/
 data/index/
 data/cache/
+data/http_cache/
 data/models/
 outputs/
 *.sqlite
