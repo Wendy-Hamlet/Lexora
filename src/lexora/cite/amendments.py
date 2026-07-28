@@ -510,14 +510,24 @@ def has_global_rename(instructions: list[AmendmentInstruction]) -> bool:
 _TITLE_CORE_RE = re.compile(r"\s*\bAct\b\s*\d", re.IGNORECASE)
 
 
-def amendment_search_queries(title: str) -> list[str]:
+def amendment_search_queries(title: str, *, word_tokenised: bool = False) -> list[str]:
     """Portal queries that would surface amendments to a principal law, DERIVED from
     its title — general (works for any law), not a hardcoded amendment name.
 
     The driver tags every fetched document (``classify_version``) and, for each
     ORIGINAL, runs these queries to look for ITS amendments, rather than chasing a
     fixed list of known amending Acts. From "Personal Data Protection Act 2010" the
-    core "Personal Data Protection" yields "...(Amendment) Act" / "...Amendment"."""
+    core "Personal Data Protection" yields "...(Amendment) Act" / "...Amendment".
+
+    ``word_tokenised`` says the portal's search matches a bag of words rather than the
+    literal string (Singapore SSO's ``PhraseType=AllWords``). There the two variants
+    are the SAME question: punctuation is not a token, and the only word that differs,
+    "Act", appears in every statute title — so "X (Amendment) Act" and "X Amendment"
+    match the same set, and the shorter one is the less constrained of the two.
+    Measured on the 2026-07-27 Singapore run: of 21 pairs actually issued, 20 returned
+    an identical instrument set (the 21st differed only because one of the two was
+    refused by the CDN). Half those renders bought nothing.
+    """
     t = (title or "").strip()
     if not t:
         return []
@@ -526,6 +536,8 @@ def amendment_search_queries(title: str) -> list[str]:
     core = re.sub(r"\s+", " ", core)
     if len(core) < 3:
         return []
+    if word_tokenised:
+        return [f"{core} Amendment"]
     return [f"{core} (Amendment) Act", f"{core} Amendment"]
 
 

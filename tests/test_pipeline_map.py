@@ -139,3 +139,56 @@ def test_map_use_dense_defaults_off_and_honors_env(monkeypatch):
     for val in ("0", "false", "no", ""):
         monkeypatch.setenv("LEXORA_MAP_DENSE", val)
         assert pipe._map_use_dense() is False
+
+
+# --- follow-on candidate batching (`_fetch_in_order`) -------------------------------
+
+def test_fetch_in_order_preserves_the_batch_order():
+    """Acceptance downstream depends on order, so scheduling must not decide it.
+
+    Which of two byte-identical candidates is kept is settled by whichever the caller
+    sees first; if a thread pool could reorder the batch, that would become a coin toss
+    between runs.
+    """
+    from lexora.pipeline import _fetch_in_order
+
+    hits = list(range(24))
+    assert _fetch_in_order(lambda h: h * 2, hits, workers=8) == [h * 2 for h in hits]
+    assert _fetch_in_order(lambda h: h * 2, hits, workers=1) == [h * 2 for h in hits]
+
+
+def test_fetch_in_order_is_scheduling_independent():
+    """Serial and parallel must produce the same list, whatever the timings."""
+    import random
+    import time
+
+    from lexora.pipeline import _fetch_in_order
+
+    def slow(h):
+        time.sleep(random.random() / 200)
+        return f"art-{h}"
+
+    hits = list(range(16))
+    assert _fetch_in_order(slow, hits, workers=8) == _fetch_in_order(slow, hits, workers=1)
+
+
+def test_one_bad_candidate_does_not_lose_the_batch():
+    """A follow-on pass that dies on one dead link loses every amendment after it."""
+    from lexora.pipeline import _fetch_in_order
+
+    def flaky(h):
+        if h == 3:
+            raise RuntimeError("dead link")
+        return h
+
+    for workers in (1, 4):
+        assert _fetch_in_order(flaky, list(range(6)), workers) == [0, 1, 2, None, 4, 5]
+
+
+def test_an_empty_batch_starts_no_pool():
+    from lexora.pipeline import _fetch_in_order
+
+    def explode(_h):
+        raise AssertionError("must not be called")
+
+    assert _fetch_in_order(explode, [], workers=8) == []

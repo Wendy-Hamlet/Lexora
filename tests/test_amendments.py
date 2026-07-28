@@ -351,3 +351,29 @@ def test_amendment_search_queries_strips_existing_amendment_and_blanks():
         "Personal Data Protection (Amendment) Act"
     assert amendment_search_queries("") == []
     assert amendment_search_queries("Act 2010") == []
+
+
+def test_amendment_search_queries_collapse_on_a_word_tokenised_portal():
+    """On a bag-of-words portal the two variants ask the same question.
+
+    Singapore SSO searches with `PhraseType=AllWords`: punctuation is not a token, and
+    the only word that differs between the variants -- "Act" -- appears in every
+    statute title, so "X (Amendment) Act" and "X Amendment" match the same set.
+    Measured on the 2026-07-27 run: 20 of the 21 pairs actually issued returned an
+    identical instrument set (the 21st differed only because the CDN refused one of
+    the two), so half of those renders bought nothing.
+    """
+    both = amendment_search_queries("Personal Data Protection Act 2010")
+    one = amendment_search_queries("Personal Data Protection Act 2010",
+                                   word_tokenised=True)
+    assert len(both) == 2
+    # The surviving query is the LESS constrained of the pair (it drops a word).
+    assert one == ["Personal Data Protection Amendment"]
+    assert set(one).issubset(both)
+
+
+def test_word_tokenised_collapse_keeps_the_blank_and_strip_behaviour():
+    assert amendment_search_queries("", word_tokenised=True) == []
+    assert amendment_search_queries("Act 2010", word_tokenised=True) == []
+    assert amendment_search_queries("Cyber Security (Amendment) Act 2024",
+                                    word_tokenised=True) == ["Cyber Security Amendment"]

@@ -162,10 +162,13 @@ def test_summarize_counts_instruments_citations_and_review():
 
 
 def test_run_one_warns_when_verify_requested_but_verifier_unavailable(monkeypatch, capsys):
+    from lexora.models.source import FetchPolicy
+
     monkeypatch.setattr(
         rs,
         "load_profile",
-        lambda _path: SimpleNamespace(portals=[SimpleNamespace()]),
+        lambda _path: SimpleNamespace(portals=[SimpleNamespace()],
+                                      fetch_policy=FetchPolicy()),
     )
     monkeypatch.setattr(rs, "load_indicators", lambda _path, **_kw: [])
     monkeypatch.setattr(rs, "make_verifier", lambda use_llm, **kw: None)

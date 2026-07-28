@@ -67,7 +67,29 @@ class PortalSpec(BaseModel):
     # multi-instrument discoverer falls back to name-driven lookup of the
     # jurisdiction's known instruments instead of scraping the SPA browse list.
     full_text: bool = True
+    # Whether the portal's search matches a BAG OF WORDS rather than the literal
+    # string (SG SSO's `PhraseType=AllWords`). When true, punctuation carries no
+    # meaning and a query that merely adds a ubiquitous word ("Act") asks the same
+    # question — so query variants that differ only in those ways are redundant.
+    word_tokenised_search: bool = False
     notes: str | None = None
+
+
+class FetchPolicy(BaseModel):
+    """How hard a jurisdiction's portal may be pushed.
+
+    Document-level concurrency is worth several minutes a run — 93% of the per-document
+    time is spent waiting on the network — but every portal here sits behind a
+    rate-limiter that answers a burst with a refusal rather than an error. The safe
+    setting is a property of the portal, not of the caller, so it lives beside the
+    portal definition and defaults to fully serial for a profile that has not been
+    measured. Raise it only with the acquisition tally (blocked / unrendered counts)
+    in front of you: parallelism that turns answers into refusals is not a speed-up.
+    """
+
+    doc_workers: int = 1        # instruments processed concurrently
+    serial_fetch: bool = False  # one same-host download in flight at a time
+    min_interval: float = 0.0   # minimum seconds between same-host fetch starts
 
 
 class SourceProfile(BaseModel):
@@ -96,6 +118,8 @@ class SourceProfile(BaseModel):
     # was not fetched. Only covers KNOWN laws; the corpus/portal signals generalize to
     # NEW laws. Shape: {"709": [{"by": "Act A1727", "year": 2024}, ...]}.
     amended_by: dict[str, list[dict]] = Field(default_factory=dict)
+    # How hard this jurisdiction's portals tolerate being pushed. Serial by default.
+    fetch_policy: FetchPolicy = Field(default_factory=FetchPolicy)
     portals: list[PortalSpec] = Field(default_factory=list)
 
 

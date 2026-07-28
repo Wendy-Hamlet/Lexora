@@ -422,8 +422,19 @@ def run_pipeline_map(
     The link-relevance floor inside discovery is separate (its own default).
     """
     from lexora.collect.browser import DEFAULT_UA as BROWSER_UA
-    from lexora.collect.discovery import discover_for_indicators, resolve_fulltext
+    from lexora.collect.discovery import (
+        discover_for_indicators,
+        reset_acquisition_log,
+        reset_page_memo,
+        resolve_fulltext,
+    )
     from lexora.models.source import FetchMethod
+
+    # One economy run = one acquisition tally and one page memo. Both are scoped here
+    # rather than to the sweep, because the follow-on discovery passes below issue the
+    # majority of a run's queries and belong to the same accounting.
+    reset_acquisition_log()
+    reset_page_memo()
 
     force_browser = portal.fetch_method is FetchMethod.playwright
     dest_dir = dest_dir or (Path("data") / "raw" / profile.iso_code.lower())
@@ -463,6 +474,8 @@ def run_pipeline_map(
 
     _progress = {"done": 0, "total": len(hits)}
     _progress_lock = threading.Lock()
+    _processed: dict[tuple, DemoArtifacts] = {}
+    _processed_lock = threading.Lock()
 
     def _process(hit) -> DemoArtifacts:
         t0 = time.perf_counter()
@@ -496,6 +509,24 @@ def run_pipeline_map(
         else:
             wanted = set(hit.indicator_hits) or _attribute_by_name(hit, profile, indicators)
             ind_subset = [i for i in indicators if i.submission_id in wanted] or indicators
+
+        # Ask the same question of the same document once. Two discovery hits can
+        # resolve to one full text (a law surfaced by both its name and a concept
+        # phrase), and the follow-on passes re-reach laws the main sweep already
+        # mapped — measured 2026-07-27: 8 of 122 map events were exact repeats, and
+        # the amendment pass fetched, OCR'd, parsed and mapped each duplicate in full
+        # before `_consider` discarded it on its hash.
+        #
+        # The key carries the discovery tag and the indicator subset, not just the
+        # URL: under regime-1 attribution the same text scored against a different
+        # indicator set is a DIFFERENT question, and reusing there would silently
+        # narrow the second hit's coverage to the first one's.
+        cache_key = (target, tag.value, tuple(i.submission_id for i in ind_subset))
+        with _processed_lock:
+            done = _processed.get(cache_key)
+        if done is not None:
+            return done
+
         artifacts = run_pipeline_from_url(
             url=target, profile=profile, indicators=ind_subset, portal_name=portal.name,
             source_type=portal.source_type, dest_dir=dest_dir, top_k=top_k,
@@ -510,12 +541,20 @@ def run_pipeline_map(
             brute_judge=brute_judge,
         )
         artifacts.processing_time_seconds = round(time.perf_counter() - t0, 3)
+        with _processed_lock:
+            _processed[cache_key] = artifacts
         with _progress_lock:
             _progress["done"] += 1
             n = _progress["done"]
+            total = _progress["total"]
+        # `_process` is also the worker for the three follow-on passes below (amendments,
+        # child regulations, regulator soft law), which grow the working set as they go.
+        # Their counts are not known in advance, so once the initial set is exhausted the
+        # denominator is dropped rather than printed as a number the run has passed.
+        where = f"{n}/{total}" if total is not None and n <= total else f"{n} (follow-on)"
         logger.info(
-            "mapped %d/%d %-38s %d clause(s) -> %d citation(s) [%.1fs]",
-            n, _progress["total"], (hit.title or hit.url)[:38],
+            "mapped %-12s %-38s %d clause(s) -> %d citation(s) [%.1fs]",
+            where, (hit.title or hit.url)[:38],
             len(artifacts.clauses), len(artifacts.citations),
             artifacts.processing_time_seconds,
         )
@@ -533,6 +572,13 @@ def run_pipeline_map(
             documents = list(ex.map(_process, hits))
     else:
         documents = [_process(h) for h in hits]
+    # Two hits that resolved to one document now share one artifacts object; carry it
+    # once so the JSON sidecar and the currency pass each see the document once.
+    seen_artifacts: set[int] = set()
+    documents = [d for d in documents
+                 if id(d) not in seen_artifacts and not seen_artifacts.add(id(d))]
+    with _progress_lock:
+        _progress["total"] = None  # the discovered set is done; what follows is follow-on
 
     # Tag every fetched law original/amendment/consolidated and, for each ORIGINAL,
     # look for ITS amendments (queries derived from its own title — general, not a
@@ -541,7 +587,7 @@ def run_pipeline_map(
     if discover_amendments:
         documents = documents + _discover_amendments(
             documents, _process, portal, profile,
-            force_browser=force_browser, timeout=timeout,
+            force_browser=force_browser, timeout=timeout, workers=doc_workers,
         )
         # AU only: pull in the principal REGULATIONS made under each Act. The brute
         # Act-enumeration skips delegated legislation (a different FRL collection), so
@@ -549,13 +595,13 @@ def run_pipeline_map(
         # 2021 -> P7-I5) is otherwise unreachable. Runs after the amendment pass so it
         # sees (and de-dups against) the amendments already added.
         documents = documents + _discover_child_regulations(
-            documents, _process, timeout=timeout,
+            documents, _process, timeout=timeout, workers=doc_workers,
         )
         # Regulator soft-law (codes of practice / standards) the statute portal does
         # not index — gold instruments (MY: PDP Codes of Practice + Standard 2015)
         # otherwise unreachable by the map pipeline.
         documents = documents + _discover_regulator_instruments(
-            profile, _process, documents, timeout=timeout,
+            profile, _process, documents, timeout=timeout, workers=doc_workers,
         )
 
     citations: list[Citation] = []
@@ -593,6 +639,34 @@ def run_pipeline_map(
     )
 
 
+def _fetch_in_order(process_fn, hits: list, workers: int) -> list:
+    """Fetch/parse/map a batch of discovery hits, results in the batch's own order.
+
+    The follow-on passes each discover candidates one query at a time (browser-bound
+    and serial, under the portal's rate limit) and then need every candidate fetched,
+    OCR'd, parsed and mapped (network- and CPU-bound, and independent per candidate).
+    Doing the second inline with the first makes the whole pass run at the sum of both:
+    measured 2026-07-27, the follow-on passes were 72% of a Singapore run and each of
+    their ~130 fetches waited on the previous one.
+
+    Order is preserved and acceptance stays with the caller, so which of two
+    byte-identical candidates is kept never depends on thread timing. A candidate that
+    raises yields ``None`` rather than losing the batch.
+    """
+    def _safe(hit):
+        try:
+            return process_fn(hit)
+        except Exception:  # noqa: BLE001 — one bad candidate, not the pass
+            return None
+
+    if workers > 1 and len(hits) > 1:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=min(workers, len(hits))) as ex:
+            return list(ex.map(_safe, hits))
+    return [_safe(h) for h in hits]
+
+
 def _discover_amendments(
     documents: list[DemoArtifacts],
     process_fn,
@@ -603,6 +677,7 @@ def _discover_amendments(
     timeout: float,
     max_queries: int | None = None,
     per_query: int = 4,
+    workers: int = 1,
 ) -> list[DemoArtifacts]:
     """For every ORIGINAL or CONSOLIDATED law in the working set, look for ITS amendments.
 
@@ -648,7 +723,9 @@ def _discover_amendments(
             floor = detect_incorporated_to(a.document_text or "")
         else:
             continue
-        for q in amendment_search_queries(a.document.title):
+        for q in amendment_search_queries(
+            a.document.title, word_tokenised=portal.word_tokenised_search
+        ):
             if q not in query_floor:
                 query_floor[q] = floor
             elif floor is None or query_floor[q] is None:
@@ -665,10 +742,16 @@ def _discover_amendments(
         queries = queries[:max_queries]
 
     new_docs: list[DemoArtifacts] = []
+    # Candidates are gathered first and fetched afterwards, on a pool. Discovering them
+    # is browser-bound and strictly serial (one session, spaced under the portal's rate
+    # limit); fetching and parsing them is network- and CPU-bound and independent per
+    # candidate. Interleaving the two, as this used to, made the whole pass run at the
+    # speed of the slower one: measured 2026-07-27, the follow-on passes were 72% of a
+    # Singapore run and every one of their ~130 fetches waited for the previous.
+    candidates: list = []
 
-    def _consider(hit, floor: int | None) -> None:
-        """Fetch+classify one amendment candidate; keep it iff it really is an
-        amending Act (``AMENDMENT_DELTA``) the principal doesn't already incorporate."""
+    def _collect(hit, floor: int | None) -> None:
+        """Queue one amendment candidate, applying the checks that need no fetch."""
         if hit.url in seen_url:
             return
         seen_url.add(hit.url)
@@ -677,15 +760,20 @@ def _discover_amendments(
         hit_year = _year_of(hit.title)
         if floor is not None and hit_year is not None and hit_year <= floor:
             return
-        try:
-            art = process_fn(hit)
-        except Exception:  # noqa: BLE001
+        candidates.append(hit)
+
+    def _fetch_candidates() -> None:
+        """Fetch the queued candidates and keep the ones that really are amendments."""
+        if not candidates:
             return
-        if art.document.sha256 in have_sha:
-            return
-        if classify_version(art.document_text or "") is VersionKind.amendment_delta:
-            have_sha.add(art.document.sha256)
-            new_docs.append(art)
+        fetched = _fetch_in_order(process_fn, list(candidates), workers)
+        candidates.clear()
+        for art in fetched:
+            if art is None or art.document.sha256 in have_sha:
+                continue
+            if classify_version(art.document_text or "") is VersionKind.amendment_delta:
+                have_sha.add(art.document.sha256)
+                new_docs.append(art)
 
     # Path 1 — title-derived name search (portal-agnostic). Works for amendments named
     # "<principal core> Amendment Act"; misses theme-named omnibus Acts (see Path 2).
@@ -700,7 +788,8 @@ def _discover_amendments(
         except Exception:  # noqa: BLE001 — a failed amendment query never breaks a run
             continue
         for hit in hits:
-            _consider(hit, floor)
+            _collect(hit, floor)
+    _fetch_candidates()
 
     # Path 2 — AU FRL reverse-lookup (recovers the omnibus amendments Path 1 cannot).
     # Australia's omnibus amendment Acts ("Surveillance Legislation Amendment (Identify
@@ -728,7 +817,8 @@ def _discover_amendments(
         except Exception:  # noqa: BLE001
             continue
         for hit in amd_hits:
-            _consider(hit, floor)
+            _collect(hit, floor)
+    _fetch_candidates()
 
     # Path 3 — SG SSO inline-annotation reverse-lookup (the SG analogue of Path 2).
     # SSO has no FRL-style affects API, but a consolidated Act's text annotates each
@@ -743,7 +833,8 @@ def _discover_amendments(
         if "sso.agc.gov.sg" not in str(a.document.source_url):
             continue
         for hit in sg_amendment_acts(a.document_text or ""):
-            _consider(hit, None)
+            _collect(hit, None)
+    _fetch_candidates()
 
     return new_docs
 
@@ -754,6 +845,7 @@ def _discover_regulator_instruments(
     existing: list[DemoArtifacts],
     *,
     timeout: float,
+    workers: int = 1,
 ) -> list[DemoArtifacts]:
     """Harvest soft-law (codes of practice, standards) from the regulator portals
     in the profile and add the ones that fetch to real text.
@@ -782,15 +874,10 @@ def _discover_regulator_instruments(
             )
         except Exception:  # noqa: BLE001 — a failed connector never breaks the run
             continue
-        for hit in hits:
-            if hit.url in seen_url:
-                continue
-            seen_url.add(hit.url)
-            try:
-                art = process_fn(hit)
-            except Exception:  # noqa: BLE001
-                continue
-            if art.document.sha256 in have_sha:
+        fresh = [h for h in hits if h.url not in seen_url]
+        seen_url.update(h.url for h in fresh)
+        for art in _fetch_in_order(process_fn, fresh, workers):
+            if art is None or art.document.sha256 in have_sha:
                 continue
             if art.document_text:  # kept iff it fetched to real text
                 have_sha.add(art.document.sha256)
@@ -803,6 +890,7 @@ def _discover_child_regulations(
     process_fn,
     *,
     timeout: float,
+    workers: int = 1,
 ) -> list[DemoArtifacts]:
     """For every AU principal Act in the working set, discover the principal
     REGULATIONS made under it and add the ones that fetch successfully.
@@ -829,15 +917,10 @@ def _discover_child_regulations(
             hits = au_child_regulations(fid, a.document.title, timeout=timeout)
         except Exception:  # noqa: BLE001 — a failed lookup never breaks the run
             continue
-        for hit in hits:
-            if hit.url in seen_url:
-                continue
-            seen_url.add(hit.url)
-            try:
-                art = process_fn(hit)
-            except Exception:  # noqa: BLE001
-                continue
-            if art.document.sha256 in have_sha:
+        fresh = [h for h in hits if h.url not in seen_url]
+        seen_url.update(h.url for h in fresh)
+        for art in _fetch_in_order(process_fn, fresh, workers):
+            if art is None or art.document.sha256 in have_sha:
                 continue
             if art.document_text:  # kept iff it fetched to real text
                 have_sha.add(art.document.sha256)

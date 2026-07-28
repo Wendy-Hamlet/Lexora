@@ -9,6 +9,13 @@ legal_system: "common"
 
 ocr_languages: ["eng", "msa"]
 
+# The AGC Fess back-end answers over plain HTTP with no observed rate wall, but MY
+# documents are the heavy scans (one is 98 MB), so concurrency here buys OCR overlap
+# rather than network overlap.
+fetch_policy:
+  doc_workers: 3
+  min_interval: 0.5
+
 # The official RDTII Round-1 gold inventory (configs/eval/legal_inventory_p67.csv)
 # IS the known reference set for MY — every in-scope gold instrument belongs here.
 # Earlier only the four flagship statutes were labelled, so the other gold laws were

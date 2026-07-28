@@ -9,6 +9,13 @@ legal_system: "common"
 
 ocr_languages: ["eng"]
 
+# legislation.gov.au applies a CUMULATIVE per-IP limit and answers a burst with an
+# HTML challenge page that looks like a 200. Downloads are therefore fully
+# serialised; OCR/parse/map across documents still run in parallel.
+fetch_policy:
+  doc_workers: 4
+  serial_fetch: true
+
 # The official RDTII Round-1 gold inventory (configs/eval/legal_inventory_p67.csv)
 # IS the known reference set for AU. Earlier only the four flagship statutes were
 # labelled; the sectoral/amendment/strategy gold was treated as NEW. KNOWN floats it

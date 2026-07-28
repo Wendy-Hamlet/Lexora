@@ -9,6 +9,14 @@ legal_system: "common"
 
 ocr_languages: ["eng"]
 
+# SSO serves Act text from a plain URL (no render in the fetch loop), so documents
+# can be fetched concurrently; the anti-bot pressure is on the SEARCH renders, which
+# stay strictly serial in one browser session. Validate any change against the
+# blocked/unrendered counts the run prints.
+fetch_policy:
+  doc_workers: 4
+  min_interval: 0.5
+
 # The official RDTII Round-1 gold inventory (configs/eval/legal_inventory_p67.csv)
 # IS the known reference set for SG. Earlier only the four flagship statutes were
 # labelled, so the sectoral/amendment/guidance gold was treated as NEW and could be
@@ -61,6 +69,7 @@ portals:
     fetch_method: "playwright"   # SSO returns 403 to plain clients; render to search
     search_query: "personal data protection"
     search_url_template: "https://sso.agc.gov.sg/Search/Content?Phrase={query}&PhraseType=AllWords"
+    word_tokenised_search: true   # PhraseType=AllWords — punctuation is not a token
     notes: "Official consolidated text of Acts and Subsidiary Legislation (AGC). Verified: discovery ranks /Act/PDPA2012 first via headless browser."
 
   - name: "Personal Data Protection Commission (PDPC)"
