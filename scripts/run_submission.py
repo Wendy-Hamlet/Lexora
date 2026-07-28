@@ -206,6 +206,13 @@ def write_outputs(result: MapResult, out_csv: Path) -> int:
     The single exporter shared by ``main.py`` (the reviewer's one-command entry point)
     and this script's multi-economy run, so both emit byte-identical formats. Returns
     the number of CSV rows."""
+    from lexora.export import provenance
+
+    # A replayed run renames its artifacts. Rocky's engine does the same thing for the same
+    # reason: a demonstration CSV that is byte-shaped like a submission CSV will eventually
+    # be filed as one, and the filename is the one label that survives being emailed,
+    # renamed by a download folder, or opened in Excel with the header row collapsed.
+    out_csv = out_csv.with_name(provenance.label(out_csv.name))
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     n = to_csv(result.citations, out_csv)
     to_jsonld(result.citations, out_csv.with_suffix(".jsonld"))
@@ -224,6 +231,10 @@ def write_outputs(result: MapResult, out_csv: Path) -> int:
         tag = getattr(c.discovery_tag, "value", str(c.discovery_tag))
         tagged[tag] = tagged.get(tag, 0) + 1
     inds = len({c.indicator_id for c in result.citations})
+    if provenance.is_demonstration():
+        print(f"\n!! {provenance.BANNER}")
+        print("   Artifacts are prefixed "
+              f"{provenance.PREFIX!r} and must not be submitted as results.")
     print(f"\nWrote {n} provision(s) -> {out_csv}")
     print(f"                        -> {json_out}")
     print(f"                        -> {html_out}  (open in a browser to review)")

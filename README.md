@@ -98,6 +98,21 @@ A URL that was never recorded replays as an unreachable portal (`504`), which th
 already knows how to carry on past — a recording is a snapshot with a date, never a claim
 about today.
 
+**A replayed run labels itself, everywhere.** Replay exists so the engine can be shown
+working in seconds on a conference network, and that convenience is only honest if nobody
+can mistake it for a cold live crawl. So `--offline` marks its own output in three places
+at once, none of which survives being cropped, forwarded, or opened in a spreadsheet:
+
+- the console says so **before** the run starts, not only in a summary afterwards;
+- the HTML console carries a red banner above the first number on the page;
+- every artifact is written as `DEMO_<name>.csv` / `.json` / `.html` / `.jsonld`.
+
+A `--record` run is *not* a demonstration: it fetches from the source, so its output is
+current and submittable. A warm verdict cache is not one either — the judge cache is keyed
+on the rendered prompt and the clause text, so a hit is the same model answering the same
+question. The line is drawn at one thing only: was the network replayed. Both facts are
+reported (`N clause(s) judged live, M from the verdict cache`); only replay renames files.
+
 ---
 
 ## Full Usage

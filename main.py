@@ -145,7 +145,12 @@ def main() -> None:
     print(f"Lexora — {economy} | RDTII Pillar {ptag} | budget {args.budget} instruments")
     print(f"  LLM lanes: {'ON' if use_llm else 'OFF (--no-llm)'}   OCR: ON")
     if cache_mode == http_cache.REPLAY:
+        from lexora.export import provenance
+
         n = http_cache.store().stats()
+        # Say it before the run, not only after: someone watching this scroll past at the
+        # pitch should know what they are watching while they are watching it.
+        print(f"\n  !! {provenance.BANNER}")
         print(f"  network: OFFLINE — replaying {n['responses']} recorded responses "
               f"+ {n['renders']} rendered pages")
     elif cache_mode == http_cache.RECORD:
@@ -169,7 +174,11 @@ def main() -> None:
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    out_csv = args.output_dir / f"{economy}_P{ptag}_{stamp}.csv"
+    # `label` is idempotent and write_outputs applies it too; naming it here keeps this
+    # scope's path in step with the files that actually get written.
+    from lexora.export.provenance import label as _label
+
+    out_csv = args.output_dir / _label(f"{economy}_P{ptag}_{stamp}.csv")
     write_outputs(result, out_csv)   # prints the row count and both file paths
 
     if tokens.get("calls"):
