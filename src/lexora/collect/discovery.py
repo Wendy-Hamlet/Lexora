@@ -20,10 +20,14 @@ AU (SPA) and SG (403 -> browser).
 """
 from __future__ import annotations
 
+import collections
+import logging
 import os
 import re
+import threading
 import time
 from dataclasses import dataclass, field
+from enum import Enum
 from urllib.parse import quote, urljoin, urlparse, urlunparse
 
 import httpx
@@ -32,6 +36,8 @@ from rapidfuzz import fuzz
 
 from lexora.collect.crawler import DEFAULT_UA
 from lexora.models.source import FetchMethod, PortalSpec, SourceType
+
+_LOG = logging.getLogger(__name__)
 
 # Tokens that mark a link as legal-instrument-like (boost) or site-chrome (drop).
 _INSTRUMENT_MARKERS = (
@@ -321,15 +327,164 @@ _SG_INSTRUMENT_LINK = re.compile(r'href="[^"]*/Act/[A-Za-z0-9]', re.I)
 def sg_results_present(html: str | bytes) -> bool:
     """True if rendered SG SSO HTML carries at least one instrument link.
 
-    Used as the ``is_valid`` predicate for SG SSO renders: a bare shell (the
-    rate-limited / anti-bot fallback) has no `/Act/<slug>` link, so a falsy
-    verdict here triggers a backoff re-render. Honest limitation: a genuinely
-    empty result set also looks "absent", so retries are capped and the last
-    render is accepted regardless — this only buys back the transient rate-limit
-    case, it is not a correctness guarantee.
+    A weaker signal than it looks: a blocked or unrendered page has no instrument
+    link either. Use :func:`classify_page` to tell those apart; this only answers
+    "did this page list any instruments".
     """
     text = html.decode("utf-8", "ignore") if isinstance(html, bytes) else html
     return bool(_SG_INSTRUMENT_LINK.search(text))
+
+
+class PageOutcome(str, Enum):
+    """What actually came back when we asked a portal a question.
+
+    The distinction the pipeline used to be missing. "No instrument link on the page"
+    was read as "this economy has no such law", when measurement showed it almost
+    always meant the portal had refused to answer.
+    """
+
+    results = "RESULTS"        # a real page, listing instruments
+    empty = "EMPTY"            # a real page, genuinely nothing matched
+    blocked = "BLOCKED"        # a WAF/CDN refusal — the portal declined to answer
+    unrendered = "UNRENDERED"  # navigation returned no document at all
+
+
+# CDN/WAF refusal pages. Kept generic rather than SG-specific: CloudFront fronts
+# several APAC government portals, and Round 2's economies will meet the same walls.
+_BLOCK_SIGNATURES = re.compile(
+    r"(?:ERROR:\s*The request could not be satisfied"
+    r"|<h[12]>\s*40[36]\s*ERROR"
+    r"|Request blocked"
+    r"|Access Denied"
+    r"|Attention Required!\s*\|\s*Cloudflare"
+    r"|Checking your browser before accessing)",
+    re.I,
+)
+# A document whose body carries no text and no markup of substance. Playwright
+# returns exactly `<html><head></head><body></body></html>` when a navigation
+# completes but the page never populated.
+_BODY_CONTENT = re.compile(r"<body[^>]*>(.*?)</body>", re.I | re.S)
+
+
+def classify_page(html: str | bytes, *, has_results: bool) -> PageOutcome:
+    """Tell a real answer from a refusal.
+
+    ``has_results`` is the portal-specific "did this page list instruments" verdict
+    (e.g. :func:`sg_results_present`); everything else here is portal-agnostic.
+
+    Measured on the 2026-07-27 Singapore run: of 67 query renders, 16 came back as a
+    923-byte CloudFront "403 ERROR / Request blocked" page and 20 as a 39-byte empty
+    document — and **not one** was a genuine empty result set. All 36 were recorded as
+    "0 hits", i.e. as evidence that Singapore has no such law. Three were named known
+    instruments (Computer Misuse Act, Criminal Procedure Code, Banking Act 1970).
+    """
+    text = html.decode("utf-8", "ignore") if isinstance(html, bytes) else (html or "")
+    if not text.strip():
+        return PageOutcome.unrendered
+    if _BLOCK_SIGNATURES.search(text[:4096]):
+        return PageOutcome.blocked
+    body = _BODY_CONTENT.search(text)
+    if body is not None and not body.group(1).strip():
+        return PageOutcome.unrendered
+    return PageOutcome.results if has_results else PageOutcome.empty
+
+
+def page_is_usable(html: str | bytes) -> bool:
+    """Retry predicate: re-render a refusal, accept a genuine answer.
+
+    The old predicate retried whenever no instrument link was present, which spent
+    three backoff renders (~20 s) on every empty answer *and* on every block — and
+    then accepted the block anyway. Retrying a refusal is right; retrying an answer
+    is not.
+    """
+    return classify_page(html, has_results=sg_results_present(html)) not in (
+        PageOutcome.blocked, PageOutcome.unrendered,
+    )
+
+
+@dataclass
+class AcquisitionLog:
+    """Per-run tally of what the portals actually did with our questions.
+
+    This is the metric that has to exist before any concurrency change can be
+    honest: raising parallelism against a per-IP limiter buys wall-clock by turning
+    answers into refusals, and without this counter that trade is invisible.
+    """
+
+    outcomes: collections.Counter = field(default_factory=collections.Counter)
+    blocked_queries: list[str] = field(default_factory=list)
+
+    def record(self, outcome: PageOutcome, query: str | None) -> None:
+        with _ACQ_LOCK:
+            self.outcomes[outcome.value] += 1
+            if outcome in (PageOutcome.blocked, PageOutcome.unrendered) and query:
+                self.blocked_queries.append(query)
+
+    @property
+    def refused(self) -> int:
+        return self.outcomes[PageOutcome.blocked.value] + \
+            self.outcomes[PageOutcome.unrendered.value]
+
+    @property
+    def asked(self) -> int:
+        return sum(self.outcomes.values())
+
+    def summary(self) -> str:
+        if not self.asked:
+            return "no portal queries"
+        return (f"{self.asked} portal quer(ies): "
+                f"{self.outcomes[PageOutcome.results.value]} answered, "
+                f"{self.outcomes[PageOutcome.empty.value]} empty, "
+                f"{self.outcomes[PageOutcome.blocked.value]} blocked, "
+                f"{self.outcomes[PageOutcome.unrendered.value]} unrendered")
+
+
+_ACQ_LOCK = threading.Lock()
+_ACQUISITION = AcquisitionLog()
+
+
+def acquisition_log() -> AcquisitionLog:
+    """The process-wide acquisition tally."""
+    return _ACQUISITION
+
+
+# Answered search pages, keyed by the URL actually requested. Bounded because a run
+# holds ~70 pages of 60-380 KB and there is no reason to keep the whole sweep alive
+# once the working set is built; the pages are re-fetchable, this only removes
+# same-run repeats.
+_PAGE_MEMO: collections.OrderedDict = collections.OrderedDict()
+_PAGE_MEMO_MAX = 256
+_PAGE_MEMO_LOCK = threading.Lock()
+
+
+def _page_memo_get(key: tuple[str, str]) -> tuple[str | bytes, str] | None:
+    with _PAGE_MEMO_LOCK:
+        hit = _PAGE_MEMO.get(key)
+        if hit is not None:
+            _PAGE_MEMO.move_to_end(key)
+        return hit
+
+
+def _page_memo_put(key: tuple[str, str], html: str | bytes, via: str) -> None:
+    with _PAGE_MEMO_LOCK:
+        _PAGE_MEMO[key] = (html, via)
+        _PAGE_MEMO.move_to_end(key)
+        while len(_PAGE_MEMO) > _PAGE_MEMO_MAX:
+            _PAGE_MEMO.popitem(last=False)
+
+
+def reset_page_memo() -> None:
+    """Drop memoised pages (one run per memo — a later run must re-ask)."""
+    with _PAGE_MEMO_LOCK:
+        _PAGE_MEMO.clear()
+
+
+def reset_acquisition_log() -> AcquisitionLog:
+    """Start a fresh tally (one per economy run)."""
+    global _ACQUISITION
+    with _ACQ_LOCK:
+        _ACQUISITION = AcquisitionLog()
+    return _ACQUISITION
 
 
 def _search_url(portal: PortalSpec, query: str | None) -> str:
@@ -487,16 +642,27 @@ def discover(
 
     page_url = _search_url(portal, query)
     use_browser = force_browser or portal.fetch_method is FetchMethod.playwright
-    html, via = _fetch_page(
-        page_url, force_browser=use_browser, client=client,
-        timeout=timeout, user_agent=user_agent, browser_session=browser_session,
-        is_valid=is_valid, render_retries=render_retries,
-        render_wait_until=render_wait_until,
-    )
 
-    if not html:
-        return []
-    return harvest_candidates(
+    # Ask each distinct question once per run. The sweep, the amendment pass, the
+    # child-regulation pass and the regulator pass all reach `discover` independently
+    # and re-issue queries the others have already asked; on a browser portal that is
+    # a 3-10 s render for a page we are still holding. Only *answered* pages are
+    # memoised — a refusal must be re-askable, that is the whole point of the late
+    # retry. Harvesting still runs per call with the caller's own limit/min_score, so
+    # a memo hit is byte-for-byte the result a re-fetch would have produced.
+    memo_key = (str(portal.url), page_url)
+    cached = _page_memo_get(memo_key)
+    if cached is not None:
+        html, via = cached
+    else:
+        html, via = _fetch_page(
+            page_url, force_browser=use_browser, client=client,
+            timeout=timeout, user_agent=user_agent, browser_session=browser_session,
+            is_valid=is_valid, render_retries=render_retries,
+            render_wait_until=render_wait_until,
+        )
+
+    hits = harvest_candidates(
         html,
         base_url=page_url,
         query=query,
@@ -505,7 +671,22 @@ def discover(
         limit=limit,
         min_score=min_score,
         known_instruments=known_instruments,
-    )
+    ) if html else []
+
+    # Record what the portal did, here rather than in the sweep, because the
+    # follow-on amendment / child-regulation / regulator passes call `discover`
+    # directly and account for the majority of a run's queries (measured 2026-07-27:
+    # 68 of 92 renders). A refusal counted only in the main sweep is a refusal not
+    # counted at all.
+    outcome = classify_page(html, has_results=bool(hits))
+    if cached is None:
+        acquisition_log().record(outcome, query)
+        if outcome not in (PageOutcome.blocked, PageOutcome.unrendered):
+            _page_memo_put(memo_key, html, via)
+        else:
+            _LOG.warning("  portal REFUSED (%s): %s",
+                         outcome.value, (query or page_url)[:70])
+    return hits
 
 
 # An Act number in a URL/title/filename: "act=709", "Act 709", "ACT 854.pdf",
@@ -712,7 +893,11 @@ def discover_for_indicators(
     render_wait_until = "networkidle"
     sweep_interval = 0.0
     if "sso.agc.gov.sg" in urlparse(str(portal.url)).netloc.lower():
-        is_valid = sg_results_present
+        # Retry a REFUSAL, not an answer. The former predicate re-rendered whenever no
+        # instrument link was present, so a genuine empty result cost three backoff
+        # renders (~20 s) before being accepted — and a CloudFront block cost the same
+        # three and was then accepted as "no such law". See `classify_page`.
+        is_valid = page_is_usable
         render_retries = 3
         # SG SSO's search page long-polls, so a navigation NEVER reaches the
         # `networkidle` state — the default render then deterministically times
@@ -745,6 +930,11 @@ def discover_for_indicators(
     agg: dict[str, DiscoveryResult] = {}
     indicators_by_key: dict[str, set[str]] = {}
     session = session_cm.__enter__() if session_cm is not None else None
+    # This sweep is the long silent stretch of a run: on a browser portal it renders one
+    # page per phrase, spaced under the portal's rate limit, and until it finishes the
+    # engine has nothing to print. Reporting each query is what turns "is it hung?" into
+    # a visible count — which matters most in front of an audience.
+    _LOG.info("discovery sweep: %d quer(ies) on %s", len(phrase_indicators), portal.name)
     try:
         for i, (phrase, ind_ids) in enumerate(phrase_indicators.items()):
             if i and sweep_interval and session is not None:
@@ -768,6 +958,40 @@ def discover_for_indicators(
                 key = _identity_key(r)
                 _merge_into(agg, r, key)
                 indicators_by_key.setdefault(key, set()).update(ind_ids)
+            _LOG.info("  [%2d/%2d] %-46s %2d hit(s), %d instrument(s) so far",
+                      i + 1, len(phrase_indicators), phrase[:46], len(hits), len(agg))
+
+        # Second pass over the queries the portal refused. Retrying a rate-limited
+        # query inside its own hot window is what the per-render backoff already
+        # tried and, measured, kept failing; by the end of a sweep the window has had
+        # minutes to clear, so one late attempt is worth far more than a fourth
+        # immediate one. Only refusals come back here — an empty answer is an answer.
+        refused = list(dict.fromkeys(acquisition_log().blocked_queries))
+        retryable = [q for q in refused if q in phrase_indicators]
+        if retryable:
+            _LOG.info("retrying %d refused quer(ies) after the sweep cooled",
+                      len(retryable))
+            for phrase in retryable:
+                if sweep_interval and session is not None:
+                    time.sleep(sweep_interval)
+                try:
+                    hits = discover(
+                        portal, query=phrase, client=client, limit=per_indicator_limit,
+                        min_score=min_score, timeout=timeout, user_agent=user_agent,
+                        force_browser=force_browser, known_instruments=known_instruments,
+                        known_instrument_ids=known_instrument_ids, browser_session=session,
+                        is_valid=is_valid, render_retries=render_retries,
+                        render_wait_until=render_wait_until,
+                    )
+                except Exception:  # noqa: BLE001 — a late retry never breaks a run
+                    continue
+                for r in hits:
+                    key = _identity_key(r)
+                    _merge_into(agg, r, key)
+                    indicators_by_key.setdefault(key, set()).update(
+                        phrase_indicators[phrase])
+                if hits:
+                    _LOG.info("  recovered %-46s %2d hit(s)", phrase[:46], len(hits))
     finally:
         if session_cm is not None:
             session_cm.__exit__(None, None, None)

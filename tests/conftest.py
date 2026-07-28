@@ -49,3 +49,20 @@ def raw_document() -> RawDocument:
         source_type=SourceType.primary,
         title="Personal Data Protection Act 2012",
     )
+
+
+@pytest.fixture(autouse=True)
+def _isolated_discovery_state():
+    """Discovery memoises answered pages and tallies portal outcomes per RUN.
+
+    Both are module-level by design (the sweep and the three follow-on passes have to
+    share them), so without this the state leaks between tests and a test that counts
+    fetches silently measures the previous test's cache.
+    """
+    from lexora.collect.discovery import reset_acquisition_log, reset_page_memo
+
+    reset_page_memo()
+    reset_acquisition_log()
+    yield
+    reset_page_memo()
+    reset_acquisition_log()

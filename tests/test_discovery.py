@@ -436,3 +436,78 @@ def test_browser_renders_real_anti_bot_portal():
     res = render("https://sso.agc.gov.sg/", timeout=45.0)
     assert res.status in (200, 0)
     assert "<" in res.html and len(res.html) > 1000  # got a real rendered DOM
+
+
+def test_an_answered_page_is_asked_for_once_per_run():
+    """The sweep and the three follow-on passes reach `discover` independently.
+
+    They re-issue queries each other has already asked; on a browser portal that is a
+    3-10 s render for a page still in memory. Only ANSWERED pages are memoised.
+    """
+    from lexora.collect.discovery import discover
+
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, content=_MULTI_ACT_HTML.encode(),
+                              headers={"content-type": "text/html"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    portal = PortalSpec(
+        name="SSO", url="https://sso.example.gov/", source_type=SourceType.primary,
+        search_url_template="https://sso.example.gov/search?q={query}",
+    )
+    first = discover(portal, query="alpha", client=client, limit=5)
+    second = discover(portal, query="alpha", client=client, limit=5)
+    client.close()
+
+    assert calls["n"] == 1
+    # A memo hit must be the result a re-fetch would have produced.
+    assert [r.url for r in first] == [r.url for r in second]
+
+
+def test_a_refused_page_is_never_memoised():
+    """A refusal has to stay re-askable -- that is what the late retry is for."""
+    from lexora.collect.discovery import discover
+
+    calls = {"n": 0}
+    blocked = (b"<html><head><title>ERROR: The request could not be satisfied</title>"
+               b"</head><body><h1>403 ERROR</h1>Request blocked.</body></html>")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(200, content=blocked,
+                              headers={"content-type": "text/html"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    portal = PortalSpec(
+        name="SSO", url="https://sso.example.gov/", source_type=SourceType.primary,
+        search_url_template="https://sso.example.gov/search?q={query}",
+    )
+    discover(portal, query="alpha", client=client, limit=5)
+    discover(portal, query="alpha", client=client, limit=5)
+    client.close()
+
+    assert calls["n"] == 2
+
+
+def test_the_memo_does_not_confuse_two_queries():
+    from lexora.collect.discovery import discover
+
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(str(request.url))
+        return httpx.Response(200, content=_MULTI_ACT_HTML.encode(),
+                              headers={"content-type": "text/html"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    portal = PortalSpec(
+        name="SSO", url="https://sso.example.gov/", source_type=SourceType.primary,
+        search_url_template="https://sso.example.gov/search?q={query}",
+    )
+    discover(portal, query="alpha", client=client, limit=5)
+    discover(portal, query="beta", client=client, limit=5)
+    client.close()
+    assert len(seen) == 2 and seen[0] != seen[1]
