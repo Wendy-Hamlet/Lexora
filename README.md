@@ -55,12 +55,18 @@ cp .env.example .env              # then edit .env — see "Swapping the LLM" be
 python main.py --economy Singapore --pillar 6
 ```
 
-**Output** (both files, always):
+**Output** (all three, always):
 
 ```
 outputs/Singapore_P6_<timestamp>.csv     official 13 columns, one row per provision
 outputs/Singapore_P6_<timestamp>.json    same rows + OCR / timing / context metadata
+outputs/Singapore_P6_<timestamp>.html    the same rows as a filterable review page
 ```
+
+The HTML is the policy reviewer's path: open it in any browser — no server, no build, no
+network — filter by economy / indicator / `NEW`, search the full text, and read each
+provision with its quote laid out in full and its official source one click away. It is a
+view of the CSV, not a second source of truth.
 
 **No API key?** Add `--no-llm`. The engine still crawls, OCRs, parses, maps (BM25) and
 writes both files — you get complete output with template rationales, so you can verify
@@ -69,6 +75,28 @@ the pipeline end-to-end before configuring any endpoint.
 The economy argument is forgiving: `Singapore`, `SG`, `sg` and even `Singapre` all
 resolve (fuzzy-matched, with a note); an unrecognisable one exits with the supported list
 rather than a stack trace.
+
+### Running without a network
+
+A live crawl of a rate-limited government portal is minutes of work and needs the portals
+to be reachable and behaving. Two flags let a run be reproduced without either:
+
+```bash
+python main.py --economy Singapore --pillar 6 --record    # crawl live, keep every response
+python main.py --economy Singapore --pillar 6 --offline   # replay it; no socket is opened
+```
+
+Replay is not a mock and not a pre-baked file. Every byte is the byte the portal actually
+sent, on a date the run reports; discovery, OCR, parsing, retrieval and the judge all
+execute exactly as they do live. Measured on Singapore Pillar 6 (`--no-llm --budget 3`,
+2026-07-27): **16 m 56 s live → 1 m 39 s replayed, and the submission CSV is
+byte-identical (sha256 `b12390a1…`)**. The only field that differs anywhere in the output
+is `retrieval_timestamp`, and it correctly reports when the portal served the bytes rather
+than when they were read back.
+
+A URL that was never recorded replays as an unreachable portal (`504`), which the pipeline
+already knows how to carry on past — a recording is a snapshot with a date, never a claim
+about today.
 
 ---
 
@@ -80,8 +108,39 @@ python main.py \
   --pillar 6 \              # 6, 7, or all (default)
   --output-dir outputs/ \
   --budget 20 \             # max instruments to map
-  --llm-workers 8           # parallel LLM calls
+  --llm-workers 8 \         # parallel LLM calls
+  --doc-workers 4 \         # instruments processed concurrently
+  --record                  # or --offline; see "Running without a network" above
 ```
+
+The run reports its progress as it goes — one line per discovery query, then one per
+mapped instrument with its clause and citation counts. `--quiet` turns that off.
+
+`--doc-workers` defaults to the economy's own `fetch_policy` in
+`configs/jurisdictions/<iso>.yaml`, because how much concurrency a portal tolerates is a
+property of the portal: `legislation.gov.au` applies a cumulative per-IP limit and
+answers a burst with a challenge page that looks like a `200`, so AU serialises its
+downloads while still parsing and mapping in parallel.
+
+### What the portals actually did
+
+Every run ends with a line like:
+
+```
+portals: 48 portal quer(ies): 25 answered, 0 empty, 13 blocked, 10 unrendered
+```
+
+The distinction is load-bearing. A portal that **refuses** to answer is not an economy
+without that law, and the two used to be indistinguishable: discovery read "this page
+lists no instruments" as "nothing matched". Measured on 2026-07-27, that reading was
+wrong every single time — of 67 Singapore query renders, 16 came back as a 923-byte
+CloudFront `403 ERROR / Request blocked` page and 20 as a 39-byte empty document, and
+**none** was a genuine empty result set. Three of them named known instruments (Computer
+Misuse Act, Criminal Procedure Code, Banking Act 1970).
+
+Refusals are now classified, retried once after the sweep has cooled, and reported. Raise
+`--doc-workers` only with these counts in front of you: concurrency that turns answers
+into refusals is not a speed-up.
 
 ### All three Round-1 economies in one file
 

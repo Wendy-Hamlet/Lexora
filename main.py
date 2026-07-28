@@ -25,6 +25,7 @@ rationales, so a reviewer with no API key can always get output.
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 import sys
 from datetime import datetime
@@ -83,10 +84,27 @@ def main() -> None:
                     help="Max instruments to map for this economy (default: 20)")
     ap.add_argument("--llm-workers", type=int, default=8,
                     help="Parallel LLM calls (default: 8)")
+    ap.add_argument("--doc-workers", type=int, default=None,
+                    help="Instruments processed concurrently. Roughly all of a "
+                         "document's time is spent waiting on the portal, so this is "
+                         "the main wall-clock knob. Default: the economy's own "
+                         "fetch_policy, which is set to what its portal tolerates.")
     ap.add_argument("--no-llm", action="store_true",
                     help="Skip every LLM lane — BM25 retrieval + template rationales only. "
                          "Use when you have no API key; output is still complete.")
+    ap.add_argument("--record", action="store_true",
+                    help="Crawl live and keep every response, so the same run can later be "
+                         "reproduced with --offline.")
+    ap.add_argument("--offline", action="store_true",
+                    help="Replay a previous --record run: no socket is opened, but every "
+                         "byte is the one the portal really sent. A URL that was never "
+                         "recorded is reported as unreachable, never invented.")
+    ap.add_argument("--quiet", action="store_true",
+                    help="Suppress the per-query / per-document progress lines.")
     args = ap.parse_args()
+
+    if args.record and args.offline:
+        raise SystemExit("error: --record and --offline are opposites; pick one.")
 
     iso = resolve_economy(args.economy)
     economy = ISO_TO_COUNTRY[iso]
@@ -106,9 +124,32 @@ def main() -> None:
     # OCR on by default: the brief requires scanned/image PDFs to work out of the box.
     os.environ.setdefault("LEXORA_OCR", "1")
 
+    # A crawl of a rate-limited portal is minutes of work with nothing to show for it,
+    # and the engine already reports its progress -- to a logger nobody had configured,
+    # so every run looked hung. Print it. (The brief's live demo is the case that makes
+    # a silent terminal expensive.)
+    if not args.quiet:
+        logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+        for noisy in ("httpx", "httpcore", "urllib3", "PIL"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+
+    if args.record:
+        os.environ["LEXORA_HTTP_CACHE"] = "record"
+    elif args.offline:
+        os.environ["LEXORA_HTTP_CACHE"] = "replay"
+    from lexora.collect import http_cache  # noqa: E402 — after the env is settled
+
+    cache_mode = http_cache.install()
+
     use_llm = not args.no_llm
     print(f"Lexora — {economy} | RDTII Pillar {ptag} | budget {args.budget} instruments")
     print(f"  LLM lanes: {'ON' if use_llm else 'OFF (--no-llm)'}   OCR: ON")
+    if cache_mode == http_cache.REPLAY:
+        n = http_cache.store().stats()
+        print(f"  network: OFFLINE — replaying {n['responses']} recorded responses "
+              f"+ {n['renders']} rendered pages")
+    elif cache_mode == http_cache.RECORD:
+        print("  network: LIVE, recording every response for --offline")
     print("  crawling official portal -> extracting -> parsing -> mapping ...\n")
 
     # run_one returns (MapResult, token accounting) -- unpack both, and report the spend.
@@ -122,6 +163,7 @@ def main() -> None:
         amendment_llm=use_llm,
         timeout=60.0,
         llm_workers=args.llm_workers if use_llm else 1,
+        doc_workers=args.doc_workers,   # None -> the economy's fetch_policy
         pillars=pillars,
     )
 
@@ -137,6 +179,19 @@ def main() -> None:
     if tokens.get("failed"):
         print(f"  WARNING: {tokens['failed']} LLM call(s) failed. Those clauses were dropped, "
               "never guessed — the output is short, not wrong.")
+
+    # What the portals did with our questions. A refused query is not an economy
+    # without that law, and printing the two separately is what stops a coverage gap
+    # from reading as a finding.
+    from lexora.collect.discovery import acquisition_log
+
+    acq = acquisition_log()
+    if acq.asked:
+        print(f"  portals: {acq.summary()}")
+        if acq.refused:
+            print(f"  WARNING: {acq.refused} quer(ies) were refused by the portal, not "
+                  "answered empty. Those instruments are missing from this run, not "
+                  "absent from the statute book.")
 
 
 if __name__ == "__main__":

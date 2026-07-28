@@ -58,9 +58,9 @@ def run_one(
     amendment_llm: bool = False,
     timeout: float,
     llm_workers: int = 1,
-    doc_workers: int = 1,
-    fetch_min_interval: float = 0.0,
-    serial_fetch: bool = False,
+    doc_workers: int | None = None,
+    fetch_min_interval: float | None = None,
+    serial_fetch: bool | None = None,
     use_secondary: bool = False,
     verify_cells: bool = False,
     verify_clauses: bool = False,
@@ -72,6 +72,13 @@ def run_one(
     only); ``None`` means all mandatory pillars — the Round-1 default.
     """
     profile = load_profile(JURIS / f"{iso.lower()}.yaml")
+    # The safe amount of concurrency is a property of the portal, so it comes from the
+    # jurisdiction profile; an explicit argument still wins, for measuring a change.
+    policy = profile.fetch_policy
+    doc_workers = policy.doc_workers if doc_workers is None else doc_workers
+    fetch_min_interval = (policy.min_interval if fetch_min_interval is None
+                          else fetch_min_interval)
+    serial_fetch = policy.serial_fetch if serial_fetch is None else serial_fetch
     # None -> load_indicators' default, the mandatory scope (pillars 6 + 7).
     indicators = load_indicators(INDICATORS, pillars=pillars)
     if pillars and not indicators:
@@ -202,6 +209,10 @@ def write_outputs(result: MapResult, out_csv: Path) -> int:
     out_csv.parent.mkdir(parents=True, exist_ok=True)
     n = to_csv(result.citations, out_csv)
     to_jsonld(result.citations, out_csv.with_suffix(".jsonld"))
+    from lexora.export.html_exporter import to_html
+
+    html_out = out_csv.with_suffix(".html")
+    to_html(result.citations, html_out, title=f"Lexora — {out_csv.stem}")
     cfg = load_config()
     use_dense = os.environ.get("LEXORA_MAP_DENSE", "").lower() in ("1", "true", "yes", "on")
     json_out = out_csv.with_suffix(".json")
@@ -215,6 +226,7 @@ def write_outputs(result: MapResult, out_csv: Path) -> int:
     inds = len({c.indicator_id for c in result.citations})
     print(f"\nWrote {n} provision(s) -> {out_csv}")
     print(f"                        -> {json_out}")
+    print(f"                        -> {html_out}  (open in a browser to review)")
     print(f"  indicators covered: {inds}/9   discovery tags: {tagged or '{}'}")
     return n
 
@@ -310,23 +322,23 @@ def main() -> None:
                          "document (LLM-call-layer parallelism). 1 = serial. Runtime-adjustable "
                          "per run. Stacks with --jobs (e.g. --jobs 3 --llm-workers 8 = up to 24 "
                          "concurrent requests; the endpoint handles >=32 with no rate limit).")
-    ap.add_argument("--doc-workers", type=int, default=1,
+    ap.add_argument("--doc-workers", type=int, default=None,
                     help="Threads for processing instruments within an economy concurrently "
                          "(document-level parallelism). This is what parallelizes the per-document "
                          "metadata extraction (the serial floor of an LLM run), plus fetch/OCR/"
                          "rationale across documents. 1 = serial. Stacks with --jobs and "
-                         "--llm-workers.")
-    ap.add_argument("--fetch-min-interval", type=float, default=0.0,
+                         "--llm-workers. Unset = the jurisdiction profile's fetch_policy.")
+    ap.add_argument("--fetch-min-interval", type=float, default=None,
                     help="Minimum seconds between fetch starts to the SAME host (per-host "
                          "rate-spacing, thread-enforced). Dodges request-rate anti-bot under "
                          "doc-level concurrency (e.g. AU serving an HTML challenge instead of "
-                         "the PDF); post-fetch OCR/LLM still parallelize. 0 = off.")
+                         "the PDF); post-fetch OCR/LLM still parallelize. 0 = off. Unset = the jurisdiction profile's fetch_policy.")
     ap.add_argument("--secondary", action="store_true",
                     help="Use RDTII secondary sources (UNCTAD etc.) as a DISCOVERY AID: seed "
                          "discovery with the laws they point to (recall), stamp matching "
                          "citations with a 'corroborated by <source>' note (provenance), and "
                          "print a coverage cross-check. Never cited as evidence.")
-    ap.add_argument("--serial-fetch", action="store_true",
+    ap.add_argument("--serial-fetch", action="store_true", default=None,
                     help="Fully serialize same-host DOWNLOADS (one request in flight per host) "
                          "while OCR/parse/map/LLM still run parallel across documents. Stronger "
                          "than --fetch-min-interval against cumulative anti-bot (no request burst "
@@ -367,6 +379,14 @@ def main() -> None:
 
     if not os.environ.get("LEXORA_LIVE"):
         print("note: set LEXORA_LIVE=1 to run the live submission crawl (or use --dry-run).")
+
+    from lexora.collect import http_cache
+
+    cache_mode = http_cache.install()
+    if cache_mode != http_cache.OFF:
+        n = http_cache.store().stats()
+        print(f"  -> HTTP cache {cache_mode}: {n['responses']} responses, "
+              f"{n['renders']} rendered pages on disk")
 
     all_citations = []
     all_documents = []
