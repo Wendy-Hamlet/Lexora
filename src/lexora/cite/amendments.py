@@ -442,6 +442,34 @@ _DEFN_HINT_RE = re.compile(r"\b(interpretation|definition|principle)s?\b", re.IG
 _VERB_OP = {"deleted": Operation.delete, "repealed": Operation.delete,
             "substituted": Operation.substitute}
 
+# "repealed AND THE FOLLOWING SUBSTITUTED" is the Westminster formula for REPLACING a
+# section, not removing it: the provision goes on existing, with new words. Reading the
+# leading verb alone made it a deletion -- and a deletion becomes CurrencyStatus.repealed,
+# which `enforced_only` DROPS from the submission. Measured on a Singapore replay: PDPA
+# s.24, the Protection Obligation and plainly in force, was deleted from the CSV on exactly
+# this sentence. A substitution is flagged AMENDED instead, which routes the row to
+# AMENDMENT_REVIEW without removing it.
+_SUBSTITUTION_CUE = re.compile(
+    r"\b(?:and\s+the\s+following"
+    r"|and\s+(?:there\s+(?:is|are)\s+)?substituted"
+    r"|and\s+(?:there\s+(?:is|are)\s+)?replaced"
+    r"|in\s+substitution"
+    r"|substituted\s+there(?:for|of))",
+    re.IGNORECASE,
+)
+
+
+def _replaces_rather_than_removes(text: str, match_end: int) -> bool:
+    """True when a "repealed"/"deleted" verb is followed by a substitution clause.
+
+    The lookahead stops at the next "of the principal Act" so a substitution belonging to
+    the FOLLOWING instruction cannot rescue this one."""
+    tail = text[match_end: match_end + 160]
+    cut = tail.lower().find("of the principal act")
+    if cut >= 0:
+        tail = tail[:cut]
+    return bool(_SUBSTITUTION_CUE.search(tail))
+
 
 def _squeeze(s: str) -> str:
     return re.sub(r"\s+", " ", s).strip()
@@ -483,6 +511,8 @@ def parse_amendment_instructions(text: str) -> list[AmendmentInstruction]:
     for m in _SECTION_OP_RE.finditer(text):
         verb = m.group(2).lower()
         op = _VERB_OP.get(verb, Operation.amend)
+        if op is Operation.delete and _replaces_rather_than_removes(text, m.end()):
+            op = Operation.substitute
         window = text[m.start(): m.start() + 240]
         kind = (InstructionKind.definition_or_principle
                 if _DEFN_HINT_RE.search(window) else InstructionKind.section_op)

@@ -281,6 +281,52 @@ def test_section_of_parses_article_path():
     assert section_of("Preamble") == ""
 
 
+def test_repealed_and_substituted_is_a_substitution_not_a_removal():
+    """"Repealed AND the following substituted" is how the Westminster register REPLACES a
+    section -- the provision goes on existing with new words.
+
+    Reading the leading verb alone made it a deletion, a deletion becomes
+    CurrencyStatus.repealed, and `enforced_only` DROPS repealed rows from the submission.
+    Measured on a Singapore replay: PDPA s.24, the Protection Obligation and plainly in
+    force, was deleted from the CSV on exactly this sentence -- and because it survived in
+    the per-document artifacts, the JSON sidecar carried 552 rows against the CSV's 551.
+    """
+    from lexora.cite.amendments import (
+        CurrencyStatus,
+        Operation,
+        adjudicate_provision,
+        parse_amendment_instructions,
+    )
+
+    def op_for(sentence: str) -> Operation:
+        return parse_amendment_instructions(sentence)[0].op
+
+    # A real repeal is still a repeal.
+    assert op_for("Section 24 of the principal Act is repealed.") is Operation.delete
+    # Every common replacement formula is a substitution.
+    for s in (
+        "Section 24 of the principal Act is repealed and the following section substituted:",
+        "Section 24 of the principal Act is repealed and substituted by the following:",
+        "Section 24 of the principal Act is repealed and there is substituted the following:",
+        "Section 24 of the principal Act is deleted and replaced by the following section:",
+    ):
+        assert op_for(s) is Operation.substitute, s
+
+    # A substitution belonging to the NEXT instruction must not rescue this one.
+    two = ("Section 24 of the principal Act is repealed. Section 25 of the principal Act "
+           "is repealed and the following substituted:")
+    ops = [i.op for i in parse_amendment_instructions(two)]
+    assert ops == [Operation.delete, Operation.substitute]
+
+    # End to end: a replaced section is flagged, not deleted.
+    instrs = parse_amendment_instructions(
+        "Section 24 of the principal Act is repealed and the following section substituted:"
+    )
+    verdict = adjudicate_provision(section="24", quote="x", instructions=instrs,
+                                   amend_label="Act 26 of 2020")
+    assert verdict.status is CurrencyStatus.amended
+
+
 def test_a_schedule_paragraph_is_not_the_main_body_section_of_the_same_number():
     """A consolidated Act restarts numbering inside each Schedule — that is why the parser
     namespaces schedule clauses. `adjudicate_provision` matches an instruction's target by
