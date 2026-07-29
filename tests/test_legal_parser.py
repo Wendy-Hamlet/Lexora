@@ -10,6 +10,7 @@ from lexora.extract.html_extractor import HtmlBlock
 from lexora.structure.legal_parser import (
     _cn_to_int,
     _detect_boundaries,
+    _looks_unstructured,
     _normalize_numeral,
     parse_structure_html,
 )
@@ -44,6 +45,70 @@ def test_spaced_style_wins_over_stray_year_dot():
     # AU-like doc: spaced sections dominate; a stray "2012." year-dot is dropped.
     text = "1  Short title\n\n2  Commencement\n\n3  Application\n\n2012.\n\n4  Crown"
     assert _secs(text) == ["1", "2", "3", "4"]
+
+
+def test_prose_document_yields_no_forged_section_numbers():
+    """A document with no numbering must yield nothing, not three invented sections.
+
+    The style vote is winner-takes-all with no floor, so on prose whichever opener finds
+    two or three accidental matches wins outright. Measured on the OAIC "Summary of version
+    changes to APP guidelines": 75,669 characters, no sections, and three WRAPPED PROSE
+    LINES beginning "9.2 (see Chapter 9) …" became clauses whose structural_path read
+    "Section 9.2". Three such rows reached outputs/submission_glm52_20260712.csv — a
+    citation to a provision that does not exist, the same class of fault as the forged
+    "Act 2012" law number.
+    """
+    filler = ("This guidance explains how the Australian Privacy Principles apply to "
+              "entities and does not create obligations of its own. " * 300)
+    text = (
+        f"{filler}\n"
+        "9.2 (see Chapter 9) and APP 10.2 (see Chapter 10) are discussed below.\n"
+        f"{filler}\n"
+        "3.1 but nevertheless retains it under APP 4, because the entity considers\n"
+        f"{filler}\n"
+        "12.5 (see Chapter 12), APPs 13.1 and 13.2 (see Chapter 13) also apply.\n"
+        f"{filler}"
+    )
+    assert len(text) > 60_000, "the guard is a ratio; the fixture must be prose-sized"
+    # The openers still MATCH -- the guard is about what the match is worth, not whether
+    # the regex fires -- so the check belongs at document level.
+    assert len(_detect_boundaries(text)) == 3
+    assert _looks_unstructured(text)
+
+    block = HtmlBlock(dom_anchor="#s", text=text, char_start=0, char_end=len(text))
+    assert parse_structure_html("doc", [block]) == []
+
+
+def test_a_real_statute_is_not_rejected_by_the_prose_guard():
+    # The guard is a ratio, so an ordinary Act -- even a long one with long provisions --
+    # must stay well clear of it. Measured over the 452-document corpus, the median is
+    # 1,338 characters per boundary and the highest genuine document 7,526.
+    body = "An organisation must not transfer personal data outside Singapore. " * 60
+    text = "\n\n".join(f"{n}.—(1) {body}" for n in range(1, 12))
+    assert len(text) // 11 > 3_000  # ~4k chars per section, above the corpus p90
+    assert not _looks_unstructured(text)
+    assert len(_detect_boundaries(text)) == 11
+
+
+def test_a_long_schedule_with_two_real_paragraphs_survives():
+    """The guard is a DOCUMENT-level ratio, deliberately.
+
+    Applying the same ratio per part deleted two genuine numbered paragraphs of the
+    Healthcare Services Act's Schedule 1 (measured: 76 -> 74 clauses): a long schedule
+    carrying few, long provisions scores exactly like prose. The document as a whole is
+    densely numbered, so it must be judged as a whole.
+    """
+    body = "A licensable healthcare service means a service of a kind described. " * 220
+    text = (
+        "\n\n".join(f"{n}.—(1) Short operative provision {n}." for n in range(1, 40))
+        + "\n\nSchedule 1—LICENSABLE HEALTHCARE SERVICES\n\n"
+        + f"1. For the purposes of the definition, {body}\n\n2. In this Schedule, {body}"
+    )
+    clauses = parse_structure_html(
+        "doc", [HtmlBlock(dom_anchor="#s", text=text, char_start=0, char_end=len(text))]
+    )
+    paths = {c.structural_path for c in clauses}
+    assert "Schedule 1 > Section 1" in paths and "Schedule 1 > Section 2" in paths
 
 
 def test_parse_structure_html_spaced_emits_verbatim_clauses():

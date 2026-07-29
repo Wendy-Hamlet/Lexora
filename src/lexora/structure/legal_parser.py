@@ -298,6 +298,32 @@ def _split_parts(global_text: str) -> list[_Part]:
     return parts
 
 
+# Above this many characters per detected boundary, the winning "style" is not structure.
+#
+# The vote in `_detect_boundaries` is winner-takes-all with no floor, so on a document that
+# has no section numbering at all, whichever opener finds two or three accidental matches
+# wins outright. Measured case: the OAIC "Summary of version changes to APP guidelines" is
+# 75,669 characters of prose with no sections; `_AU_DECIMAL` matched three WRAPPED PROSE
+# LINES ("9.2 (see Chapter 9) and APP 10.2 …"), so the document parsed into three clauses
+# whose structural_path read "Section 9.2" — a locator for a section that does not exist.
+# Three such rows reached outputs/submission_glm52_20260712.csv. That is the same class of
+# fault as the forged "Act 2012" law number: a plausible-looking citation to nothing.
+#
+# 12,000 is measured, not guessed. Over the 452-document corpus the mean characters per
+# boundary has median 1,338 and p90 2,362; the highest genuine document is 7,526 and the
+# offender is 25,223. A threshold of 12,000 rejects that document and nothing else, with
+# 1.6x headroom above the next one. Yielding no clauses is the honest failure: the document
+# becomes unmappable and the run's `docs_with_clauses` shows the gap, which is strictly
+# better than citing a provision that was never there.
+#
+# The ratio is measured over the whole DOCUMENT, so it is applied there (`_looks_unstructured`)
+# and not inside `_detect_boundaries`, which runs per part. Guarding per part deleted two
+# genuine paragraphs of the Healthcare Services Act's Schedule 1 — a long part with two real
+# numbered provisions scores the same as prose. Trading a forged locator for deleted operative
+# text is not a fix.
+_MAX_CHARS_PER_BOUNDARY = 12_000
+
+
 def _detect_boundaries(global_text: str) -> list[tuple[int, str, str | None, str]]:
     """Find section/article boundaries, auto-selecting the numbering style.
 
@@ -329,6 +355,21 @@ def _detect_boundaries(global_text: str) -> list[tuple[int, str, str | None, str
         if len(found) > len(best):
             best = found
     return best
+
+
+def _looks_unstructured(global_text: str) -> bool:
+    """True when the winning numbering style is too sparse to be real structure.
+
+    Applied to the WHOLE document, which is the granularity the threshold was measured at
+    and the only one that is safe. Applying it per part instead deletes real evidence: the
+    Healthcare Services Act's Schedule 1 is a long part carrying two genuine numbered
+    paragraphs, so it fails the same ratio the OAIC prose document does — measured, and the
+    reason this is a separate function rather than two lines inside `_detect_boundaries`.
+    """
+    boundaries = _detect_boundaries(global_text)
+    if not boundaries:
+        return False  # nothing detected at all is already "no clauses"
+    return len(global_text) / len(boundaries) > _MAX_CHARS_PER_BOUNDARY
 
 
 def _dedupe_boundaries(
@@ -512,6 +553,8 @@ def _app_specs(part_text: str, offset: int) -> list[_Spec]:
 def _parse(document_id: str, global_text: str, locate: Locator) -> list[Clause]:
     """Core: split into parts, detect boundaries per part, and emit Clauses whose
     spans reference the global text by char offset (ids namespaced by Schedule)."""
+    if _looks_unstructured(global_text):
+        return []
     clauses: list[Clause] = []
     for part in _split_parts(global_text):
         part_text = global_text[part.start:part.end]
