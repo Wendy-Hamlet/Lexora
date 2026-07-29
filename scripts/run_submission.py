@@ -48,6 +48,42 @@ OUT_CSV = REPO / "outputs" / "submission_round1.csv"
 ISO_TO_COUNTRY = {"sg": "Singapore", "au": "Australia", "my": "Malaysia"}
 
 
+def _report_replay_readiness(iso: str, verifier, indicators: list) -> None:
+    """Under ``--offline``, say up front whether the judge can actually answer.
+
+    Replay intercepts httpx at the transport, and the OpenAI SDK builds an httpx client
+    like everything else — so in replay the judge's calls are intercepted too, and a clause
+    with no cached verdict gets the synthetic 504. Every judgement then fails, the breaker
+    opens and the degrade gate drops the document to the BM25 lane.
+
+    That is the correct behaviour and it is loudly marked, but it is not a demonstration of
+    the engine, and finding out costs a full run. The judge's replay layer is the VERDICT
+    CACHE, not the HTTP recording: a cache hit makes no HTTP call at all, which is exactly
+    why a recording taken with a warm cache contains no LLM traffic to replay. So the
+    question worth asking before the run is about the cache, not the recording.
+    """
+    from lexora.collect import http_cache
+
+    if http_cache.mode() != http_cache.REPLAY or verifier is None:
+        return
+    coverage = getattr(verifier, "cache_coverage", lambda _inds: None)(indicators)
+    if coverage is None:
+        print(f"  !! judge cache [{iso}]: DISABLED — in replay every judgement will fail "
+              "and every document will degrade to the BM25 lane.")
+        return
+    live, total = coverage
+    if live:
+        print(f"  judge cache [{iso}]: {live} verdict(s) stored for this exact prompt "
+              f"({total} in the store) — replay can answer from cache.")
+        return
+    print(f"  !! judge cache [{iso}]: NO verdict answers the prompt this run will send "
+          f"({total} stored under an older prompt or model).")
+    print("     In replay an unanswered judgement is a synthetic 504, so every document "
+          "will degrade to the BM25 lane and say so.")
+    print("     Fix: re-run once LIVE with --record to refill both data/http_cache/ and "
+          "data/cache/judge.sqlite, then replay.")
+
+
 def run_one(
     iso: str,
     *,
@@ -101,6 +137,7 @@ def run_one(
     if (verify or verify_cells or verify_clauses) and verifier is None:
         print("warning: --verify requested but the LLM verifier is unavailable "
               "(install the [llm] extra); continuing with BM25 + verbatim only.")
+    _report_replay_readiness(iso, verifier, indicators)
     rationale_gen = make_rationale_generator(use_llm=rationale_llm)
     if rationale_llm and rationale_gen._client is None:
         print("warning: --rationale-llm requested but the LLM backend is unavailable; "

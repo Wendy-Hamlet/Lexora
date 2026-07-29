@@ -260,8 +260,23 @@ class Verifier:
         verdict = {str(x) for x in got if str(x) in valid}
         self.judged += 1
         if self._cache is not None and key is not None:
-            self._cache.put(key, self._model_id(), verdict)
+            self._cache.put(key, self._model_id(), verdict, fingerprint)
         return verdict
+
+    def cache_coverage(self, indicators: list[RDTIIIndicator]) -> tuple[int, int] | None:
+        """``(verdicts answering the prompt this run will send, verdicts stored)``.
+
+        ``None`` when no cache is configured. Exists to be asked BEFORE a run rather than
+        discovered during one: under ``LEXORA_HTTP_CACHE=replay`` the judge's HTTP calls
+        are intercepted too, so a clause with no cached verdict gets a synthetic 504 and
+        the document degrades to the BM25 lane. On a rehearsal that is a warning; on a
+        stage it is the demonstration.
+        """
+        if self._cache is None:
+            return None
+        return self._cache.coverage(
+            self._model_id(), self._prompt_fingerprint(indicators)
+        )
 
     def _model_id(self) -> str:
         return str(getattr(self._client, "model", "") or "")

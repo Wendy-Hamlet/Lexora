@@ -87,8 +87,8 @@ python main.py --economy Singapore --pillar 6 --offline   # replay it; no socket
 ```
 
 Replay is not a mock and not a pre-baked file. Every byte is the byte the portal actually
-sent, on a date the run reports; discovery, OCR, parsing, retrieval and the judge all
-execute exactly as they do live. Measured on Singapore Pillar 6 (`--no-llm --budget 3`,
+sent, on a date the run reports; discovery, OCR, parsing and retrieval all execute exactly
+as they do live. Measured on Singapore Pillar 6 (`--no-llm --budget 3`,
 2026-07-27): **16 m 56 s live → 1 m 39 s replayed, and the submission CSV is
 byte-identical (sha256 `b12390a1…`)**. The only field that differs anywhere in the output
 is `retrieval_timestamp`, and it correctly reports when the portal served the bytes rather
@@ -97,6 +97,25 @@ than when they were read back.
 A URL that was never recorded replays as an unreachable portal (`504`), which the pipeline
 already knows how to carry on past — a recording is a snapshot with a date, never a claim
 about today.
+
+**Replaying the judge needs the verdict cache, not the recording.** Interception is at the
+httpx transport, and the OpenAI SDK builds an httpx client like everything else, so in
+`--offline` the judge's calls are intercepted too. But a cached verdict is served *above*
+the HTTP layer — a hit makes no request at all, which is why a recording taken with a warm
+cache contains no LLM traffic to replay. So an offline run answers from `data/cache/`, and a
+clause it has no verdict for gets the same synthetic `504` as an unreachable portal: that
+judgement fails, and past the failure-rate gate the document degrades to the key-free BM25
+lane with every row marked. Correct, and loud, but not a demonstration of the engine.
+
+Two consequences worth knowing before you rely on it. A `--record` run must therefore be
+made **with the judge on**, so it fills `data/http_cache/` and `data/cache/judge.sqlite`
+together; and any edit to the judge prompt voids both at once, by design. `--offline` says
+which case you are in before the run starts:
+
+```
+  !! judge cache [sg]: NO verdict answers the prompt this run will send (103 stored
+     under an older prompt or model).
+```
 
 **A replayed run labels itself, everywhere.** Replay exists so the engine can be shown
 working in seconds on a conference network, and that convenience is only honest if nobody

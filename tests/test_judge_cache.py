@@ -59,6 +59,48 @@ class _Recorder:
         return {"indicators": [i.submission_id for i in INDS if i.submission_id in user]}
 
 
+def test_coverage_answers_the_replay_rehearsal_question(cache):
+    """"How many stored verdicts answer the prompt I am about to send?"
+
+    Under LEXORA_HTTP_CACHE=replay the judge's HTTP calls are intercepted too, so a clause
+    with no cached verdict gets a synthetic 504 and the document degrades. The key is a
+    one-way hash, so the fingerprint has to be stored in the clear to make this askable
+    BEFORE a run instead of discovered during one.
+    """
+    fp = catalogue_fingerprint(INDS)
+    stale = catalogue_fingerprint([_ind("P6-I4"), _ind("P7-I5", "REWORDED boundary rule")])
+    cache.put(cache.key("m1", fp, _clause()), "m1", {"P6-I4"}, fp)
+    cache.put(cache.key("m1", stale, _clause()), "m1", {"P6-I4"}, stale)
+
+    assert cache.coverage("m1", fp) == (1, 2)      # one of two answers THIS prompt
+    assert cache.coverage("m1", stale) == (1, 2)
+    assert cache.coverage("m2", fp) == (0, 2)      # a different model answers nothing
+    # An edited prompt reads as zero coverage, which is the honest answer, not an error.
+    assert cache.coverage("m1", catalogue_fingerprint(INDS, system="different")) == (0, 2)
+
+
+def test_coverage_survives_a_store_written_before_the_column_existed(tmp_path):
+    # A pre-migration store must open and report honestly rather than raise: rows written
+    # without a fingerprint are "unknown", and unknown can never match a real prompt.
+    import sqlite3
+
+    p = tmp_path / "old.sqlite"
+    db = sqlite3.connect(p)
+    db.executescript(
+        "CREATE TABLE verdicts (key TEXT PRIMARY KEY, indicators TEXT NOT NULL, "
+        "model TEXT NOT NULL, created_at REAL NOT NULL DEFAULT (julianday('now')));"
+    )
+    db.execute("INSERT INTO verdicts (key, indicators, model) VALUES ('k','[]','m1')")
+    db.commit()
+    db.close()
+
+    c = JudgeCache(p)
+    try:
+        assert c.coverage("m1", catalogue_fingerprint(INDS)) == (0, 1)
+    finally:
+        c.close()
+
+
 def test_a_narrower_catalogue_is_a_different_question(cache):
     """The fingerprint is per catalogue, not per verifier.
 

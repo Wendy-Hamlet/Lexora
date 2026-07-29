@@ -39,10 +39,11 @@ if TYPE_CHECKING:  # pragma: no cover
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS verdicts (
-    key        TEXT PRIMARY KEY,
-    indicators TEXT NOT NULL,
-    model      TEXT NOT NULL,
-    created_at REAL NOT NULL DEFAULT (julianday('now'))
+    key         TEXT PRIMARY KEY,
+    indicators  TEXT NOT NULL,
+    model       TEXT NOT NULL,
+    fingerprint TEXT NOT NULL DEFAULT '',
+    created_at  REAL NOT NULL DEFAULT (julianday('now'))
 );
 """
 
@@ -97,6 +98,16 @@ class JudgeCache:
         self._db = sqlite3.connect(str(self.path), check_same_thread=False)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.executescript(_SCHEMA)
+        # `CREATE TABLE IF NOT EXISTS` will not add a column to a store written by an
+        # older build, and a cache that silently refuses to answer the coverage question
+        # is worse than one that cannot: it reports zero and looks like a stale prompt.
+        # Rows from before this migration get '' — honestly "fingerprint unknown", which
+        # is what they are, and they can never match a real one.
+        cols = {r[1] for r in self._db.execute("PRAGMA table_info(verdicts)")}
+        if "fingerprint" not in cols:
+            self._db.execute(
+                "ALTER TABLE verdicts ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''"
+            )
         self._db.commit()
 
     @staticmethod
@@ -127,15 +138,37 @@ class JudgeCache:
             self.hits += 1
         return set(json.loads(row[0]))
 
-    def put(self, key: str, model: str, verdict: set[str]) -> None:
-        """Store a verdict. ``None`` verdicts (backend failures) must never get here."""
+    def put(self, key: str, model: str, verdict: set[str], fingerprint: str = "") -> None:
+        """Store a verdict. ``None`` verdicts (backend failures) must never get here.
+
+        ``fingerprint`` is already folded into ``key`` and is stored again, in the clear,
+        for one reason: :meth:`coverage`. The key is a one-way hash, so without this column
+        there is no way to ask "how many of these verdicts answer the prompt I am about to
+        send" — and that is the question a replay rehearsal has to answer BEFORE the run.
+        """
         with self._lock:
             self._db.execute(
-                "INSERT OR REPLACE INTO verdicts (key, indicators, model) VALUES (?, ?, ?)",
-                (key, json.dumps(sorted(verdict)), model),
+                "INSERT OR REPLACE INTO verdicts (key, indicators, model, fingerprint) "
+                "VALUES (?, ?, ?, ?)",
+                (key, json.dumps(sorted(verdict)), model, fingerprint),
             )
             self._db.commit()
             self.writes += 1
+
+    def coverage(self, model: str, fingerprint: str) -> tuple[int, int]:
+        """``(verdicts answering THIS prompt, verdicts stored in total)``.
+
+        The first number is the only one that matters for a replay demonstration. The
+        second is context: "0 of 22,445" and "0 of 0" are different problems (a voided
+        cache after a prompt edit vs. a cache that was never populated).
+        """
+        with self._lock:
+            live = self._db.execute(
+                "SELECT COUNT(*) FROM verdicts WHERE model = ? AND fingerprint = ?",
+                (model, fingerprint),
+            ).fetchone()[0]
+            total = self._db.execute("SELECT COUNT(*) FROM verdicts").fetchone()[0]
+        return int(live), int(total)
 
     @property
     def hit_rate(self) -> float:
