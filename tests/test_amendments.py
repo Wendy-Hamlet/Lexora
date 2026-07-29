@@ -281,6 +281,42 @@ def test_section_of_parses_article_path():
     assert section_of("Preamble") == ""
 
 
+def test_a_schedule_paragraph_is_not_the_main_body_section_of_the_same_number():
+    """A consolidated Act restarts numbering inside each Schedule — that is why the parser
+    namespaces schedule clauses. `adjudicate_provision` matches an instruction's target by
+    string equality on this token, and the instruction parser only recognises main-body
+    targets ("Section 6 of the principal Act is deleted"), so returning the bare number
+    here let an instruction repealing the MAIN BODY's section 90 also repeal
+    "Schedule 1 > Section 90(4)" — which `enforced_only` then DELETES from the submission,
+    silently. Both paths are real rows in the round-1 submission.
+    """
+    from lexora.cite.amendments import (
+        AmendmentInstruction,
+        CurrencyStatus,
+        InstructionKind,
+        Operation,
+        adjudicate_provision,
+    )
+
+    assert section_of("Section 90(4)") == "90"
+    assert section_of("Schedule 1 > Section 90(4)") == ""
+    assert section_of("Schedule 2 > Section 27J(1A)") == ""
+
+    instr = AmendmentInstruction(
+        kind=InstructionKind.section_op, op=Operation.delete, target_section="90",
+        raw="Section 90 of the principal Act is deleted.",
+    )
+    kw = dict(quote="x", instructions=[instr], amend_label="Act A123")
+    # The main body's section 90 is genuinely repealed...
+    assert adjudicate_provision(section=section_of("Section 90(4)"), **kw).status \
+        is CurrencyStatus.repealed
+    # ...and the schedule paragraph of the same number is left to the document-level
+    # verdict, which flags rather than deletes.
+    assert adjudicate_provision(
+        section=section_of("Schedule 1 > Section 90(4)"), **kw
+    ).status is None
+
+
 def test_is_commenced():
     assert is_commenced("This Act comes into operation on 1 January 2025.") is True
     assert is_commenced(

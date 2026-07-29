@@ -554,10 +554,31 @@ _NOT_COMMENCED_RE = re.compile(
 )
 
 
+# A schedule-qualified path ("Schedule 1 > Section 90(4)"). The parser namespaces such
+# clauses (``::sch1-s90``) precisely because a consolidated Act restarts numbering inside
+# each Schedule, so the schedule's paragraph 90 and the main body's section 90 are
+# different provisions.
+_SCHEDULE_PATH_RE = re.compile(r"^\s*Schedule\b", re.IGNORECASE)
+
+
 def section_of(article_path: str) -> str:
     """The base section number in a citation's article path ("S. 26(1)(a)" -> "26"),
-    so a provision can be matched against an amendment's affected sections. Empty
-    when no section token is present."""
+    so a provision can be matched against an amendment's affected sections.
+
+    Empty when no section token is present, AND empty for a schedule-qualified path.
+    ``adjudicate_provision`` matches an instruction's target on this token by string
+    equality, and the instruction parser only recognises main-body targets ("Section 6 of
+    the principal Act is deleted"). Returning the bare number for "Schedule 1 > Section
+    90(4)" made an instruction repealing the MAIN BODY's section 90 also repeal the
+    schedule's paragraph 90 — and a REPEALED verdict is DELETED from the submission by
+    ``enforced_only``, silently. Such a citation now falls back to the document-level
+    verdict (STALE_RISK at worst), which flags rather than deletes.
+
+    Restoring provision-level adjudication inside a Schedule needs the instruction parser
+    to recognise schedule-qualified targets first; until it does, there is nothing safe to
+    match against."""
+    if _SCHEDULE_PATH_RE.match(article_path or ""):
+        return ""
     m = _SECTION_OF_RE.search(article_path or "")
     return m.group(1) if m else ""
 
@@ -596,6 +617,13 @@ def adjudicate_provision(
     -> REPEALED (only when commenced — otherwise flagged STALE_RISK pending
     commencement). An act-wide term rename whose old term appears in the quoted text
     adds a low-severity note regardless of the section verdict (broad cascade)."""
+    # No section token to adjudicate on (a Preamble, an APP item, a Schedule paragraph --
+    # see `section_of`). "Not among the amended sections" would be a conclusion we have not
+    # reached: it clears the document-level flag to CURRENT and tells the analyst the Act
+    # "did not amend section " with the number missing. Abstain instead, and leave the
+    # coarse verdict standing.
+    if not section:
+        return ProvisionVerdict(None)
     ops = [i for i in instructions if i.target_section and i.target_section == section]
     notes: list[str] = []
 
