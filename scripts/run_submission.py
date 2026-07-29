@@ -569,20 +569,39 @@ def main() -> None:
     isos = ["sg", "au", "my"] if args.jurisdiction == "all" else [args.jurisdiction.lower()]
 
     if args.dry_run:
+        # This is the pre-flight for a run that costs real money, so it has to describe
+        # the run that would ACTUALLY happen. It used to print `verify=False` whenever
+        # the judge was selected as --verify-clauses rather than the legacy --verify,
+        # i.e. it reported "no LLM verifier" for the exact configuration the README
+        # recommends and which produces essentially all of our output.
+        judge = ("per_clause" if args.verify_clauses else "per_cell" if args.verify_cells
+                 else "pick_one" if args.verify else "")
         print("Submission run plan (no network):")
         for iso in isos:
             print(f"  - {ISO_TO_COUNTRY.get(iso, iso)} ({iso}) "
-                  f"-> map budget {args.budget}, verify={args.verify}, "
-                  f"rationale_llm={args.rationale_llm}")
-        if args.verify:
-            verifier = make_verifier(use_llm=True)
+                  f"-> map budget {args.budget}, judge={judge or 'OFF (BM25 lane)'}, "
+                  f"rationale_llm={args.rationale_llm}, metadata_llm={args.metadata_llm}, "
+                  f"amendment_llm={args.amendment_llm or amend_llm_env()}")
+        if judge:
+            verifier = make_verifier(use_llm=True, mode=judge)
             if verifier is None:
-                print("  -> LLM verifier unavailable (install the [llm] extra)")
+                print("  -> LLM verifier UNAVAILABLE (install the [llm] extra) — the run "
+                      "would degrade to the key-free BM25 lane")
             else:
                 cfg = load_config()
-                print(f"  -> LLM verifier ON (model: {cfg.llm_model})")
+                print(f"  -> LLM judge ON, mode {judge} (model: {cfg.llm_model})")
+        concurrent = (args.jobs if args.jobs > 0 else len(isos)) * max(1, args.llm_workers)
+        print(f"  -> up to {concurrent} concurrent LLM call(s) "
+              f"({args.jobs or len(isos)} econom(ies) x {args.llm_workers} worker(s))"
+              + ("   !! >32 collapses this endpoint to ~2.7x SLOWER with ZERO errors"
+                 if concurrent > 32 else ""))
         print(f"  -> OCR {'OFF (--no-ocr)' if args.no_ocr else 'ON (default)'}")
-        print(f"  -> would write {args.out} (+ .json sidecar, .jsonld, .summary.json)")
+        print(f"  -> heartbeat every {args.heartbeat:g}s"
+              if args.heartbeat > 0 else "  -> heartbeat OFF (run will be silent on cost)")
+        if args.max_cost:
+            print(f"  -> cost alarm at CNY {args.max_cost:g} (an alarm, not a brake)")
+        print(f"  -> would write {args.out} "
+              "(+ .json sidecar, .jsonld, .html console, .summary.json)")
         return
 
     if not os.environ.get("LEXORA_LIVE"):
