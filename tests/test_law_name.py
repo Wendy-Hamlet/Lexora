@@ -135,12 +135,12 @@ def test_no_shell_banner_is_a_no_op():
     assert normalize_law_name("Data Sharing Act 2025") == "Data Sharing Act 2025"
 
 
-def _sg_citation(title: str):
+def _sg_citation(title: str, quote: str | None = None):
     from datetime import datetime, timezone
 
     from lexora.models.citation import Citation, DiscoveryTag, ReviewStatus
 
-    quote = "An organisation must not transfer any personal data to a country..."
+    quote = quote or "An organisation must not transfer any personal data to a country..."
     return Citation(
         economy="Singapore",
         title=title,
@@ -176,6 +176,37 @@ def test_the_csv_exporter_emits_the_clean_name(tmp_path):
     to_csv([_sg_citation(SSO_PDPA)], out)
     row = next(iter(_csv.DictReader(out.open(encoding="utf-8-sig"))))
     assert row["Law Name"] == "Personal Data Protection Act 2012"
+
+
+def test_an_oversized_cell_is_reported_not_truncated(tmp_path, caplog):
+    """A spreadsheet cell holds 32,767 characters and Excel truncates a longer one on
+    paste without saying so. The official template is an xlsx, and 2 of the 669 round-1
+    rows exceed it (48,078 and 42,165 characters, OAIC guidance chapters that parsed into
+    one enormous "section") -- on the Verbatim Snippet, the column a reviewer checks by
+    hand.
+
+    The snippet is the clause's exact span and ships beside its char offsets, so cutting
+    it here would break the correspondence that makes it checkable. Warn instead.
+    """
+    import csv as _csv
+    import logging
+
+    from lexora.export.csv_exporter import to_csv
+
+    huge = "A provision that goes on. " * 1400  # ~36k characters
+    out = tmp_path / "sub.csv"
+    with caplog.at_level(logging.WARNING):
+        to_csv([_sg_citation("Personal Data Protection Act 2012", quote=huge)], out)
+
+    row = next(iter(_csv.DictReader(out.open(encoding="utf-8-sig"))))
+    assert row["Verbatim Snippet"] == huge, "the data must reach the file intact"
+    assert "spreadsheet limit" in caplog.text
+    assert "Verbatim Snippet" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        to_csv([_sg_citation("Personal Data Protection Act 2012")], out)
+    assert "spreadsheet limit" not in caplog.text
 
 
 def test_the_audit_csv_keeps_the_raw_title(tmp_path):

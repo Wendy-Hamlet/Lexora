@@ -7,11 +7,25 @@ richer provenance columns for internal review.
 from __future__ import annotations
 
 import csv
+import logging
 from collections.abc import Iterable
 from pathlib import Path
 
 from lexora.export.law_name import normalize_law_name
 from lexora.models.citation import Citation
+
+logger = logging.getLogger(__name__)
+
+# A spreadsheet cell holds 32,767 characters; Excel truncates a longer one on paste,
+# without saying so. The official template is an xlsx, so a provision longer than this
+# reaches a reviewer silently cut off — and the Verbatim Snippet is the column they check
+# by hand. Measured on the round-1 submission: 2 of 669 rows exceed it (48,078 and 42,165
+# characters, both OAIC guidance chapters that parsed into one enormous "section").
+#
+# Deliberately a WARNING, not a truncation. The snippet is the clause's exact span and is
+# published beside its char offsets; cutting it here would break the correspondence that
+# makes it checkable. Better that the run says so than that a spreadsheet decides quietly.
+_SPREADSHEET_CELL_LIMIT = 32_767
 
 # (header label, Citation attribute) — order is the submission order.
 SUBMISSION_COLUMNS: list[tuple[str, str]] = [
@@ -45,12 +59,25 @@ def to_csv(citations: Iterable[Citation], out_path: Path) -> int:
     """Write the submission CSV (exact 13-column template). Returns rows written."""
     headers = [label for label, _ in SUBMISSION_COLUMNS]
     n = 0
+    oversized: list[tuple[str, str, int]] = []
     with Path(out_path).open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(headers)
         for c in citations:
-            writer.writerow([_value(c, attr) for _, attr in SUBMISSION_COLUMNS])
+            row = [_value(c, attr) for _, attr in SUBMISSION_COLUMNS]
+            writer.writerow(row)
             n += 1
+            for (label, _), value in zip(SUBMISSION_COLUMNS, row, strict=True):
+                if len(value) > _SPREADSHEET_CELL_LIMIT:
+                    oversized.append((label, c.indicator_id, len(value)))
+    if oversized:
+        worst = max(oversized, key=lambda t: t[2])
+        logger.warning(
+            "%d cell(s) exceed the %d-character spreadsheet limit and will be silently "
+            "truncated if this CSV is opened in Excel (largest: %s on %s, %d chars). The "
+            "data is intact in the CSV and the JSON sidecar.",
+            len(oversized), _SPREADSHEET_CELL_LIMIT, worst[0], worst[1], worst[2],
+        )
     return n
 
 
