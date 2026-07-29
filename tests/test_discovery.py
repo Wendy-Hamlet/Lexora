@@ -227,6 +227,38 @@ def test_new_tag_for_unlisted_instrument():
     assert results[0].matched_instrument is None
 
 
+def test_identity_requires_the_years_to_agree_but_relevance_does_not():
+    """``token_set_ratio`` scores the INTERSECTION of the token sets, so a longer title
+    that CONTAINS a known one scores a perfect match. Australia's theme-named omnibus Acts
+    are exactly that shape: "Telecommunications Legislation Amendment (Information
+    Disclosure ...) Act 2023" matched "Telecommunications Legislation Amendment Act 1997"
+    — 26 years apart — so a genuine discovery was written off against the gold inventory,
+    on the metric worth 20 of the 40 accuracy points.
+
+    The guard is for IDENTITY only. Applied to relevance it scored "Privacy Amendment Act
+    1990" at zero for the query "privacy act 1988" and dropped it from the results
+    entirely, which is a worse failure than the mis-tag it prevents.
+    """
+    from lexora.collect.discovery import _fuzzy_known
+
+    known = ["Telecommunications Legislation Amendment Act 1997"]
+    omnibus = ("Telecommunications Legislation Amendment (Information Disclosure, "
+               "National Interest and Other Measures) Act 2023")
+    assert _fuzzy_known(omnibus, known)[0] >= 0.80                    # relevance: a match
+    assert _fuzzy_known(omnibus, known, year_strict=True)[0] == 0.0   # identity: not it
+
+    # The instrument still matches itself, and a compilation still matches its principal
+    # (set intersection, not equality).
+    assert _fuzzy_known("Telecommunications Legislation Amendment Act 1997", known,
+                        year_strict=True)[0] >= 0.80
+    assert _fuzzy_known("Privacy Act 1988 (Compilation No. 89, 2022)", ["Privacy Act 1988"],
+                        year_strict=True)[0] >= 0.80
+    # A known name carrying no year constrains nothing.
+    assert _fuzzy_known("Personal Data Protection Code of Practice 2017",
+                        ["Personal Data Protection Code of Practice"],
+                        year_strict=True)[0] >= 0.80
+
+
 def test_cross_reference_in_snippet_does_not_spoof_known():
     # SG SSO result cards append "<Act name> Current version as at <date>
     # <provision snippet>". When that snippet quotes ANOTHER statute (here the

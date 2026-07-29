@@ -180,11 +180,46 @@ def _name_part(title: str) -> str:
     return cut[:90].strip() or title[:90]
 
 
-def _fuzzy_known(text: str, known: list[str]) -> tuple[float, str | None]:
-    """Best fuzzy match of `text` against the known instrument names, in [0,1]."""
+# A legislative title's year is part of its identity: "... Act 1997" and "... Act 2023" are
+# different instruments however similar their words.
+_TITLE_YEAR_RX = re.compile(r"\b(?:1[6-9]\d{2}|20\d{2})\b")
+
+
+def _years_conflict(a: str, b: str) -> bool:
+    """True when both titles carry years and share none.
+
+    ``token_set_ratio`` scores the INTERSECTION of the token sets, so it returns a perfect
+    1.0 whenever the known name's tokens are a SUBSET of the candidate's — and Australia's
+    theme-named omnibus Acts are exactly that shape. "Telecommunications Legislation
+    Amendment (Information Disclosure, National Interest and Other Measures) Act 2023"
+    scored a full match against "Telecommunications Legislation Amendment Act 1997", 26
+    years apart, and would have been tagged KNOWN: a genuine discovery silently written off
+    against the gold inventory, on the metric worth 20 of the 40 accuracy points.
+
+    Set intersection, not equality, so a compiled title keeps matching its principal —
+    "Privacy Act 1988 (Compilation No. 89, 2022)" still matches "Privacy Act 1988".
+    """
+    ya = set(_TITLE_YEAR_RX.findall(a))
+    yb = set(_TITLE_YEAR_RX.findall(b))
+    return bool(ya and yb and not (ya & yb))
+
+
+def _fuzzy_known(
+    text: str, known: list[str], *, year_strict: bool = False
+) -> tuple[float, str | None]:
+    """Best fuzzy match of `text` against the known instrument names, in [0,1].
+
+    ``year_strict`` is for IDENTITY questions (is this the same instrument?) and must not
+    be used for RELEVANCE. The two are different questions asked of the same function: a
+    query for "privacy act 1988" should absolutely surface "Privacy Amendment Act 1990",
+    and turning the guard on globally scored that candidate 0 and dropped it from the
+    results entirely — a worse failure than the mis-tag the guard exists to prevent.
+    """
     best, name = 0.0, None
     tl = text.lower()
     for inst in known:
+        if year_strict and _years_conflict(inst, text):
+            continue
         s = fuzz.token_set_ratio(inst.lower(), tl) / 100.0
         if s > best:
             best, name = s, inst
@@ -206,8 +241,13 @@ def _score_link(
     haystack = _tokens(anchor_text) | _tokens(context_text) | _tokens(urlparse(href).path)
     q_overlap = (len(query_tokens & haystack) / len(query_tokens)) if query_tokens else 0.0
 
-    # Identity (KNOWN/NEW) matches the NAME slot only; relevance may use the body.
-    fuzzy, matched = _fuzzy_known(_name_part(title or context_text), known) if known else (0.0, None)
+    # Identity (KNOWN/NEW) matches the NAME slot only; relevance may use the body. The two
+    # ask different questions of the same score, so only identity gets the year guard.
+    name_slot = _name_part(title or context_text)
+    fuzzy, _ = _fuzzy_known(name_slot, known) if known else (0.0, None)
+    id_fuzzy, matched = (
+        _fuzzy_known(name_slot, known, year_strict=True) if known else (0.0, None)
+    )
     relevance = max(q_overlap, fuzzy)
 
     title_l = (title or "").lower()
@@ -223,9 +263,9 @@ def _score_link(
 
     tag: str | None = None
     if known:
-        if fuzzy >= _KNOWN_THRESHOLD:
+        if id_fuzzy >= _KNOWN_THRESHOLD:
             tag = TAG_KNOWN
-        elif instrument_like and q_overlap >= 0.5 and fuzzy < _NEW_CEILING:
+        elif instrument_like and q_overlap >= 0.5 and id_fuzzy < _NEW_CEILING:
             tag = TAG_NEW
     if tag != TAG_KNOWN:
         matched = None  # matched_instrument is only meaningful for a KNOWN hit

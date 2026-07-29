@@ -89,13 +89,20 @@ def _tag_for(fuzzy: float, known: list[str]) -> str | None:
 
 def _resolve_tag(
     fuzzy: float, matched: str | None, ident: str, known: list[str],
-    ids: dict[str, str] | None,
+    ids: dict[str, str] | None, title: str | None = None,
 ) -> tuple[str | None, str | None]:
     """Tag + matched-name, preferring an identity hit (e.g. Act number / doc id)
-    over fuzzy name matching — so filename-titled records still resolve KNOWN."""
+    over fuzzy name matching — so filename-titled records still resolve KNOWN.
+
+    Pass ``title`` to have identity re-scored year-strictly. The callers' ``fuzzy`` is a
+    RELEVANCE score and is deliberately not year-aware; identity is a different question,
+    and ``token_set_ratio`` answers it wrongly for a longer title that contains a shorter
+    one (see ``discovery._years_conflict``)."""
     id_name = (ids or {}).get(ident)
     if id_name:
         return TAG_KNOWN, id_name
+    if title is not None and known:
+        fuzzy, matched = _fuzzy_known(title, known, year_strict=True)
     tag = _tag_for(fuzzy, known)
     return tag, (matched if tag == TAG_KNOWN else None)
 
@@ -168,7 +175,7 @@ def au_legislation_api(
         score = min(1.0, 0.8 * relevance + 0.1 * bool(v.get("isPrincipal")) + 0.1 * bool(v.get("isInForce")))
         if score < min_score:
             continue
-        tag, matched_name = _resolve_tag(fuzzy, matched, v["id"], known, known_instrument_ids)
+        tag, matched_name = _resolve_tag(fuzzy, matched, v["id"], known, known_instrument_ids, title=name)
         point = "latest" if v.get("isInForce") else "asmade"
         # Official law number straight from the register: "No. 119 of 1988". The
         # register `id` (C2004A03712) is its compilation/series ref — kept as the
@@ -218,6 +225,8 @@ def au_amendment_acts(
     limit: int = 40,
     timeout: float = 30.0,
     source_type: SourceType = SourceType.primary,
+    known_instruments: list[str] | None = None,
+    known_instrument_ids: dict[str, str] | None = None,
     client: httpx.Client | None = None,
 ) -> list[DiscoveryResult]:
     """Every Act that AMENDS the principal ``title_id``, from the FRL versions graph.
@@ -275,8 +284,12 @@ def au_amendment_acts(
             )
 
     results: list[DiscoveryResult] = []
+    known = known_instruments or []
     for tid, (name, year, number) in by_id.items():
         law_number = f"No. {number} of {year}" if number and year else tid
+        # Tagged like every other route, against the gold inventory. Hardcoding NEW here
+        # claimed a discovery for an instrument already on the official list.
+        tag, matched = _resolve_tag(0.0, None, tid, known, known_instrument_ids, title=name)
         results.append(
             DiscoveryResult(
                 url=_AU_DOC.format(id=tid, point="latest"),
@@ -285,7 +298,8 @@ def au_amendment_acts(
                 score=1.0,  # authoritative register relationship
                 via="api",
                 is_pdf_link=False,
-                discovery_tag=TAG_NEW,
+                discovery_tag=tag or TAG_NEW,
+                matched_instrument=matched,
                 n_variants=1,
                 law_number=law_number,
             )
@@ -338,6 +352,8 @@ def au_child_regulations(
     limit: int = 20,
     timeout: float = 30.0,
     source_type: SourceType = SourceType.primary,
+    known_instruments: list[str] | None = None,
+    known_instrument_ids: dict[str, str] | None = None,
     client: httpx.Client | None = None,
 ) -> list[DiscoveryResult]:
     """The principal REGULATIONS made under the Act ``act_id`` — delegated legislation
@@ -388,15 +404,25 @@ def au_child_regulations(
             num, yr = v.get("number"), v.get("year")
             from lexora.classify.lifecycle import detect_status
 
+            # Tagged against the gold inventory like every other route. This one used to
+            # hardcode NEW, so it claimed a discovery for regulations already on the
+            # official list -- including Telecommunications Regulations 2021, which is both
+            # in the AU profile's known_instruments AND the example in this function's own
+            # motivation. NEW is 20 of the 40 accuracy points; a false NEW is not a rounding
+            # error, it is a claim we cannot support.
+            name = v.get("name", "")
+            known = known_instruments or []
+            tag, matched = _resolve_tag(0.0, None, rid, known, known_instrument_ids, title=name)
             results.append(
                 DiscoveryResult(
                     url=_AU_DOC.format(id=rid, point="latest"),
-                    title=v.get("name", ""),
+                    title=name,
                     source_type=source_type,
                     score=1.0,  # authoritative authorisation edge
                     via="api",
                     is_pdf_link=False,
-                    discovery_tag=TAG_NEW,
+                    discovery_tag=tag or TAG_NEW,
+                    matched_instrument=matched,
                     n_variants=1,
                     law_number=f"No. {num} of {yr}" if num and yr else rid,
                     status=detect_status(in_force=True, portal_status="").value,
@@ -667,13 +693,13 @@ def my_legislation_api(
     for act_id, g in groups.items():
         title = g["clean_title"] or g["any_title"]
         q_sim = _fuzzy_known(title, [query])[0] if query else 0.0
-        fuzzy, matched = _fuzzy_known(title, known) if known else (0.0, None)
+        fuzzy, matched = _fuzzy_known(title, known, year_strict=True) if known else (0.0, None)
         # Solr relevance + lexical match + principal preference, normalized to [0,1].
         score = min(1.0, 0.4 * g["solr_rel"] + 0.4 * max(q_sim, fuzzy) + 0.2 * g["principal"])
         if score < min_score:
             continue
         # Act-number identity tags KNOWN even when the title is just a filename.
-        tag, matched_name = _resolve_tag(fuzzy, matched, act_id, known, known_instrument_ids)
+        tag, matched_name = _resolve_tag(fuzzy, matched, act_id, known, known_instrument_ids, title=title)
         results.append(
             DiscoveryResult(
                 url=g["url"], title=title, source_type=portal.source_type, score=score,
@@ -736,7 +762,7 @@ def _collect_guidance(
         title = clean_title(raw) if clean_title else raw
         if len(title) < 8 or title.lower() in _GUIDANCE_SKIP:
             continue
-        fuzzy, matched = _fuzzy_known(title, known) if known else (0.0, None)
+        fuzzy, matched = _fuzzy_known(title, known, year_strict=True) if known else (0.0, None)
         tag = TAG_KNOWN if fuzzy >= 0.80 else TAG_NEW
         cur = out.get(url)
         if cur is None or len(title) > len(cur.title):
@@ -823,7 +849,7 @@ def pdpc_guidance(
     # Guides outside the crawled hubs (the DPIA guide PDF) — add explicitly.
     for url, title in _PDPC_EXTRA:
         if url not in agg:
-            fuzzy, matched = _fuzzy_known(title, known) if known else (0.0, None)
+            fuzzy, matched = _fuzzy_known(title, known, year_strict=True) if known else (0.0, None)
             agg[url] = DiscoveryResult(
                 url=url, title=title, source_type=SourceType.secondary,
                 score=1.0, via="http", is_pdf_link=url.lower().endswith(".pdf"),
@@ -890,7 +916,7 @@ def my_pdp_guidance(
         # Soft-law instruments outside the code-of-practice sidebar (the Standard).
         for url, title in _MY_PDP_EXTRA:
             if url not in agg:
-                fuzzy, matched = _fuzzy_known(title, known) if known else (0.0, None)
+                fuzzy, matched = _fuzzy_known(title, known, year_strict=True) if known else (0.0, None)
                 agg[url] = DiscoveryResult(
                     url=url, title=title, source_type=SourceType.secondary,
                     score=1.0, via="http", is_pdf_link=False,
@@ -972,7 +998,7 @@ def imda_guidance(
     known = known_instruments or []
     out: list[DiscoveryResult] = []
     for url, title in _IMDA_INSTRUMENTS:
-        fuzzy, matched = _fuzzy_known(title, known) if known else (0.0, None)
+        fuzzy, matched = _fuzzy_known(title, known, year_strict=True) if known else (0.0, None)
         out.append(DiscoveryResult(
             url=url, title=title, source_type=SourceType.secondary,
             score=1.0, via="http", is_pdf_link=True,

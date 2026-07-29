@@ -662,7 +662,7 @@ def run_pipeline_map(
         # 2021 -> P7-I5) is otherwise unreachable. Runs after the amendment pass so it
         # sees (and de-dups against) the amendments already added.
         documents = documents + _discover_child_regulations(
-            documents, _process, timeout=timeout, workers=doc_workers,
+            documents, _process, profile=profile, timeout=timeout, workers=doc_workers,
         )
         # Regulator soft-law (codes of practice / standards) the statute portal does
         # not index — gold instruments (MY: PDP Codes of Practice + Standard 2015)
@@ -880,7 +880,11 @@ def _discover_amendments(
         else:
             continue
         try:
-            amd_hits = au_amendment_acts(fid, timeout=timeout)
+            amd_hits = au_amendment_acts(
+                fid, timeout=timeout,
+                known_instruments=profile.known_instruments,
+                known_instrument_ids=profile.known_instrument_ids,
+            )
         except Exception:  # noqa: BLE001
             continue
         for hit in amd_hits:
@@ -956,6 +960,7 @@ def _discover_child_regulations(
     documents: list[DemoArtifacts],
     process_fn,
     *,
+    profile: SourceProfile | None = None,
     timeout: float,
     workers: int = 1,
 ) -> list[DemoArtifacts]:
@@ -981,7 +986,11 @@ def _discover_child_regulations(
         if not fid or not a.document.title:
             continue
         try:
-            hits = au_child_regulations(fid, a.document.title, timeout=timeout)
+            hits = au_child_regulations(
+                fid, a.document.title, timeout=timeout,
+                known_instruments=profile.known_instruments if profile else None,
+                known_instrument_ids=profile.known_instrument_ids if profile else None,
+            )
         except Exception:  # noqa: BLE001 — a failed lookup never breaks the run
             continue
         fresh = [h for h in hits if h.url not in seen_url]

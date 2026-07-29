@@ -240,7 +240,47 @@ def test_au_child_regulations_name_and_authorised_by_guard():
     # Exactly the one regulation actually made under this Act survives.
     assert [r.url for r in results] == ["https://www.legislation.gov.au/F2021L00289/latest"]
     assert results[0].title == "Telecommunications Regulations 2021"
+    # With no inventory to compare against there is nothing to call it but NEW.
     assert results[0].discovery_tag == "NEW"
+
+
+def test_au_child_regulations_do_not_claim_a_known_instrument_as_new():
+    """NEW is 20 of the 40 accuracy points, so a false NEW is a claim we cannot support.
+
+    This route hardcoded ``discovery_tag=TAG_NEW`` and never consulted the gold inventory,
+    so it claimed a discovery for Telecommunications Regulations 2021 -- which is in the AU
+    profile's ``known_instruments`` and is the example in the caller's own docstring. Every
+    other discovery route already tagged against the inventory.
+    """
+    from lexora.collect.strategies import au_child_regulations
+
+    client = httpx.Client(transport=httpx.MockTransport(_au_reg_handler()))
+    results = au_child_regulations(
+        "C2004A05145", "Telecommunications Act 1997", client=client,
+        known_instruments=["Telecommunications Regulations 2021", "Privacy Act 1988"],
+    )
+    client.close()
+    assert results[0].discovery_tag == "KNOWN"
+    assert results[0].matched_instrument == "Telecommunications Regulations 2021"
+
+
+def test_au_amendment_acts_do_not_claim_a_known_instrument_as_new():
+    # Same hardcoded-NEW fault on the amendment reverse-lookup route.
+    from lexora.collect.strategies import au_amendment_acts
+
+    client = httpx.Client(
+        transport=httpx.MockTransport(lambda r: httpx.Response(200, json=AU_VERSIONS_JSON))
+    )
+    results = au_amendment_acts(
+        "C2004A05145", client=client,
+        known_instruments=["Telecommunications Legislation Amendment Act 1997"],
+    )
+    client.close()
+    tags = {r.title: r.discovery_tag for r in results}
+    assert tags["Telecommunications Legislation Amendment Act 1997"] == "KNOWN"
+    # An amending Act that is NOT on the list is still a genuine discovery.
+    assert any(tag == "NEW" for title, tag in tags.items()
+               if "Information Disclosure" in title)
 
 
 def test_au_child_regulations_skips_short_core_and_non_200():
