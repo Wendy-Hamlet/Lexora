@@ -317,6 +317,32 @@ def test_reranker_reorders_pool_keeps_bm25_score_and_tag():
     assert hits[1].score == base_score["c1"]
 
 
+def test_rerank_pool_never_truncates_what_the_caller_asked_for():
+    """Turning on the PRECISION stage must not shrink RECALL.
+
+    The per-clause judge calls retrieval as a pure recall gate: its ``top_k`` (40) IS the
+    size of the pool it will judge. ``rerank_pool_k`` defaults to 20 and is not threaded
+    through, so the cross-encoder used to read 20 candidates and hand back 20 -- setting
+    ``LEXORA_MAP_RERANK=1`` silently halved the judge's pool. Measured on the MY PDPA
+    gold, a pool of 40 reaches 11 of 12 gold sections and a pool of 20 only 10.
+    """
+    from lexora.classify.retrieval import build_index, retrieve_candidates
+
+    clauses = [
+        _clause(f"c{i}", f"section {i} concerning the transfer of personal data abroad")
+        for i in range(30)
+    ]
+    index = build_index(clauses)
+    ind = RDTIIIndicator(
+        rdtii_id="6.4", submission_id="P6-I4", pillar=6, name="transfer",
+        description="cross-border transfer of personal data", keywords=["transfer"],
+    )
+    rr = FakeReranker(prefer=["personal data"])
+    hits = retrieve_candidates(ind, _profile(), index, top_k=25, use_semantic=False,
+                               reranker=rr)  # rerank_pool_k left at its default 20
+    assert len(hits) == 25, f"asked for 25, got {len(hits)} — the pool truncated it"
+
+
 def test_rerank_rrf_blend_keeps_bm25_confident_top1():
     # The default (rerank_rrf=True) fuses the BM25 and cross-encoder rankings, so a
     # clause BM25 ranks #1 with a big margin is NOT displaced by a cross-encoder that

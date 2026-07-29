@@ -6,8 +6,8 @@ channel is fused in by reciprocal-rank fusion: dense retrieval surfaces clauses
 whose wording differs from the indicator's keywords (e.g. an "retain ... for seven
 years" provision under a "minimum data retention" indicator) and reorders the pool
 so the semantically-right section ranks first. Reported scores stay on the BM25
-scale, so the orchestrator's confidence gate (`tanh(bm25/5)`) is unchanged whether
-or not the dense channel is active.
+scale, so the orchestrator's confidence gate (``pipeline._normalize_score``) is
+unchanged whether or not the dense or rerank channel is active.
 """
 from __future__ import annotations
 
@@ -276,7 +276,13 @@ def retrieve_candidates(
     if reranker is not None:
         # Cross-encoder precision stage over the BM25 recall pool. Reorder by joint
         # relevance, keep the raw BM25 score (the gate is unchanged), tag "reranked".
-        pool = bm25_order[:rerank_pool_k]
+        #
+        # The pool is never smaller than what the caller asked for: a cross-encoder cannot
+        # return more clauses than it read, so `top_k=40` out of `rerank_pool_k=20` silently
+        # hands back 20. The per-clause judge calls exactly that way -- its `top_k` IS its
+        # recall gate -- so turning on a PRECISION flag used to halve RECALL (measured on
+        # the MY PDPA gold: pool 40 reaches 11/12 gold sections, pool 20 only 10/12).
+        pool = bm25_order[:max(rerank_pool_k, top_k)]
         if not pool:
             return []
         docs = [index.clauses[i].span.text for i in pool]
