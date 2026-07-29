@@ -75,15 +75,45 @@ _TRANSFER_BAN = (
 )
 
 
+# Both P6 rules discriminate between two CROSS-BORDER regimes, so neither has anything to
+# say about a clause that is not about cross-border data movement at all.
+#
+# That gate matters because the discriminating markers are not all specific. Measured over
+# 26,901 corpus clauses, the 6.1 rule rejected 7.5% of them (the 6.4 rule: 0.1%), 79% of
+# those rejections fired on the single word "prescribed" -- which appears in ordinary
+# statutory boilerplate ("in the prescribed form") -- and 87% of the clauses it rejected
+# never mention transfer at all. No gold or corpus citation is currently harmed by this (the
+# only vetoes observed on real localisation clauses were SG PDPA s.26(1), correctly routed
+# to 6.4), because such a clause rarely reaches a P6 indicator in the first place. But these
+# predicates run AFTER the judge has said yes and delete silently, so the margin should not
+# depend on that.
+#
+# Narrowing when the rule may fire is safe by construction: these are tightening-only
+# filters, so an extra precondition on rejection can never delete a citation that survives
+# today -- it can only stop one being deleted for a reason the rule was not built to detect.
+_XBORDER = re.compile(
+    r"\btransfer|\boutside\b|\babroad\b|\boverseas\b|cross-?border"
+    r"|another (?:country|territory|jurisdiction)|foreign (?:country|jurisdiction)"
+)
+
+
+def _about_cross_border(text: str) -> bool:
+    return bool(_XBORDER.search(text))
+
+
 def _admits_6_1(text: str) -> bool:
     """A conditional cross-border transfer belongs to 6.4 — exclude it from the 6.1
     ban indicator. Admit outright bans / localisation (no transfer condition)."""
+    if not _about_cross_border(text):
+        return True
     return not _has(text, _TRANSFER_CONDITION)
 
 
 def _admits_6_4(text: str) -> bool:
     """A pure ban / localisation with no transfer condition belongs to 6.1 — exclude
     it from 6.4. Admit anything carrying a transfer condition."""
+    if not _about_cross_border(text):
+        return True
     return not (_has(text, _TRANSFER_BAN) and not _has(text, _TRANSFER_CONDITION))
 
 

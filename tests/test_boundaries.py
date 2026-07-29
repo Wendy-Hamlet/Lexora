@@ -60,6 +60,37 @@ def test_6_4_excludes_pure_ban_admits_conditional():
     assert admits_clause("6.4", _MY_S129) is True
 
 
+def test_p6_rules_stay_silent_on_a_clause_that_is_not_about_transfer():
+    """Both P6 rules discriminate between two CROSS-BORDER regimes, so neither has anything
+    to say about a clause that is not about cross-border movement.
+
+    The markers are not all specific: measured over 26,901 corpus clauses the 6.1 rule
+    rejected 7.5% of them (6.4: 0.1%), 79% of those rejections fired on the single word
+    "prescribed" -- ordinary statutory boilerplate -- and 87% of the clauses it rejected
+    never mention transfer at all. These predicates run AFTER the judge has said yes and
+    delete silently, so the margin must not depend on such a clause never reaching them.
+    """
+    boilerplate = [
+        "An application under this section must be made in the prescribed form and "
+        "accompanied by the prescribed fee.",
+        "The Minister may appoint such officers as are approved by the Commission.",
+        "A data user shall obtain the consent of the individual before processing.",
+    ]
+    for text in boilerplate:
+        assert admits_clause("6.1", text) is True, text
+        assert admits_clause("6.4", text) is True, text
+
+
+def test_the_transfer_gate_does_not_loosen_a_real_verdict():
+    # Narrowing WHEN a tightening rule fires can only admit more, never less. The three
+    # worked cases must be unchanged -- verified over the corpus too: 6.1 rejections fell
+    # from 2026 to 283 with zero clauses newly rejected.
+    assert admits_clause("6.1", _SG_S26) is False
+    assert admits_clause("6.4", _SG_S26) is True
+    assert admits_clause("6.1", _AU_LOCALISE) is True
+    assert admits_clause("6.4", _AU_LOCALISE) is False
+
+
 def test_6_1_6_4_routing_has_no_gap():
     # every transfer clause lands in exactly one of 6.1 / 6.4 (never dropped from both)
     for text in (_SG_S26, _MY_S129, _AU_LOCALISE):
