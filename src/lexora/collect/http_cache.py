@@ -139,14 +139,15 @@ class Store:
                 "SELECT status, headers, body_sha, recorded_at FROM responses WHERE key = ?",
                 (_key(method, url, body),),
             ).fetchone()
-        if row is None:
-            self.misses += 1
-            return None
-        payload = self._read_blob(row[2])
-        if payload is None:  # index row survived, blob did not — treat as a miss
-            self.misses += 1
-            return None
-        self.hits += 1
+        payload = self._read_blob(row[2]) if row is not None else None
+        # Counted under the lock: the crawler reads this from its thread pool, and a
+        # read-modify-write outside it loses updates. Replay coverage is reported from
+        # these, so an undercount reads as a recording with holes it does not have.
+        with self._lock:
+            if row is None or payload is None:  # no row, or the blob went missing
+                self.misses += 1
+                return None
+            self.hits += 1
         headers = json.loads(row[1])
         # When these bytes were really retrieved. The citation's retrieval_timestamp is
         # part of the audit trail, so a replay must not backdate a week-old snapshot to

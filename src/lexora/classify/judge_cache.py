@@ -113,14 +113,18 @@ class JudgeCache:
         return h.hexdigest()
 
     def get(self, key: str) -> set[str] | None:
+        # The counters are bumped INSIDE the lock: the judge reads this from up to 32
+        # threads, and `self.hits += 1` is a read-modify-write. Outside the lock the
+        # reported hit rate silently undercounts -- and the hit rate is the number that
+        # says whether a run was cheap because it was cached or cheap because it failed.
         with self._lock:
             row = self._db.execute(
                 "SELECT indicators FROM verdicts WHERE key = ?", (key,)
             ).fetchone()
-        if row is None:
-            self.misses += 1
-            return None
-        self.hits += 1
+            if row is None:
+                self.misses += 1
+                return None
+            self.hits += 1
         return set(json.loads(row[0]))
 
     def put(self, key: str, model: str, verdict: set[str]) -> None:
