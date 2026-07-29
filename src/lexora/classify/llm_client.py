@@ -18,7 +18,6 @@ bare install and the offline test suite never require this package or a server.
 from __future__ import annotations
 
 import json
-import os
 import re
 import threading
 import time
@@ -84,7 +83,7 @@ class LlmClient:
         # content (and burn latency) for it; the client then falls back to a
         # plain completion. Set LEXORA_LLM_JSON_MODE=0 to skip the json-mode
         # attempt entirely on such endpoints. Default preserves prior behaviour.
-        self.use_json_mode = os.environ.get("LEXORA_LLM_JSON_MODE", "1").lower() not in (
+        self.use_json_mode = env_value("LEXORA_LLM_JSON_MODE", "1").lower() not in (
             "0", "false", "no", "off",
         )
         # Some reasoning backends (e.g. Zhipu glm-5.2) spend the whole completion
@@ -94,8 +93,6 @@ class LlmClient:
         # ``thinking: {type: disabled}`` extra param, which restores fast, compact,
         # non-empty JSON replies at no measured quality loss. Default off = no
         # change for endpoints that don't understand the param.
-        # Read via env_value (process env, then .env) — unlike os.environ.get, this
-        # honours the dotenv file the rest of the config uses.
         self.disable_thinking = env_value(
             "LEXORA_LLM_DISABLE_THINKING", "0"
         ).lower() in ("1", "true", "yes", "on")
@@ -105,7 +102,7 @@ class LlmClient:
         # a deterministic bad-JSON reply). Set LEXORA_LLM_RETRY_BACKOFF>0 for a
         # rate-limited endpoint where spacing the retries helps.
         try:
-            self.retry_backoff = float(os.environ.get("LEXORA_LLM_RETRY_BACKOFF", "0"))
+            self.retry_backoff = float(env_value("LEXORA_LLM_RETRY_BACKOFF", "0"))
         except ValueError:
             self.retry_backoff = 0.0
         self.retry_backoff_cap = 8.0
