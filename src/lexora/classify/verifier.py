@@ -189,7 +189,16 @@ class Verifier:
         self.last_error_type: str | None = None
         # Verdict cache (per_clause only; see judge_cache). None = disabled.
         self._cache = cache
-        self._fingerprint: str | None = None
+        # Prompt fingerprint PER indicator catalogue, not one for the verifier's lifetime.
+        # The fingerprint IS the question, and callers legitimately ask different ones from
+        # the same verifier: the regime-2 brute judge narrows `indicators` per document, so
+        # one run can put a three-indicator catalogue and the full nine-indicator catalogue
+        # to the same model. Pinning the first one seen meant a verdict taken against three
+        # indicators was later served, unchanged, as the answer to the nine-indicator
+        # question -- silently dropping the six that were never in the prompt. That is
+        # exactly the "cached answer outliving the question that produced it" this module's
+        # docstring promises cannot happen.
+        self._fingerprints: dict[tuple[str, ...], str] = {}
         # Clauses this verifier actually put to the model, vs served from cache. Counted
         # here rather than on the cache so the numbers survive the cache being switched
         # off -- a cost report that says "0 clauses judged" because the cache is absent
@@ -221,14 +230,19 @@ class Verifier:
 
         key = None
         if self._cache is not None:
-            if self._fingerprint is None:
-                self._fingerprint = self._prompt_fingerprint(indicators)
-            key = self._cache.key(self._model_id(), self._fingerprint, clause)
+            signature = tuple(i.submission_id for i in indicators)
+            fingerprint = self._fingerprints.get(signature)
+            if fingerprint is None:
+                fingerprint = self._fingerprints[signature] = self._prompt_fingerprint(
+                    indicators
+                )
+            key = self._cache.key(self._model_id(), fingerprint, clause)
             cached = self._cache.get(key)
             if cached is not None:
                 self.from_cache += 1
-                # Intersect with the live ids: the fingerprint pins the catalogue, but a
-                # caller may legitimately pass a subset of it.
+                # Belt and braces: the fingerprint now pins this exact catalogue, so a hit
+                # can only carry ids we asked about. Keep the intersection anyway -- it
+                # costs nothing and a stale row from an older schema cannot leak through.
                 return cached & valid
 
         try:
@@ -418,9 +432,10 @@ def make_verifier(
     ``use_llm`` is the explicit opt-in (the ``--verify`` / ``--verify-cells`` flag).
     ``mode`` is ``"pick_one"`` (legacy), ``"per_cell"`` (precision lane), or
     ``"per_clause"`` (9-in-1 per clause — the relevance decision itself). ``model``
-    overrides the configured LLM model; ``per_clause`` defaults it to the reliable
-    non-reasoning ``LEXORA_BRUTE_MODEL`` (deepseek-v4-flash) so the relevance
-    decision never rides a reasoning backend that returns empty content.
+    overrides the configured LLM model; ``per_clause`` additionally honours
+    ``LEXORA_BRUTE_MODEL`` when it is set, so the relevance decision can be pinned to a
+    different backend than the rest of the run. Unset means "follow ``LEXORA_LLM_MODEL``"
+    — see the call site below for why anything else breaks the documented config swap.
     Even when requested, returns ``None`` if the ``openai`` SDK is not installed,
     so callers can wire it unconditionally and the run degrades gracefully.
     """

@@ -46,6 +46,44 @@ def cache(tmp_path):
     c.close()
 
 
+class _Recorder:
+    """Answers with every indicator id that appears in the prompt it is given."""
+
+    model = "test-model"
+
+    def __init__(self):
+        self.prompts = []
+
+    def chat(self, system, user, json_schema=None):
+        self.prompts.append(user)
+        return {"indicators": [i.submission_id for i in INDS if i.submission_id in user]}
+
+
+def test_a_narrower_catalogue_is_a_different_question(cache):
+    """The fingerprint is per catalogue, not per verifier.
+
+    The verifier holds one cache for a whole run, and callers legitimately vary the
+    catalogue within it -- the regime-2 brute judge narrows `indicators` per document. The
+    fingerprint used to be computed once, from whichever list arrived first, so a verdict
+    taken against one indicator was then served as the answer to the two-indicator
+    question: the second indicator was silently dropped without ever being asked about.
+    """
+    client = _Recorder()
+    v = Verifier(client, mode="per_clause", cache=cache)
+    clause = _clause()
+
+    narrow = v.judge_clause(clause, INDS[:1])   # document A: brute judge narrowed it
+    full = v.judge_clause(clause, INDS)         # document B: the whole catalogue
+
+    assert narrow == {"P6-I4"}
+    assert full == {"P6-I4", "P7-I5"}, "the wider question must actually be asked"
+    assert len(client.prompts) == 2, "a different catalogue is a cache MISS, not a hit"
+
+    # ...and each remains individually cached, so the saving is not lost to the fix.
+    assert v.judge_clause(clause, INDS) == full
+    assert len(client.prompts) == 2
+
+
 def test_roundtrip(cache):
     fp = catalogue_fingerprint(INDS)
     k = cache.key("m1", fp, _clause())
