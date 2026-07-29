@@ -99,6 +99,14 @@ def test_config_swap_reaches_every_llm_lane(monkeypatch):
         llm_base_url="http://localhost:11434/v1", llm_api_key="none", llm_model="llama3",
         llm_max_tokens=512, llm_max_retries=1, llm_user_agent="",
     ))
+    # CI installs `.[dev]` only, so the `llm` extra -- and with it the `openai` SDK -- is
+    # absent there and present on a developer machine. `make_verifier` returns None when
+    # the SDK cannot be imported, which made this test pass locally and fail on CI for a
+    # reason that has nothing to do with what it checks. The contract under test is which
+    # MODEL NAME reaches the client; `LlmClient` builds the SDK object lazily in
+    # `_ensure_client`, so constructing one needs no SDK at all.
+    monkeypatch.setattr(llm_client_mod, "is_available", lambda: True)
+    monkeypatch.setenv("LEXORA_JUDGE_CACHE", "0")  # don't touch data/cache from a unit test
     for mode in ("pick_one", "per_cell", "per_clause"):
         v = make_verifier(use_llm=True, mode=mode)
         assert v is not None and v._client.model == "llama3", mode
