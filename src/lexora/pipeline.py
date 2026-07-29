@@ -43,6 +43,7 @@ from lexora.classify.retrieval import (
     retrieve_candidates,
 )
 from lexora.collect.crawler import fetch, ingest_local_file
+from lexora.export.law_name import resolve_law_name
 from lexora.extract.html_extractor import HtmlBlock, extract_html
 from lexora.extract.pdf_text_extractor import PdfPage, extract_pdf_bytes, extract_pdf_text
 from lexora.models.citation import (
@@ -1031,6 +1032,13 @@ def _resolve_doc_metadata(
     Each tier only fills a field still missing, so the highest-confidence source wins
     and a citation always gets the best value available (or blank). ``review_note``
     is the extractor's own-knowledge channel (review-only, never an answer)."""
+    # Law Name comes from the portal, and Malaysia's AGC portal serves each Act as a file
+    # named by whoever uploaded it -- eight of the eleven Malaysian NEW rows of the round-1
+    # submission carried one ("Act 706 ori.pdf", "DRAF KEDUA AKTA 701 (final)(KU) (1).pdf")
+    # in the column that says which instrument the row is about. Resolved here because this
+    # is the one place that already holds the document's own text, where the Act states its
+    # real title. A portal title that already reads like a law name is untouched.
+    document.title = resolve_law_name(document.title, document_text)
     last_amended, law_number = document.last_amended, document.law_number
     review_note = ""
     if not (last_amended and law_number) and meta_extractor is not None:

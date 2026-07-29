@@ -3,7 +3,82 @@ from __future__ import annotations
 
 import pytest
 
-from lexora.export.law_name import normalize_law_name
+from lexora.export.law_name import (
+    looks_like_a_filename,
+    normalize_law_name,
+    resolve_law_name,
+    statute_title_from_text,
+)
+
+# Verbatim from the 2026-07-14 submission: Malaysia's AGC portal serves each Act as a file
+# whose NAME is whatever the uploader called it, and that name reached the Law Name column
+# on eight of the eleven Malaysian rows carrying the NEW claim.
+MY_FILENAMES = [
+    ("Act 706 ori.pdf", "Act 706"),
+    ("Act 758 Final.pdf", "Act 758"),
+    ("Act A1727.pdf", "Act A1727"),
+    ("ACT 791 as at 1 January 2024 (Final).pdf", "ACT 791"),
+    ("Act 590(Reprint 1 Jan 2006)", "Act 590"),
+    ("Act 670 (Dalam talian 2025)", "Act 670"),
+    ("DRAF KEDUA AKTA 701 (final)(KU) (1).pdf", "DRAF KEDUA AKTA 701"),
+    ("09. Act A1441", "Act A1441"),
+    ("INCOME TAX ACT 1967 (ACT 53) 23.11.2021.pdf", "INCOME TAX ACT 1967 (ACT 53)"),
+]
+
+MY_MASTHEAD = (
+    "LAWS OF MALAYSIA\nONLINE VERSION OF UPDATED\nTEXT OF REPRINT\n"
+    "Act 758\nFINANCIAL SERVICES ACT 2013\nAs at 6 October 2023\n"
+)
+
+
+@pytest.mark.parametrize(("raw", "expected"), MY_FILENAMES)
+def test_a_portal_filename_is_cleaned_not_shipped(raw, expected):
+    assert looks_like_a_filename(raw)
+    assert resolve_law_name(raw) == expected
+
+
+def test_the_act_states_its_own_name_and_that_wins():
+    # Better than any cleanup of the file name: the document says what it is.
+    assert statute_title_from_text(MY_MASTHEAD) == "Financial Services Act 2013"
+    assert resolve_law_name("Act 758 Final.pdf", MY_MASTHEAD) == "Financial Services Act 2013"
+
+
+def test_the_masthead_anchor_is_not_relaxed_to_the_copyright_page():
+    """Every Malaysian reprint carries "UNDER THE AUTHORITY OF THE REVISION OF LAWS ACT
+    1968". Dropping the "Act <n>" anchor to raise the hit rate would turn that boilerplate
+    into a confident, wrong law name on every such document."""
+    copyright_page = (
+        "REPRINT\nAs at 1 October 2018\nPUBLISHED BY\n"
+        "THE COMMISSIONER OF LAW REVISION, MALAYSIA\n"
+        "UNDER THE AUTHORITY OF THE REVISION OF LAWS ACT 1968\n2018\n"
+    )
+    assert statute_title_from_text(copyright_page) == ""
+    assert resolve_law_name("Act 643 Reprint 2006_unlocked", copyright_page) \
+        == "Act 643 Reprint 2006"
+
+
+def test_a_real_law_name_is_never_touched():
+    # "Online Safety ... Act 2025" contains a word the upload-noise rules look for, so the
+    # filename test must be settled by how the name ENDS, not by what it contains -- a
+    # title wrongly flagged is a title this module is licensed to overwrite from the text.
+    good = [
+        "Online Safety (Relief and Accountability) Act 2025",
+        "Personal Data Protection Act 2012",
+        "Telecommunications and Other Legislation Amendment (Assistance and Access) Act 2018",
+        "Personal Data Protection Code of Practice For the Utilities Sector (Electricity)",
+    ]
+    for name in good:
+        assert not looks_like_a_filename(name), name
+        assert resolve_law_name(name, MY_MASTHEAD) == name
+
+
+def test_cleanup_never_removes_the_instrument_it_names():
+    # A greedy "drop everything after this word" rule turned this into "Mei 2019".
+    out = resolve_law_name("Mei 2019 Reprint Online Act 678.pdf")
+    assert "Act 678" in out
+    # Parenthesised parts of a real title survive the noise rules.
+    assert resolve_law_name("A1779 - ATOMIC ENERGY LICENSING (AMENDMENT) ACT 2025.pdf") \
+        == "A1779 - ATOMIC ENERGY LICENSING (AMENDMENT) ACT 2025"
 
 # Verbatim from the 2026-07-14 run: SSO renders the statute inside a page shell,
 # and the crawled title swallowed the whole thing.
