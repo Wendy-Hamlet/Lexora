@@ -141,6 +141,62 @@ def test_ocr_fill_pages_marks_empty_ocr_result_as_no_text_layer(monkeypatch):
     assert conf == {1: 0.0}
 
 
+def test_ocr_audit_ignores_pages_that_produced_no_text(monkeypatch):
+    """`ocr_quality_cer` must describe the OCR we RELIED ON, not every page OCR swept.
+
+    `page_conf` carries an entry for every page OCR was run on, and a blank or image-only
+    cover page yields no lines and so a confidence of 0.0. Averaging those in reported
+    "scanned, mean OCR confidence 0.000" for documents whose citable text came from the
+    text layer -- 19 of the 51 scanned rows of the round-1 submission, printed above quotes
+    of clean legal prose.
+    """
+    import lexora.pipeline as pipe
+
+    monkeypatch.setenv("LEXORA_OCR", "1")
+
+    class _Engine:
+        name = "fake:1"
+
+    # Page 1 has a text layer; pages 2 and 3 are image-only. OCR reads page 2 well and
+    # finds nothing at all on page 3 (a blank scan).
+    pages = [PdfPage(1, "real text", 0, 9, True),
+             PdfPage(2, "", 11, 11, False),
+             PdfPage(3, "", 13, 13, False)]
+    filled = [PdfPage(1, "real text", 0, 9, True),
+              PdfPage(2, "ocr text", 11, 19, True),
+              PdfPage(3, "", 21, 21, False)]
+    monkeypatch.setattr(pipe, "_maybe_ocr_fill", pipe._maybe_ocr_fill)  # keep the real one
+    monkeypatch.setattr(oe, "make_engine", lambda *a, **k: _Engine())
+    monkeypatch.setattr(oe, "ocr_fill_pages",
+                        lambda p, s, *, engine=None: (filled, {2: 0.94, 3: 0.0}))
+
+    out, meta = pipe._maybe_ocr_fill(pages, b"%PDF-")
+    assert out is filled
+    assert meta["scanned"] is True
+    assert meta["ocr_quality_cer"] == 0.94, "the empty page must not drag the mean to 0.47"
+    assert meta["ocr_engine"] == "fake:1"
+
+
+def test_ocr_audit_reports_nothing_when_no_page_yielded_text(monkeypatch):
+    # OCR swept two blank pages and produced nothing, so nothing was filled: the document
+    # is not a scan we relied on, and claiming a measurement of 0.0 would be worse than
+    # claiming none.
+    import lexora.pipeline as pipe
+
+    monkeypatch.setenv("LEXORA_OCR", "1")
+
+    class _Engine:
+        name = "fake:1"
+
+    pages = [PdfPage(1, "real text", 0, 9, True), PdfPage(2, "", 11, 11, False)]
+    monkeypatch.setattr(oe, "make_engine", lambda *a, **k: _Engine())
+    monkeypatch.setattr(oe, "ocr_fill_pages", lambda p, s, *, engine=None: (pages, {2: 0.0}))
+
+    _out, meta = pipe._maybe_ocr_fill(pages, b"%PDF-")
+    assert meta["scanned"] is False
+    assert meta["ocr_quality_cer"] is None
+
+
 def test_make_engine_defaults_to_rapidocr_name(monkeypatch):
     # Dispatch only: select paddleocr via env without constructing it (would import
     # paddle). We assert the branch is reached by stubbing the engine classes.

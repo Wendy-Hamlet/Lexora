@@ -127,6 +127,33 @@ def test_pipeline_from_url_html_verbatim(mock_client, sg_profile, indicators, tm
     assert any("transfer any personal data" in c.quote for c in artifacts.citations)
 
 
+def test_document_text_is_the_text_the_offsets_index(mock_client, sg_profile, indicators,
+                                                     tmp_path):
+    """`document_text` is the artifact's own copy of the document, and the published
+    char_start/char_end are supposed to index it.
+
+    The HTML branch used to hand-roll the join with a SINGLE newline while the parser (and
+    `html_extractor.assemble_global_text`) use BLOCK_SEPARATOR = "\\n\\n", so from the
+    second block onward every offset was off by one per boundary. Visible in the round-1
+    submission: the JSON sidecar locates `raw_context_before`/`after` with
+    `document_text.find(quote)`, and a clause spanning a block boundary carries the "\\n\\n"
+    the parser saw. 167 of 228 Australian rows (73%) shipped with no context, all of them
+    from this branch; no PDF row was affected.
+    """
+    for url in ("https://portal.test/act", "https://portal.test/pdf"):
+        art = run_pipeline_from_url(
+            url=url, profile=sg_profile, indicators=indicators,
+            dest_dir=tmp_path, client=mock_client, min_score=-10.0,
+        )
+        assert art.clauses, url
+        for clause in art.clauses:
+            s, e = clause.span.char_start, clause.span.char_end
+            assert art.document_text[s:e] == clause.span.text, f"{url} {clause.clause_id}"
+        # ...and therefore every quote is locatable, which is what the sidecar needs.
+        for c in art.citations:
+            assert art.document_text.find(c.quote) >= 0, f"{url} {c.clause_id}"
+
+
 def test_pipeline_from_url_pdf(mock_client, sg_profile, indicators, tmp_path):
     artifacts = run_pipeline_from_url(
         url="https://portal.test/pdf",

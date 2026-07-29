@@ -45,7 +45,9 @@ from lexora.classify.retrieval import (
 from lexora.collect.crawler import fetch, ingest_local_file
 from lexora.export.law_name import resolve_law_name
 from lexora.extract.html_extractor import HtmlBlock, extract_html
+from lexora.extract.html_extractor import assemble_global_text as assemble_html_text
 from lexora.extract.pdf_text_extractor import PdfPage, extract_pdf_bytes, extract_pdf_text
+from lexora.extract.pdf_text_extractor import assemble_global_text as assemble_pdf_text
 from lexora.models.citation import (
     Citation,
     ClaimLabel,
@@ -230,9 +232,20 @@ def _maybe_ocr_fill(
     # Both guards above have already passed, so importing the backend now is not eager.
     engine = make_engine()
     filled, page_conf = ocr_fill_pages(pages, source, engine=engine)
-    if page_conf:
+    # Average over the pages OCR actually produced TEXT for. `page_conf` carries an entry
+    # for every page OCR was RUN on, and a blank or image-only cover page yields no lines
+    # and therefore a confidence of 0.0. Averaging those in reported a document as
+    # "scanned, mean OCR confidence 0.000" when its citable text had come from the text
+    # layer all along and OCR had merely swept a few empty pages: 19 of the 51 scanned rows
+    # of the round-1 submission said exactly that, above quotes of clean legal prose.
+    #
+    # No usable page means nothing was filled, so the document is not a scan at all and the
+    # field stays null rather than claiming a measurement that was never made.
+    text_by_page = {p.page_number: p.text for p in filled}
+    usable = {n: c for n, c in page_conf.items() if text_by_page.get(n, "").strip()}
+    if usable:
         meta["scanned"] = True
-        meta["ocr_quality_cer"] = round(sum(page_conf.values()) / len(page_conf), 4)
+        meta["ocr_quality_cer"] = round(sum(usable.values()) / len(usable), 4)
         meta["ocr_engine"] = engine.name
     return filled, meta
 
@@ -274,7 +287,7 @@ def run_demo_pipeline(
     pages = extract_pdf_text(pdf_path)
     pages, ocr_meta = _maybe_ocr_fill(pages, pdf_path)
     clauses = parse_structure(document.document_id, pages)
-    document_text = "\n\n".join(p.text for p in pages)
+    document_text = assemble_pdf_text(pages)  # same helper the clause offsets index
     citations = _citations_from_clauses(
         clauses, document, profile, indicators, legal_form, top_k, min_score,
         verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
@@ -349,9 +362,19 @@ def run_pipeline_from_url(
             blocks = extract_html(result.body, url)
             clauses = parse_structure_html(document.document_id, blocks)
 
+    # Assembled by the extractors' own helpers, which are the definition of the text the
+    # clause offsets index. Hand-rolling the join here used a SINGLE newline between HTML
+    # blocks where the parser (and `html_extractor.assemble_global_text`) use
+    # BLOCK_SEPARATOR = "\n\n", so from the second block onward every published
+    # char_start/char_end was off by one per boundary and did not index this string.
+    #
+    # Visible in the round-1 submission: `raw_context_before`/`after` in the JSON sidecar
+    # are located by `document_text.find(quote)`, and a clause spanning a block boundary
+    # carries the "\n\n" the parser saw, which is not present here. 167 of 228 Australian
+    # rows (73%) shipped with no context at all, and every one of them came through this
+    # branch -- the AU EPUB/XHTML path. No PDF row was affected.
     document_text = (
-        "\n\n".join(p.text for p in pages) if pages
-        else "\n".join(b.text for b in blocks)
+        assemble_pdf_text(pages) if pages else assemble_html_text(blocks)
     )
     # Regime-2: a full-text 9-in-1 judge decides which of ALL indicators this law is
     # relevant to, replacing the discovery-attribution subset (which caps recall — a law
