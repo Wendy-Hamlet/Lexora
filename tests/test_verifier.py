@@ -343,6 +343,35 @@ def test_pipeline_per_clause_systematic_failure_degrades_to_ranking_lane(monkeyp
     assert all("LLM judge unavailable" in c.notes for c in cites)
 
 
+def test_pipeline_per_clause_partial_failure_never_emits_a_pair_twice(monkeypatch):
+    from lexora.pipeline import _citations_from_clauses
+
+    # The realistic outage: the endpoint dies PART WAY through a document, so some clauses
+    # carry a real verdict and the rest never got an answer. Those judged specs used to
+    # survive the fall-through into the ranking lane, which then re-emitted the same
+    # (indicator, clause) -- and since the map de-dup keeps whichever came first, the row
+    # that reached the CSV was the judged one, carrying no degrade marker at all.
+    monkeypatch.setenv("LEXORA_JUDGE_DEGRADE_AT", "0.5")
+    monkeypatch.setenv("LEXORA_DEGRADED_MIN_SCORE", "0")
+    clauses = [
+        *_candidates(),
+        _clause("c3", "a data user shall retain personal data no longer than necessary"),
+    ]
+    # 2 of 3 fail -> 0.67 > 0.5 -> degrade, with one genuine verdict already in hand.
+    verifier = Verifier(FlakyClient(2, {"indicators": ["P7-I3"]}), mode="per_clause")
+    cites = _citations_from_clauses(
+        clauses, _doc(), _profile(), [_ind()], "statute", top_k=3, min_score=0.0,
+        verifier=verifier,
+    )
+    keys = [(c.indicator_id, c.clause_id) for c in cites]
+    assert len(keys) == len(set(keys)), f"duplicate rows: {keys}"
+    # Every row still discloses that this document's coverage is incomplete, whether it
+    # came from the judge or from the ranking lane.
+    assert all("DEGRADED" in c.notes for c in cites)
+    judged = [c for c in cites if "PARTIALLY DEGRADED" in c.notes]
+    assert judged and all("THIS row was judged" in c.notes for c in judged)
+
+
 def test_pipeline_per_clause_degrade_gate_can_be_disabled(monkeypatch):
     from lexora.pipeline import _citations_from_clauses
 

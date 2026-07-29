@@ -523,6 +523,14 @@ def run_pipeline_map(
     _progress_lock = threading.Lock()
     _processed: dict[tuple, DemoArtifacts] = {}
     _processed_lock = threading.Lock()
+    # One lock per cache key, so two workers that draw the SAME document queue instead of
+    # both doing the work. Checking the memo and filling it under separate locks is a
+    # check-then-act race: at doc_workers=8 both threads miss, both fetch, both OCR and
+    # both pay for a full set of judge calls, and the loser's artifacts object is a
+    # distinct object that the id()-based de-dup below cannot see -- so the document is
+    # also counted twice in `fetched_ok` / `docs_with_clauses` and written twice into the
+    # JSON sidecar. The memo existed precisely to stop that work happening twice.
+    _key_locks: dict[tuple, threading.Lock] = {}
 
     def _process(hit) -> DemoArtifacts:
         t0 = time.perf_counter()
@@ -571,9 +579,20 @@ def run_pipeline_map(
         cache_key = (target, tag.value, tuple(i.submission_id for i in ind_subset))
         with _processed_lock:
             done = _processed.get(cache_key)
+            key_lock = _key_locks.setdefault(cache_key, threading.Lock())
         if done is not None:
             return done
 
+        with key_lock:
+            # Re-check inside the key lock: whoever held it may have just finished.
+            with _processed_lock:
+                done = _processed.get(cache_key)
+            if done is not None:
+                return done
+            return _map_one(hit, target, tag, ind_subset, cache_key, t0)
+
+    def _map_one(hit, target, tag, ind_subset, cache_key, t0) -> DemoArtifacts:
+        """Fetch, parse and map one instrument. Called with this key's lock held."""
         artifacts = run_pipeline_from_url(
             url=target, profile=profile, indicators=ind_subset, portal_name=portal.name,
             source_type=portal.source_type, dest_dir=dest_dir, top_k=top_k,
@@ -1325,6 +1344,9 @@ def _citations_from_clauses(
     # (the slow, I/O-bound part inside _materialize) — concurrently when asked.
     specs: list[dict] = []
     sec_notes = secondary_note_by_indicator or {}
+    # (indicator, clause) pairs the judge already ruled on. Stays empty unless a degraded
+    # document falls through to the ranking lane below, which must not re-emit them.
+    judged_pairs: set[tuple[str, str]] = set()
 
     # Per-clause 9-in-1 relevance: pool candidate clauses across all indicators, then
     # judge each clause ONCE against all of them (the focused single-clause question a
@@ -1362,6 +1384,29 @@ def _citations_from_clauses(
         # to 0.7 here drops those provably-wrong rows from 16 to 10 and total citations from
         # 25 to 19 with gold recall UNCHANGED at 38% -- pure precision, no cost.
         min_score = max(min_score, _degraded_min_score())
+        # The judge usually answers for SOME clauses before it dies (the breaker opens after
+        # 8 consecutive failures, so everything judged up to that point is a real verdict).
+        # Those specs are kept -- throwing away evidence the run already paid for would be
+        # worse -- but the fall-through gave them neither of the two things they need.
+        #
+        # They must not be re-emitted by the ranking lane: the same (indicator, clause) then
+        # ships twice, and because `run_pipeline_map` de-dups on first-seen, the row that
+        # SURVIVES into the CSV is the judged one, which carries no degrade marker at all.
+        # A document declared degraded was quietly publishing unmarked rows.
+        #
+        # And they must say that the DOCUMENT is incomplete even though the row itself was
+        # judged, because nothing else distinguishes a fully-judged document from the
+        # surviving third of a broken one.
+        judged_pairs = {(s["indicator"].submission_id, s["clause"].clause_id) for s in specs}
+        partial_note = (
+            f"PARTIALLY DEGRADED: the LLM judge failed on {judge_failed}/{judge_asked} "
+            "clauses of this document; THIS row was judged, but the document's coverage "
+            "is incomplete"
+        )
+        for spec in specs:
+            spec["meta_note"] = " | ".join(
+                filter(None, [spec.get("meta_note", ""), partial_note])
+            )
         common["meta_note"] = " | ".join(filter(None, [
             common.get("meta_note", ""),
             f"DEGRADED: LLM judge unavailable ({judge_failed}/{judge_asked} judgements "
@@ -1431,6 +1476,8 @@ def _citations_from_clauses(
             ]
 
         for hit in passing:
+            if (indicator.submission_id, hit.clause_id) in judged_pairs:
+                continue  # the judge already ruled on this pair; don't ship it twice
             specs.append(dict(
                 indicator=indicator, clause=clause_by_id[hit.clause_id],
                 bm25_score=hit.score, secondary_note=secondary_note, **common,
