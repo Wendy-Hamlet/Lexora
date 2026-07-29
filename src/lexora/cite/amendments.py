@@ -62,6 +62,30 @@ _YEAR_RE = re.compile(r"\b" + _YEAR + r"\b")
 # "Act 709", "Act A1727" (amending Acts in Malaysia take a letter-prefixed number),
 # "Act 854". First hit in the masthead is the instrument's own number.
 _ACT_NUMBER_RE = re.compile(r"\bAct\s+([A-Z]?\d+[A-Z]?)\b", re.IGNORECASE)
+
+
+def _masthead_act_number(head: str) -> str:
+    """The instrument's own number, skipping the year in its title.
+
+    This pattern is written for Malaysia, where the number FOLLOWS the word ("Act 709").
+    Singapore and Australia put the year there instead -- "Personal Data Protection Act
+    2012" -- so the first match in the masthead is the title's year, and it was being
+    stored as the number. Measured over the corpus: 295 of 303 Singapore documents (97%),
+    34 of 50 Australian and 46 of 102 Malaysian ones carried a year as their number.
+
+    That field is not decoration. ``Identity.key`` feeds ``candidate_keys``, which is how
+    an amending Act is matched to the principal it amends, so every instrument of a given
+    year collided on one key -- "Act 1967" was shared by ELEVEN documents across Malaysia
+    and Singapore, merging their amendment instructions. No jurisdiction here numbers an
+    Act in the 1600-2099 range (Malaysia is in the hundreds; Singapore and Australia use
+    "Act N of YYYY" / "No. N of YYYY"), so a bare year is never a number.
+    """
+    for m in _ACT_NUMBER_RE.finditer(head):
+        token = m.group(1)
+        if _YEAR_RE.fullmatch(token):
+            continue
+        return "Act " + token
+    return ""
 # A masthead title line ending in a 4-digit year, e.g. "PERSONAL DATA PROTECTION
 # ACT 2010". Allows the common "(AMENDMENT)" infix.
 _ACT_TITLE_RE = re.compile(r"([A-Z][A-Za-z()]+(?:\s+[A-Za-z()]+){0,8}\s+ACT,?\s+\d{4})")
@@ -118,10 +142,14 @@ def normalize_key(*, number: str = "", title: str = "") -> str:
     collision-free); falls back to a normalized title. Empty when neither is
     usable, so callers can skip un-keyable rows."""
     num = (number or "").strip().lower()
-    m = _ACT_NUMBER_RE.search(num) if num else None
-    if m:
-        return "act:" + m.group(1).lower()
-    if num and re.fullmatch(r"[a-z]?\d+[a-z]?", num):
+    # A bare year is never an Act number, and keying on one is the opposite of
+    # collision-free: every instrument of that year lands on the same key and their
+    # amendment instructions merge. Guarded here as well as at the source
+    # (`_masthead_act_number`) so the promise above does not depend on the caller.
+    for m in _ACT_NUMBER_RE.finditer(num) if num else ():
+        if not _YEAR_RE.fullmatch(m.group(1)):
+            return "act:" + m.group(1).lower()
+    if num and re.fullmatch(r"[a-z]?\d+[a-z]?", num) and not _YEAR_RE.fullmatch(num):
         return "act:" + num
     t = (title or "").lower()
     t = re.sub(r"\[act\s+[a-z]?\d+[a-z]?\]", " ", t)  # drop bracketed number
@@ -178,14 +206,13 @@ def parse_identity(text: str) -> Identity:
     """Read (number, title, year) from a document's masthead. Best-effort: any
     field may be blank when the masthead does not print it."""
     head = text[:_HEAD]
-    num = _ACT_NUMBER_RE.search(head)
     title_m = _ACT_TITLE_RE.search(head)
     title = title_m.group(1).strip() if title_m else ""
     year = None
     if title:
         y = _YEAR_RE.search(title)
         year = int(y.group(0)) if y else None
-    return Identity(number=("Act " + num.group(1)) if num else "", title=title, year=year)
+    return Identity(number=_masthead_act_number(head), title=title, year=year)
 
 
 def detect_amends_target(text: str) -> tuple[str, str] | None:

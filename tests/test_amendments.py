@@ -281,6 +281,38 @@ def test_section_of_parses_article_path():
     assert section_of("Preamble") == ""
 
 
+def test_a_title_year_is_not_an_act_number():
+    """`_ACT_NUMBER_RE` is written for Malaysia, where the number FOLLOWS the word
+    ("Act 709"). Singapore and Australia put the YEAR there -- "Personal Data Protection
+    Act 2012" -- so the first match in the masthead was stored as the instrument's number.
+
+    Measured over the corpus before the fix: 295 of 303 Singapore documents (97%), 34 of 50
+    Australian and 46 of 102 Malaysian ones carried a year as their number. `Identity.key`
+    feeds `candidate_keys`, which is how an amending Act is matched to the principal it
+    amends, so every instrument of a given year collided on one key -- "Act 1967" was
+    shared by eleven documents across Malaysia and Singapore.
+    """
+    from lexora.cite.amendments import normalize_key, parse_identity
+
+    sg = "PERSONAL DATA PROTECTION ACT 2012\nAn Act to govern the collection of data.\n"
+    assert parse_identity(sg).number == ""          # honest: SG numbers are "Act N of YYYY"
+    assert parse_identity(sg).year == 2012          # the year is still read, as a year
+
+    # Malaysia prints both; the real number must win over the title's year.
+    my = "LAWS OF MALAYSIA\nAct 709\nPERSONAL DATA PROTECTION ACT 2010\n"
+    assert parse_identity(my).number == "Act 709"
+    amending = "LAWS OF MALAYSIA\nAct A1727\nPERSONAL DATA PROTECTION (AMENDMENT) ACT 2024\n"
+    assert parse_identity(amending).number == "Act A1727"
+
+    # And the key builder does not depend on its caller having been careful.
+    assert normalize_key(number="Act 709") == "act:709"
+    assert normalize_key(number="Act 26 of 2012") == "act:26"
+    assert normalize_key(number="Act 2012", title="Personal Data Protection Act 2012") \
+        != "act:2012"
+    assert normalize_key(number="2012", title="Personal Data Protection Act 2012") \
+        != "act:2012"
+
+
 def test_repealed_and_substituted_is_a_substitution_not_a_removal():
     """"Repealed AND the following substituted" is how the Westminster register REPLACES a
     section -- the provision goes on existing with new words.
