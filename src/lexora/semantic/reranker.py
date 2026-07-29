@@ -41,10 +41,17 @@ _FALLBACK_MODEL = "BAAI/bge-reranker-base"
 
 
 def resolve_model_name() -> str:
-    """Pick the reranker model from the environment, else the multilingual base."""
-    return os.environ.get("LEXORA_RERANK_MODEL") or _FALLBACK_MODEL
+    """Pick the reranker model, else the multilingual base.
+
+    Read through :func:`lexora.config.env_value` (process env, then the local ``.env``)
+    for the same reason as the embedder: a knob only half the project can see is a knob
+    that silently does nothing."""
+    from lexora.config import env_value
+
+    return env_value("LEXORA_RERANK_MODEL", _FALLBACK_MODEL)
 
 
+# Import-time snapshot for display only; `get_reranker()` resolves at call time.
 DEFAULT_MODEL = resolve_model_name()
 
 
@@ -86,9 +93,10 @@ class Reranker:
     onnxruntime-gpu + CUDA are present, falling back to CPU on any error — the
     scores are identical either way."""
 
-    def __init__(self, model_name: str = DEFAULT_MODEL, *, cache_dir: str | None = None):
+    def __init__(self, model_name: str | None = None, *, cache_dir: str | None = None):
         from fastembed.rerank.cross_encoder import TextCrossEncoder
 
+        model_name = model_name or resolve_model_name()
         cache = cache_dir or _default_cache_dir()
         os.makedirs(cache, exist_ok=True)
         self.model_name = model_name
@@ -126,9 +134,15 @@ class Reranker:
         return [(i, scores[i]) for i in order]
 
 
+def get_reranker(model_name: str | None = None) -> Reranker:
+    """Return a process-wide cached :class:`Reranker` (model load is expensive).
+
+    Resolved at call time, not bound at import — see :func:`embedder.get_embedder`."""
+    return _cached_reranker(model_name or resolve_model_name())
+
+
 @lru_cache(maxsize=2)
-def get_reranker(model_name: str = DEFAULT_MODEL) -> Reranker:
-    """Return a process-wide cached :class:`Reranker` (model load is expensive)."""
+def _cached_reranker(model_name: str) -> Reranker:
     return Reranker(model_name)
 
 

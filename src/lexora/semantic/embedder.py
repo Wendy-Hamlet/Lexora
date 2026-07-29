@@ -38,15 +38,25 @@ _FALLBACK_MODEL = "BAAI/bge-small-en-v1.5"
 
 
 def resolve_model_name() -> str:
-    """Pick the embedding model from the environment (legacy name wins), else the
-    light English fallback. Centralised so the two accepted env vars never drift."""
-    return (
-        os.environ.get("LEXORA_EMBED_MODEL")
-        or os.environ.get("LEXORA_EMBEDDING_MODEL")
-        or _FALLBACK_MODEL
-    )
+    """Pick the embedding model, else the light English fallback.
+
+    Resolved through :func:`lexora.config.env_value`, so the knob is read from the
+    process environment AND the local ``.env`` — the same precedence as every other
+    Lexora setting, and the file where ``LEXORA_LLM_MODEL`` and the endpoint already
+    live. Reading ``os.environ`` alone left the documented multilingual swap dead for
+    anyone who configured it the way the rest of the project is configured:
+    ``load_config().embedding_model`` said ``bge-m3`` while this said ``bge-small-en``.
+
+    Legacy ``LEXORA_EMBED_MODEL`` still wins over the unified ``LEXORA_EMBEDDING_MODEL``.
+    """
+    from lexora.config import env_value
+
+    return env_value("LEXORA_EMBED_MODEL", _FALLBACK_MODEL, "LEXORA_EMBEDDING_MODEL")
 
 
+# A snapshot taken at import, kept for callers that want to display the default. It is
+# NOT what `get_embedder()` uses — resolving there means a knob set by a launcher, a
+# .env, or a test still reaches the model that actually gets loaded.
 DEFAULT_MODEL = resolve_model_name()
 
 
@@ -101,9 +111,10 @@ class Embedder:
     a batch), falling back to CPU on any error — the vectors are identical either way.
     """
 
-    def __init__(self, model_name: str = DEFAULT_MODEL, *, cache_dir: str | None = None):
+    def __init__(self, model_name: str | None = None, *, cache_dir: str | None = None):
         from fastembed import TextEmbedding
 
+        model_name = model_name or resolve_model_name()
         cache = cache_dir or _default_cache_dir()
         os.makedirs(cache, exist_ok=True)
         self.model_name = model_name
@@ -131,9 +142,18 @@ class Embedder:
         return vecs / norms
 
 
+def get_embedder(model_name: str | None = None) -> Embedder:
+    """Return a process-wide cached :class:`Embedder` (model load is expensive).
+
+    The name is resolved HERE, not bound at import. Every call site passes no argument
+    (``retrieval._maybe_embedder``, ``discovery._get_embedder``), so a module-level
+    default frozen at import time was the effective model no matter what the
+    configuration said — the caching is keyed on the resolved name instead."""
+    return _cached_embedder(model_name or resolve_model_name())
+
+
 @lru_cache(maxsize=4)
-def get_embedder(model_name: str = DEFAULT_MODEL) -> Embedder:
-    """Return a process-wide cached :class:`Embedder` (model load is expensive)."""
+def _cached_embedder(model_name: str) -> Embedder:
     return Embedder(model_name)
 
 

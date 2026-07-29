@@ -58,6 +58,46 @@ def test_embedding_model_resolves_both_env_var_names(monkeypatch):
     assert resolve_model_name() == "legacy/override"  # explicit legacy var wins
 
 
+def test_embedding_model_is_read_from_dotenv_too(monkeypatch, tmp_path):
+    """The knob has to be readable where the project's other knobs live.
+
+    ``load_config()`` resolves LEXORA_EMBEDDING_MODEL from the process env AND the local
+    ``.env`` — the file that already holds the LLM model, endpoint and key. The embedder
+    read ``os.environ`` only, so configuring it the documented way left
+    ``load_config().embedding_model`` saying ``bge-m3`` while the loaded model was the
+    English fallback. The previous test passed throughout: it only ever set real env vars.
+    """
+    from lexora.config import load_config
+    from lexora.semantic.embedder import resolve_model_name
+
+    monkeypatch.delenv("LEXORA_EMBED_MODEL", raising=False)
+    monkeypatch.delenv("LEXORA_EMBEDDING_MODEL", raising=False)
+    (tmp_path / ".env").write_text("LEXORA_EMBEDDING_MODEL=BAAI/bge-m3\n", encoding="utf-8")
+    monkeypatch.chdir(tmp_path)
+
+    assert resolve_model_name() == load_config().embedding_model == "BAAI/bge-m3"
+
+
+def test_the_model_is_chosen_when_asked_for_not_when_imported(monkeypatch):
+    """Every call site calls ``get_embedder()`` with no argument.
+
+    While the default argument was a module-level constant computed at import, that
+    constant WAS the model, whatever the configuration said afterwards — a launcher
+    that sets the variable in-process, or a test, could not reach it."""
+    from lexora.semantic import embedder, reranker
+
+    asked: list[str] = []
+    monkeypatch.setattr(embedder, "_cached_embedder", lambda name: asked.append(name))
+    monkeypatch.setattr(reranker, "_cached_reranker", lambda name: asked.append(name))
+
+    monkeypatch.setenv("LEXORA_EMBED_MODEL", "set/after-import")
+    monkeypatch.setenv("LEXORA_RERANK_MODEL", "rerank/after-import")
+    embedder.get_embedder()
+    reranker.get_reranker()
+
+    assert asked == ["set/after-import", "rerank/after-import"]
+
+
 def test_cosine_topk_orders_and_truncates():
     docs = np.array([[1.0, 0.0], [0.0, 1.0], [0.7071, 0.7071]], dtype=np.float32)
     q = np.array([1.0, 0.0], dtype=np.float32)
