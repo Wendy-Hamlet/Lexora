@@ -88,6 +88,15 @@ def test_replay_miss_is_reported_not_invented(store):
     assert b"no recording" in response.content
 
 
+@pytest.mark.parametrize(
+    "value,expected",
+    [("replay", True), ("offline", True), ("record", False), ("", False)],
+)
+def test_politeness_is_only_owed_to_a_real_server(monkeypatch, value, expected):
+    monkeypatch.setenv("LEXORA_HTTP_CACHE", value)
+    assert http_cache.serving_from_recording() is expected
+
+
 def test_a_post_body_is_part_of_the_key(store):
     """Malaysia's Fess back-end is a search POST: two queries share a URL."""
     url = "https://lom.agc.gov.my/search"

@@ -576,3 +576,36 @@ def test_the_memo_does_not_confuse_two_queries():
     discover(portal, query="beta", client=client, limit=5)
     client.close()
     assert len(seen) == 2 and seen[0] != seen[1]
+
+
+def test_the_sso_sweep_does_not_pace_itself_against_a_recording(monkeypatch, tmp_path):
+    """The SG sweep spaces navigations 1.5s apart to stay under SSO's cumulative
+    per-IP limit. Under replay every render comes off a SQLite file on this disk, so
+    that limiter is not in the loop -- yet the spacing fired anyway: measured on the
+    real recording, 87s of the ~90s the Singapore discovery leg took was these sleeps.
+    """
+    from lexora.collect import discovery, http_cache
+
+    monkeypatch.setenv("LEXORA_HTTP_CACHE", "replay")
+    monkeypatch.setenv("LEXORA_HTTP_CACHE_DIR", str(tmp_path / "http_cache"))
+    monkeypatch.setattr(http_cache, "_STORE", None)
+    slept: list[float] = []
+    monkeypatch.setattr(discovery.time, "sleep", lambda s: slept.append(s))
+
+    portal = PortalSpec(
+        name="SSO", url="https://sso.agc.gov.sg/", source_type=SourceType.primary,
+        fetch_method=FetchMethod.playwright,
+        search_url_template="https://sso.agc.gov.sg/Search?q={query}",
+    )
+    inds = [_ind("6.1", "P6-I1", ["alpha"]), _ind("7.3", "P7-I3", ["beta"])]
+
+    discover_for_indicators(portal, inds, budget=5)
+    assert slept == []
+
+    # Same sweep with the recording out of the picture: the spacing is still there,
+    # so the guard removed the delay and not the rate-limit protection.
+    monkeypatch.setattr(discovery.http_cache, "serving_from_recording", lambda: False)
+    discover_for_indicators(portal, inds, budget=5)
+    # One gap between the two phrases, plus one before each of the two refused
+    # queries the post-sweep retry pass picks up -- both spacing sites, both silenced.
+    assert slept == [1.5, 1.5, 1.5]

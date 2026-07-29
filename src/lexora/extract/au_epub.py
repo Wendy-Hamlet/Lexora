@@ -36,6 +36,8 @@ import time
 import httpx
 from bs4 import BeautifulSoup
 
+from lexora.collect import http_cache
+
 # .../epub/OEBPS/document_1/document_1.html  -> capture the stem around the "1"s.
 _DOC1 = re.compile(r"(?P<a>.*/epub/OEBPS/document_)1(?P<b>/document_)1(?P<c>\.html)$")
 _MAX_PARTS = 50  # safety bound; real Acts have a handful
@@ -114,7 +116,7 @@ def combine_au_epub(
             break
         parts.append(_inner_body(r.content))
         n += 1
-        if inter_delay:
+        if inter_delay and not http_cache.serving_from_recording():
             time.sleep(inter_delay)
     return ("<html><body>" + "\n".join(parts) + "</body></html>").encode("utf-8")
 

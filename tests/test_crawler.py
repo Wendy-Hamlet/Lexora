@@ -209,3 +209,46 @@ def test_replayed_fetch_keeps_the_recorded_retrieval_time():
                        portal_name="SSO", source_type=SourceType.primary, client=client)
 
     assert result.document.retrieval_timestamp == recorded
+
+
+def test_a_replay_miss_is_not_retried_as_an_outage(monkeypatch, tmp_path):
+    """A 504 from the recording means "never recorded", not "server having a bad minute".
+
+    The replay transport dresses a miss as a 504 so callers carry on past it like any
+    refusing portal. ``_get`` retries every 5xx, so before this guard each missing URL
+    re-read the same absent row three times and slept 1.5s doing it -- pure wall-time in
+    the offline demo, where a miss is the one thing that provably cannot change.
+    """
+    calls: list[str] = []
+    slept: list[float] = []
+    monkeypatch.setattr("lexora.collect.crawler.time.sleep", lambda s: slept.append(s))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(str(request.url))
+        return httpx.Response(504, content=b"lexora: no recording for this request",
+                              headers={"content-type": "text/plain",
+                                       "x-lexora-cache": "miss"})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = _fetch("https://portal.test/never-recorded", client, tmp_path, retries=2)
+
+    assert result.document.http_status == 504  # still reported, never invented
+    assert len(calls) == 1
+    assert slept == []
+
+
+def test_politeness_spacing_is_skipped_when_replaying(monkeypatch):
+    """No host is being spared by a delay against a SQLite file on this disk."""
+    from lexora.collect import crawler
+
+    slept: list[float] = []
+    monkeypatch.setattr(crawler.time, "sleep", lambda s: slept.append(s))
+    monkeypatch.setattr(crawler, "_LAST_HIT", {"sso.agc.gov.sg": crawler.time.monotonic()})
+
+    monkeypatch.setenv("LEXORA_HTTP_CACHE", "replay")
+    crawler._space("sso.agc.gov.sg", 1.0)
+    assert slept == []
+
+    monkeypatch.setenv("LEXORA_HTTP_CACHE", "off")
+    crawler._space("sso.agc.gov.sg", 1.0)
+    assert slept and slept[0] > 0

@@ -76,6 +76,20 @@ def mode() -> str:
     return OFF
 
 
+def serving_from_recording() -> bool:
+    """True when every HTTP byte comes from the store on this disk.
+
+    Several layers below sleep on behalf of a server: the crawler spaces same-host
+    requests, the discovery sweep spaces SSO navigations under its cumulative per-IP
+    limit, the AU enumerator and EPUB assembler space their sequential fetches. Under
+    replay there is no server on the other end, so those delays buy nothing and cost
+    the one budget a live demo is short of — measured on Singapore, 84% of an offline
+    replay was spent sleeping. Stated here once so every throttle site agrees on what
+    "no server" means.
+    """
+    return mode() == REPLAY
+
+
 def default_dir() -> Path:
     p = os.environ.get("LEXORA_HTTP_CACHE_DIR")
     if p:

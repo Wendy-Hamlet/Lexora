@@ -34,6 +34,7 @@ import httpx
 from bs4 import BeautifulSoup
 from rapidfuzz import fuzz
 
+from lexora.collect import http_cache
 from lexora.collect.crawler import DEFAULT_UA
 from lexora.models.source import FetchMethod, PortalSpec, SourceType
 
@@ -969,6 +970,11 @@ def discover_for_indicators(
         # 10-min budget while roughly halving the burst rate the limiter sees — cheap
         # insurance against the cumulative throttle, since render time dominates anyway.
         sweep_interval = 1.5
+    if http_cache.serving_from_recording():
+        # Replay renders come off the local store, so the cumulative per-IP limiter
+        # this spacing exists for is not in the loop at all. Measured on the Singapore
+        # sweep: 87s of the ~90s this leg took was these two sleeps.
+        sweep_interval = 0.0
     session_cm = None
     if needs_browser:
         # Use the browser's own realistic Chrome UA, NOT the polite HTTP bot UA —

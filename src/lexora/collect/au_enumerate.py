@@ -43,6 +43,7 @@ from pathlib import Path
 
 import httpx
 
+from lexora.collect import http_cache
 from lexora.collect.discovery import TAG_KNOWN, TAG_NEW, DiscoveryResult, _fuzzy_known
 from lexora.collect.strategies import _AU_DOC, au_act_catalogue
 from lexora.models.source import SourceType
@@ -152,7 +153,8 @@ def enumerate_au_candidates(
             if done % 50 == 0:
                 _log(f"enumerate: fetched {done}/{len(pending)} shells "
                      f"elapsed {time.perf_counter() - t0:.0f}s")
-            time.sleep(min_interval)
+            if min_interval and not http_cache.serving_from_recording():
+                time.sleep(min_interval)  # CloudFront cumulative per-IP limit
 
         def _judge_one(tid: str) -> dict:
             text = texts.get(tid, "")

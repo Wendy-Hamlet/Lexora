@@ -22,6 +22,7 @@ from urllib.parse import urlparse
 
 import httpx
 
+from lexora.collect import http_cache
 from lexora.collect.hasher import sha256_bytes
 from lexora.models.source import (
     FetchMethod,
@@ -122,8 +123,10 @@ def _parse_recorded_at(value: str | None) -> datetime | None:
 
 def _space(host: str, min_interval: float) -> None:
     """Sleep so this call starts >= ``min_interval`` after the previous same-host
-    hit. Lock-free spacing core — the CALLER must already hold ``_host_lock(host)``."""
-    if min_interval <= 0:
+    hit. Lock-free spacing core — the CALLER must already hold ``_host_lock(host)``.
+
+    No-op when the bytes come from the recording: there is no host to space against."""
+    if min_interval <= 0 or http_cache.serving_from_recording():
         return
     last = _LAST_HIT.get(host)
     if last is not None:
@@ -195,7 +198,12 @@ def fetch(
         for attempt in range(retries + 1):
             try:
                 response = client.get(url)
-                if response.status_code < 500:
+                # A replay MISS is dressed as a 504 so callers carry on past it like
+                # any refusing portal — but it is a fact about the recording, not a
+                # server having a bad minute. Retrying it re-reads the same absent row
+                # twice and sleeps 1.5s to do it, so take the transport at its word.
+                if (response.status_code < 500
+                        or response.headers.get("x-lexora-cache") == "miss"):
                     break
             except httpx.TransportError as exc:  # network blip — retry
                 last_exc = exc
