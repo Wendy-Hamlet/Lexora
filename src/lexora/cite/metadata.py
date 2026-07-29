@@ -79,18 +79,59 @@ _SYSTEM = (
     f"or use your own background knowledge as the answer. If a field cannot be determined "
     f"from the provided text, return the exact string \"{SENTINEL_NONE}\" for that field "
     "(do not return an empty string, and do not substitute a printing/compilation date).\n"
-    "Separate channel for your own knowledge: if you happen to know a value from your own "
-    "training (NOT printed in the provided text), put it in 'notes' for analyst review, e.g. "
-    "\"law_number(by knowledge)=Act X; last_amended(by knowledge)=YYYY\". The 'notes' field "
-    "is for review only and is NEVER used as the answer.\n"
-    'Output a JSON object: {"law_number": "...", "last_amended": "...", "notes": "..."}.'
+    'Output a JSON object: {"law_number": "...", "last_amended": "..."}.'
 )
 _RESPONSE_SCHEMA = {
     "type": "object",
     "properties": {
         "law_number": {"type": "string"},
         "last_amended": {"type": "string"},
-        "notes": {"type": "string"},
+    },
+    "required": ["law_number", "last_amended"],
+}
+
+# --- the recall channel -------------------------------------------------------------
+#
+# What this replaced, and why. The extraction prompt above used to carry a second
+# instruction: "if you happen to know a value from your own training, put it in 'notes'".
+# Measured on four Malaysian laws (2026-07-29), that channel does not recall — it
+# RESTATES. One answer quoted the supplied text back ("The text explicitly states…"),
+# one silently declined, one answered about the TITLE we had handed it, and on the Food
+# Act 1983 both channels agreed on 2006 and both were wrong. Zero rows of the round-1
+# submission ever carried a `(by knowledge)=` note.
+#
+# Three things were wrong with it, and this is the fix for each:
+#   1. it shared a call with extraction, so the text it had just read was the cheapest
+#      thing to say -> recall is now its OWN call and is given NO document text at all;
+#   2. its answer was conditioned on a title we supplied -> the name passed in comes from
+#      `resolve_law_name`, i.e. the law's own masthead, not the portal's file name;
+#   3. nothing rewarded abstention, so it always produced something -> the prompt now
+#      says plainly that "I don't know" is the useful answer.
+#
+# The output is never an answer and never a submission field. It earns its cost only by
+# CONTRADICTING the text-based extraction, so only disagreements are reported: the Food
+# Act case is the standing proof that agreement between the two is not evidence.
+_RECALL_SYSTEM = (
+    "You are asked what you already know about a named law. You are NOT given its text, "
+    "and you must not ask for it.\n"
+    "Answer ONLY from your own training knowledge of this specific law.\n"
+    "(1) law_number — the official act/law number as it is conventionally cited "
+    "(e.g. 'Act 709', 'No. 119 of 1988').\n"
+    "(2) last_amended — the YEAR (YYYY) of the most recent amendment you know this law "
+    "to have received. The year inside the law's NAME is its year of enactment and is "
+    "NOT evidence about amendments — do not derive one field from the other.\n"
+    f"If you do not recognise this particular law, or you are not confident of a field, "
+    f"return the exact string \"{SENTINEL_NONE}\" for that field.\n"
+    "Saying you do not know IS the useful answer here. This channel exists only to "
+    "contradict a separate reading of the document, so a plausible-looking guess is "
+    "worse than a blank: it would be mistaken for independent confirmation.\n"
+    'Output a JSON object: {"law_number": "...", "last_amended": "..."}.'
+)
+_RECALL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "law_number": {"type": "string"},
+        "last_amended": {"type": "string"},
     },
     "required": ["law_number", "last_amended"],
 }
@@ -123,16 +164,36 @@ def _document_window(text: str, mode: str = "block") -> str:
     return f"{text[:_HEAD_CHARS]}\n\n[...]\n\n{text[-_TAIL_CHARS:]}"
 
 
-_REVIEW_PREFIX = "LLM metadata (own knowledge, NOT used as answer):"
+_REVIEW_PREFIX = "LLM recall disagrees with the document (review only, NOT used as answer):"
 
 
-def _format_review_note(note: str) -> str:
-    """Tag the model's own-knowledge channel so it is unmistakably review-only and
-    never confusable with a sourced answer. Empty in, empty out."""
-    note = (note or "").strip()
-    if not note or note == SENTINEL_NONE:
-        return ""
-    return f"{_REVIEW_PREFIX} {note}"
+def recall_conflict_note(
+    extracted: tuple[str, str], recalled: tuple[str, str]
+) -> str:
+    """A review note naming the fields where recall and the document disagree, or "".
+
+    Each argument is ``(last_amended, law_number)``. A field is compared only when BOTH
+    channels produced a value: a blank on either side is an absence of evidence, and an
+    agreement is not evidence either — on the Food Act 1983 the two channels agreed on
+    2006 and the real answer was neither. Only a disagreement tells an analyst where to
+    look, so only a disagreement is written down.
+    """
+    ex_amended, ex_number = ((v or "").strip() for v in extracted)
+    rc_amended, rc_number = ((v or "").strip() for v in recalled)
+    parts = []
+    if ex_number and rc_number and _number_key(ex_number) != _number_key(rc_number):
+        parts.append(f"law_number: document says {ex_number!r}, recall says {rc_number!r}")
+    if ex_amended and rc_amended and ex_amended != rc_amended:
+        parts.append(
+            f"last_amended: document says {ex_amended}, recall says {rc_amended}"
+        )
+    return f"{_REVIEW_PREFIX} " + "; ".join(parts) if parts else ""
+
+
+def _number_key(value: str) -> str:
+    """An act number's comparable core: digits only, so 'Act 709' == 'ACT 709' ==
+    'Act No. 709' and a conflict means the NUMBERS differ, not the punctuation."""
+    return "-".join(_DIGIT_RUN.findall(value))
 
 
 def _verify_in_text(value: str, text_lower: str) -> bool:
@@ -192,13 +253,58 @@ class MetadataExtractor:
     verifies each against the source. ``client`` is ``None`` for the inert
     extractor (returns blanks). Counters let a run report usage."""
 
-    def __init__(self, client=None) -> None:
+    def __init__(self, client=None, *, recall: bool | None = None) -> None:
         self._client = client
+        self._recall_enabled = recall_enabled() if recall is None else recall
+        # One law appears in many documents (consolidations, amendment Acts, PDF
+        # variants); its recall answer does not depend on which one we are holding.
+        self._recalled: dict[tuple[str, str], tuple[str, str]] = {}
         self.extracted = 0
         self.rejected = 0
         self.overridden = 0  # structural history beat the model's law_number
+        self.recalled = 0
+        self.recall_conflicts = 0
         self.error_count = 0
         self.last_error_type: str | None = None
+
+    def recall(self, jurisdiction: str, law_name: str) -> tuple[str, str]:
+        """``(last_amended, law_number)`` from the model's training knowledge alone.
+
+        No document text is passed — see the note above :data:`_RECALL_SYSTEM`. Blank
+        for either field the model declines, which is the answer this channel is there
+        to make cheap. Memoised per (jurisdiction, law name)."""
+        if self._client is None or not self._recall_enabled or not law_name:
+            return "", ""
+        key = (jurisdiction, law_name)
+        if key in self._recalled:
+            return self._recalled[key]
+
+        user = (
+            f"Jurisdiction: {jurisdiction}\n"
+            f"Law: {law_name}\n"
+            "What do you know about this law? Return the JSON."
+        )
+        try:
+            data = self._client.chat(_RECALL_SYSTEM, user, json_schema=_RECALL_SCHEMA)
+        except Exception as exc:  # noqa: BLE001 — a review channel never breaks a run
+            self.error_count += 1
+            self.last_error_type = type(exc).__name__
+            return "", ""
+
+        number = (data.get("law_number") or "").strip()
+        amended = (data.get("last_amended") or "").strip()
+        if number == SENTINEL_NONE:
+            number = ""
+        if amended == SENTINEL_NONE:
+            amended = ""
+        # A year is the only shape this field may take; anything else is the model
+        # narrating rather than recalling.
+        ym = _YEAR_RE.fullmatch(amended)
+        amended = ym.group(0) if ym else ""
+        if number or amended:
+            self.recalled += 1
+        self._recalled[key] = (amended, number)
+        return amended, number
 
     def extract(
         self, document_text: str, jurisdiction: str, title: str,
@@ -209,8 +315,9 @@ class MetadataExtractor:
         ``last_amended`` / ``law_number`` may be ``""`` when absent, sentinelled
         (the model could not determine the field from the text), unverifiable, or
         the backend is unavailable — the caller then falls back to the next tier
-        (portal channel / curated anchor). ``review_note`` carries the model's
-        own-knowledge channel for analyst review; it is NEVER used as an answer."""
+        (portal channel / curated anchor). ``review_note`` is non-empty only when the
+        separate recall channel CONTRADICTS what this call read out of the document;
+        it is never an answer and never a submission field."""
         if self._client is None or not document_text:
             return "", "", ""
         window = _document_window(document_text, window_mode)
@@ -230,7 +337,6 @@ class MetadataExtractor:
         text_lower = document_text.lower()
         law_number = (data.get("law_number") or "").strip()
         last_amended = (data.get("last_amended") or "").strip()
-        review_note = (data.get("notes") or "").strip()
 
         # Sentinel ("cannot determine from the provided text") -> blank -> fall back.
         if law_number == SENTINEL_NONE:
@@ -263,23 +369,54 @@ class MetadataExtractor:
 
         if law_number or last_amended:
             self.extracted += 1
-        return last_amended, law_number, _format_review_note(review_note)
+
+        # The independent second opinion, asked in its own call with none of the text
+        # above in front of it. It cannot change either answer — only report that the
+        # two readings disagree, which is where an analyst should look.
+        note = recall_conflict_note(
+            (last_amended, law_number), self.recall(jurisdiction, title)
+        )
+        if note:
+            self.recall_conflicts += 1
+        return last_amended, law_number, note
 
 
-def make_metadata_extractor(use_llm: bool = False) -> MetadataExtractor:
+def recall_enabled() -> bool:
+    """Whether to ask the recall channel (``LEXORA_METADATA_RECALL``, default OFF).
+
+    Opt-in because it is one extra call per distinct law and produces no submission
+    field — it only annotates rows where the document and the model's own knowledge
+    disagree. Read through :func:`lexora.config.env_value` so it can be set in ``.env``
+    alongside the endpoint, not only as a real environment variable."""
+    from lexora.config import env_value
+
+    return env_value("LEXORA_METADATA_RECALL", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
+
+
+def make_metadata_extractor(
+    use_llm: bool = False, *, recall: bool | None = None
+) -> MetadataExtractor:
     """Construct a :class:`MetadataExtractor`. Returns the inert (blank-returning)
     extractor when ``use_llm`` is false or the LLM backend is unavailable, so
-    callers can wire it unconditionally."""
+    callers can wire it unconditionally. ``recall`` overrides
+    :func:`recall_enabled` for the second-opinion channel."""
     if not use_llm:
-        return MetadataExtractor(client=None)
+        return MetadataExtractor(client=None, recall=recall)
     from lexora.classify import llm_client
 
     if not llm_client.is_available():
-        return MetadataExtractor(client=None)
+        return MetadataExtractor(client=None, recall=recall)
     try:
-        return MetadataExtractor(client=llm_client.LlmClient())
+        return MetadataExtractor(client=llm_client.LlmClient(), recall=recall)
     except Exception:  # noqa: BLE001
-        return MetadataExtractor(client=None)
+        return MetadataExtractor(client=None, recall=recall)
 
 
-__all__ = ["MetadataExtractor", "make_metadata_extractor"]
+__all__ = [
+    "MetadataExtractor",
+    "make_metadata_extractor",
+    "recall_conflict_note",
+    "recall_enabled",
+]

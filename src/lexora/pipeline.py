@@ -1061,8 +1061,9 @@ def _resolve_doc_metadata(
        model cannot derive from the text comes back sentinelled (blank).
 
     Each tier only fills a field still missing, so the highest-confidence source wins
-    and a citation always gets the best value available (or blank). ``review_note``
-    is the extractor's own-knowledge channel (review-only, never an answer)."""
+    and a citation always gets the best value available (or blank). ``review_note`` is
+    non-empty only when the extractor's separate recall channel CONTRADICTS the
+    document (opt-in, review-only, never an answer)."""
     # Law Name comes from the portal, and Malaysia's AGC portal serves each Act as a file
     # named by whoever uploaded it -- eight of the eleven Malaysian NEW rows of the round-1
     # submission carried one ("Act 706 ori.pdf", "DRAF KEDUA AKTA 701 (final)(KU) (1).pdf")
@@ -1737,7 +1738,7 @@ def _materialize(
             note_parts.append(rationale_note)
     else:
         rationale = template_rationale(indicator, profile, clause, clause.structural_path)
-    # Document-level own-knowledge channel (same for every row of this document).
+    # Document-level recall-vs-document conflict (same for every row of this document).
     if meta_note:
         note_parts.append(meta_note)
     # Secondary-source provenance (WS-S, USE 3): corroboration, never evidence.

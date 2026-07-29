@@ -81,19 +81,110 @@ def test_sentinel_field_falls_through_to_blank():
     assert gen.rejected == 0  # a sentinel is "absent", not a fabrication
 
 
-def test_own_knowledge_goes_to_review_note_never_to_answer():
-    # The model's background-knowledge value must surface ONLY in the review note,
-    # tagged, and must never become the law_number/last_amended answer.
-    gen = MetadataExtractor(_FakeClient({
-        "law_number": "<<NONE>>",
-        "last_amended": "<<NONE>>",
-        "notes": "law_number(by knowledge)=Act 709",
-    }))
-    last_amended, law_number, review_note = gen.extract(_TEXT, "Malaysia", "PDPA")
-    assert last_amended == "" and law_number == ""          # sentinel -> blank answer
-    assert "own knowledge" in review_note.lower()
-    assert "Act 709" in review_note                          # preserved for analysts
-    assert "NOT used as answer" in review_note
+class _TwoChannelClient:
+    """Answers the extraction and recall prompts differently, and records which
+    system prompt each call carried."""
+
+    def __init__(self, extraction: dict, recall: dict) -> None:
+        self._extraction, self._recall = extraction, recall
+        self.users: list[str] = []
+
+    def chat(self, system, user, json_schema=None):  # noqa: ANN001
+        self.users.append(user)
+        recalling = "NOT given its text" in system
+        return dict(self._recall if recalling else self._extraction)
+
+
+def test_recall_is_asked_in_its_own_call_with_no_document_text():
+    """The channel's whole value is being independent of the document.
+
+    Its predecessor rode along in the extraction call and, measured on four Malaysian
+    laws, restated what it had just read instead of recalling anything."""
+    client = _TwoChannelClient(
+        {"law_number": "Act 709", "last_amended": "2024"},
+        {"law_number": "Act 709", "last_amended": "2024"},
+    )
+    gen = MetadataExtractor(client, recall=True)
+    gen.extract(_TEXT, "Malaysia", "Personal Data Protection Act 2010")
+
+    assert len(client.users) == 2
+    extraction_user, recall_user = client.users
+    assert "Document text" in extraction_user
+    assert "Personal Data Protection Act 2010" in recall_user
+    assert "LAWS OF MALAYSIA" not in recall_user  # no document text reaches it
+    assert "Endnote" not in recall_user
+
+
+def test_only_a_disagreement_is_written_down():
+    """Agreement is not evidence: on the Food Act 1983 both channels said 2006 and the
+    real answer was neither. A conflict is the only thing that tells an analyst where
+    to look, so it is the only thing that becomes a note."""
+    agreeing = _TwoChannelClient(
+        {"law_number": "Act 709", "last_amended": "2024"},
+        {"law_number": "Act 709", "last_amended": "2024"},
+    )
+    gen = MetadataExtractor(agreeing, recall=True)
+    assert gen.extract(_TEXT, "Malaysia", "PDPA")[2] == ""
+    assert gen.recall_conflicts == 0
+
+    disagreeing = _TwoChannelClient(
+        {"law_number": "Act 709", "last_amended": "2024"},
+        {"law_number": "Act 709", "last_amended": "2019"},
+    )
+    gen = MetadataExtractor(disagreeing, recall=True)
+    note = gen.extract(_TEXT, "Malaysia", "PDPA")[2]
+    assert "last_amended: document says 2024, recall says 2019" in note
+    assert "NOT used as answer" in note
+    assert "law_number" not in note  # that field agreed
+    assert gen.recall_conflicts == 1
+
+
+def test_recall_never_changes_an_answer():
+    client = _TwoChannelClient(
+        {"law_number": "<<NONE>>", "last_amended": "<<NONE>>"},
+        {"law_number": "Act 709", "last_amended": "2019"},
+    )
+    gen = MetadataExtractor(client, recall=True)
+    last_amended, law_number, note = gen.extract(_TEXT, "Malaysia", "PDPA")
+    assert (last_amended, law_number) == ("", "")  # falls through to the next tier
+    assert note == ""  # nothing to disagree WITH -- a blank is not a contradiction
+
+
+def test_recall_declines_rather_than_guesses():
+    """An unrecognised law must come back blank. A plausible-looking guess here would
+    be read as independent confirmation, which is the opposite of this channel's job."""
+    client = _TwoChannelClient(
+        {"law_number": "Act 709", "last_amended": "2024"},
+        {"law_number": "<<NONE>>", "last_amended": "I am not certain about this law"},
+    )
+    gen = MetadataExtractor(client, recall=True)
+    assert gen.recall("Malaysia", "Some Obscure Act 1961") == ("", "")
+    assert gen.recalled == 0
+
+
+def test_recall_is_off_unless_asked_for(monkeypatch):
+    monkeypatch.delenv("LEXORA_METADATA_RECALL", raising=False)
+    client = _TwoChannelClient({"law_number": "Act 709", "last_amended": "2024"},
+                               {"law_number": "Act 1", "last_amended": "1999"})
+    gen = MetadataExtractor(client)  # no explicit recall= -> env decides
+    gen.extract(_TEXT, "Malaysia", "PDPA")
+    assert len(client.users) == 1  # extraction only; no second call was paid for
+
+
+def test_recall_is_asked_once_per_law_not_once_per_document():
+    client = _TwoChannelClient({"law_number": "Act 709", "last_amended": "2024"},
+                               {"law_number": "Act 709", "last_amended": "2019"})
+    gen = MetadataExtractor(client, recall=True)
+    for _ in range(3):
+        gen.extract(_TEXT, "Malaysia", "Personal Data Protection Act 2010")
+    assert sum(1 for u in client.users if "Document text" not in u) == 1
+
+
+def test_an_act_number_conflict_is_about_the_number_not_the_punctuation():
+    from lexora.cite.metadata import recall_conflict_note
+
+    assert recall_conflict_note(("", "Act 709"), ("", "Act No. 709")) == ""
+    assert "law_number" in recall_conflict_note(("", "Act 709"), ("", "Act 710"))
 
 
 def test_block_mode_locates_history_block_not_blind_tail():

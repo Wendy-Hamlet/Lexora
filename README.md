@@ -548,6 +548,14 @@ Honest by design — these guide where to be cautious.
   Measured retrieval ceiling on our flagship gold: pool 3 → 38%, 20 → 76%, 40 → 95%.
 - **Confidence is relative, not calibrated:** it is a normalised retrieval score, not a
   probability. Treat < 0.80 as review-flagged.
+- **The model's own knowledge is a poor amendment clock.** `LEXORA_METADATA_RECALL=1`
+  (opt-in, off by default) asks the model what it knows about a named law in a *separate*
+  call with none of the document in front of it, and annotates a row only where that
+  contradicts what was read from the text — it never becomes an answer. Measured on six
+  laws: act numbers recalled correctly 5/5 and an invented Act correctly declined, but
+  `last_amended` was declined on 3 of 5 real laws. So it is a useful *contradiction*
+  channel and not a source of amendment dates. Agreement between the two is not evidence
+  either: both once agreed on a wrong year for Malaysia's Food Act 1983.
 - **Delegated legislation:** the engine retrieves principal statutes and discovers
   amendments, but does not exhaustively follow cross-references into subordinate
   regulations.
