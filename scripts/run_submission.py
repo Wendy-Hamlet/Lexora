@@ -21,8 +21,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import sys
+import threading
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -46,6 +49,126 @@ JURIS = REPO / "configs" / "jurisdictions"
 OUT_CSV = REPO / "outputs" / "submission_round1.csv"
 
 ISO_TO_COUNTRY = {"sg": "Singapore", "au": "Australia", "my": "Malaysia"}
+
+
+def configure_logging(verbose: bool = False) -> None:
+    """Send the pipeline's progress logs to stdout.
+
+    Without this the run is SILENT for hours: `discovery sweep: 39 quer(ies)`,
+    `[ 3/39] …`, `working set: N instrument(s)` and the per-document `mapped 12/38 …`
+    line all go to a logger with no handler. `main.py` has configured logging since the
+    day that was found; this entry point — the one the README gives for the full run —
+    never did, so the command most likely to be left running unattended was the one that
+    showed nothing while it ran.
+    """
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
+    if not verbose:
+        for noisy in ("httpx", "httpcore", "urllib3", "openai", "PIL", "fontTools"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
+
+
+# Live LLM clients, registered as each economy builds them, so one meter can report the
+# whole run rather than each lane reporting only after its economy has finished.
+_LIVE_CLIENTS: list[tuple[str, str, object]] = []
+_LIVE_LOCK = threading.Lock()
+
+
+def _register_client(iso: str, lane: str, client) -> None:
+    if client is None:
+        return
+    with _LIVE_LOCK:
+        _LIVE_CLIENTS.append((iso, lane, client))
+
+
+def _live_totals() -> dict:
+    """Snapshot every registered client. Counters are updated under each client's own
+    lock, so reading them from another thread is safe and at worst one call stale."""
+    with _LIVE_LOCK:
+        clients = list(_LIVE_CLIENTS)
+    t = {"calls": 0, "prompt": 0, "cached": 0, "completion": 0, "failed": 0}
+    cost: float | None = 0.0
+    for _iso, _lane, c in clients:
+        t["calls"] += getattr(c, "calls", 0)
+        t["prompt"] += getattr(c, "prompt_tokens", 0)
+        t["cached"] += getattr(c, "cached_prompt_tokens", 0)
+        t["completion"] += getattr(c, "completion_tokens", 0)
+        t["failed"] += getattr(c, "failed_calls", 0)
+        if cost is not None:
+            from lexora.classify.pricing import cost_cny
+
+            one = cost_cny(getattr(c, "model", ""), getattr(c, "prompt_tokens", 0),
+                           getattr(c, "cached_prompt_tokens", 0),
+                           getattr(c, "completion_tokens", 0))
+            cost = None if one is None else cost + one
+    t["cost_cny"] = cost
+    return t
+
+
+class LiveMeter(threading.Thread):
+    """Prints what the run has spent, while it is still spending it.
+
+    A full run is hours of judge time, and until now every token, cost and failure
+    counter was printed only once its ECONOMY had finished — so a wall of 403s, or a
+    prefix cache that stopped hitting and tripled the bill, stayed invisible for an hour
+    or more. This reports the same numbers on a clock instead.
+
+    ``budget_cny`` is an ALARM, not a brake: it cannot stop work already dispatched
+    across parallel economies, and pretending otherwise would be worse than saying so.
+    It is still worth having, because stopping by hand is nearly free — the verdict cache
+    commits per verdict, so a Ctrl-C loses no judged clause and a resumed run reads them
+    back at zero cost.
+    """
+
+    def __init__(self, every: float, budget_cny: float = 0.0) -> None:
+        super().__init__(daemon=True, name="lexora-live-meter")
+        self._every = every
+        self._budget = budget_cny
+        self._stopped = threading.Event()
+        self._t0 = time.monotonic()
+        self._over_budget = False
+
+    def stop(self) -> None:
+        self._stopped.set()
+
+    def run(self) -> None:
+        while not self._stopped.wait(self._every):
+            try:
+                self._emit()
+            except Exception as exc:  # noqa: BLE001
+                # A monitor that dies of its own output is worse than no monitor: the run
+                # keeps spending and the last thing on screen is a stale number. This
+                # happened for real — the line carried a ¥ sign and this machine's console
+                # is GBK, so the thread died on its FIRST emit while the unit test (UTF-8
+                # capsys) stayed green. Everything printed is ASCII now; this is the belt.
+                print(f"  ~ (meter: {type(exc).__name__}, continuing)", flush=True)
+
+    def _emit(self) -> None:
+        t = _live_totals()
+        if not t["calls"] and not t["failed"]:
+            return  # nothing has reached an LLM yet; the log lines carry the progress
+        elapsed = time.monotonic() - self._t0
+        cached_share = f" {t['cached'] / t['prompt']:.0%} cached" if t["prompt"] else ""
+        cost = t["cost_cny"]
+        money = (f"CNY {cost:.2f}" if cost is not None
+                 else "CNY ? (model not on the invoice)")
+        print(
+            f"  ~ {int(elapsed // 60):3d}m{int(elapsed % 60):02d}s | "
+            f"{t['calls']:,} call(s) | "
+            f"{(t['prompt'] + t['completion']) / 1e6:.2f}M tok{cached_share} | {money}"
+            + (f" | {t['failed']} FAILED" if t["failed"] else ""),
+            flush=True,
+        )
+        # A run whose calls are all failing bills nothing and accounts nothing, so the
+        # token line alone looks like a run that is simply quiet. Name it.
+        if t["failed"] and not t["calls"]:
+            print("  !! every LLM call so far has FAILED - check the endpoint/key before "
+                  "this burns the wall clock. Ctrl-C is free: verdicts commit per clause.",
+                  flush=True)
+        if self._budget and cost is not None and cost > self._budget and not self._over_budget:
+            self._over_budget = True
+            print(f"  !! BUDGET CNY {self._budget:.2f} EXCEEDED (CNY {cost:.2f}). An alarm, "
+                  "not a brake - work already dispatched keeps running. Ctrl-C loses no "
+                  "judged clause (the verdict cache commits per verdict).", flush=True)
 
 
 def _report_replay_readiness(iso: str, verifier, indicators: list) -> None:
@@ -138,6 +261,8 @@ def run_one(
         print("warning: --verify requested but the LLM verifier is unavailable "
               "(install the [llm] extra); continuing with BM25 + verbatim only.")
     _report_replay_readiness(iso, verifier, indicators)
+    _register_client(iso, "verifier",
+                     getattr(verifier, "_client", None) if verifier is not None else None)
     rationale_gen = make_rationale_generator(use_llm=rationale_llm)
     if rationale_llm and rationale_gen._client is None:
         print("warning: --rationale-llm requested but the LLM backend is unavailable; "
@@ -159,6 +284,9 @@ def run_one(
     )
     tokens = {"calls": 0, "prompt": 0, "completion": 0, "total": 0, "cached_prompt": 0,
               "failed": 0}
+    _register_client(iso, "rationale", rationale_gen._client)
+    _register_client(iso, "metadata", meta_extractor._client)
+    _register_client(iso, "amendment", amendment_extractor._client)
 
     def _account(label: str, client) -> None:
         """Print per-channel token usage and fold it into this economy's total."""
@@ -418,6 +546,16 @@ def main() -> None:
                          "dropped to 0 clauses; pass this only to reproduce the text-layer-"
                          "only behaviour.")
     ap.add_argument("--dry-run", action="store_true", help="plan only, no network")
+    ap.add_argument("--heartbeat", type=float, default=60.0, metavar="SECONDS",
+                    help="How often to print live call/token/cost totals (0 = off). A "
+                         "full run is hours long and every cost counter used to appear "
+                         "only after its economy finished.")
+    ap.add_argument("--max-cost", type=float, default=0.0, metavar="CNY",
+                    help="Print a loud alarm once the run passes this spend (CNY). An alarm, "
+                         "not a brake — but Ctrl-C is nearly free, because the verdict "
+                         "cache commits per verdict.")
+    ap.add_argument("--verbose", action="store_true",
+                    help="Do not quieten httpx/openai/PIL loggers.")
     args = ap.parse_args()
 
     # OCR defaults ON for submission (kill the silent-scan-drop footgun). An explicit
@@ -427,6 +565,7 @@ def main() -> None:
     elif "LEXORA_OCR" not in os.environ:
         os.environ["LEXORA_OCR"] = "1"
 
+    configure_logging(args.verbose)
     isos = ["sg", "au", "my"] if args.jurisdiction == "all" else [args.jurisdiction.lower()]
 
     if args.dry_run:
@@ -480,6 +619,9 @@ def main() -> None:
     # order for a stable summary table.
     jobs = args.jobs if args.jobs > 0 else len(isos)
     outcomes: dict[str, tuple[str, object]] = {}
+    meter = LiveMeter(args.heartbeat, args.max_cost) if args.heartbeat > 0 else None
+    if meter is not None:
+        meter.start()
     if jobs > 1 and len(isos) > 1:
         from concurrent.futures import ThreadPoolExecutor
 
@@ -497,6 +639,8 @@ def main() -> None:
                 outcomes[iso] = ("ok", _run(iso))
             except Exception as exc:
                 outcomes[iso] = ("err", exc)
+    if meter is not None:
+        meter.stop()
 
     for iso in isos:  # input order -> stable summary table
         kind, payload = outcomes[iso]

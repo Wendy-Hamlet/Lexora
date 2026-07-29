@@ -45,18 +45,9 @@ from lexora.pipeline import _normalize_score  # noqa: E402
 INDICATORS = REPO / "configs" / "rdtii_indicators.yaml"
 GOLD_MY = REPO / "configs" / "eval" / "mapping_sections_legal_my.csv"
 
-# CNY per 1M tokens: (fresh input, cached input, output). DERIVED FROM THE INVOICE
-# (2026-07-28), not from a price page: every rate below is a billed line divided by its
-# billed token count, so the numbers reconcile with what we were actually charged.
-# A model missing here still reports tokens; only the cost line is suppressed.
-RATES = {
-    "GLM-5.2": (8.0, 2.0, 28.0),          # confirmed to the cent on all three lines
-    "GLM-4.5-Flash": (0.0, 0.0, 0.0),     # genuinely free, all three lines billed 0
-    "DeepSeek-V4-Flash": (1.0, 0.2, 2.0),  # was guessed at 0.5/0.1; the invoice says 1.0/0.2
-    # Qwen has NO cached-input line on the invoice at all, which corroborates the measured
-    # 0% prefix-cache hit rate: Paratera does not cache this family. Priced as input-only.
-    "Qwen3.5-35B-A3B": (1.6, 1.6, 12.8),
-}
+# Rates and the cost function live in lexora.classify.pricing so the live run and this
+# benchmark price identical tokens identically.
+from lexora.classify.pricing import RATES, cost_cny  # noqa: E402,F401
 
 
 def _clause_key(clause) -> str:
@@ -172,16 +163,6 @@ def score_verdicts(verdicts, clause_by_id, gold) -> dict:
         "na_violations": na_violations,
         "citations": sum(len(v) for v in verdicts.values() if v),
     }
-
-
-def cost_cny(model: str, prompt: int, cached: int, completion: int) -> float | None:
-    rate = RATES.get(model)
-    if rate is None:
-        return None
-    fresh_in, cached_in, out = rate
-    return (
-        (prompt - cached) / 1e6 * fresh_in + cached / 1e6 * cached_in + completion / 1e6 * out
-    )
 
 
 _BINARY_SYSTEM = (

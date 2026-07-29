@@ -184,3 +184,47 @@ def test_run_one_warns_when_verify_requested_but_verifier_unavailable(monkeypatc
     out = capsys.readouterr().out
     assert "LLM verifier is unavailable" in out
     assert "BM25 + verbatim only" in out
+
+
+def test_the_live_meter_prices_what_the_run_has_spent_so_far(capsys):
+    """A full run is hours of judge time, and every cost counter used to be printed only
+    after its ECONOMY finished — so a wall of 403s, or a prefix cache that stopped
+    hitting and tripled the bill, stayed invisible for an hour or more."""
+    from types import SimpleNamespace
+
+    rs._LIVE_CLIENTS.clear()
+    rs._register_client("sg", "verifier", SimpleNamespace(
+        model="GLM-5.2", calls=1000, prompt_tokens=3_200_000,
+        cached_prompt_tokens=3_051_000, completion_tokens=120_000, failed_calls=0))
+    meter = rs.LiveMeter(every=3600)
+    meter._emit()
+    line = capsys.readouterr().out
+
+    assert "1,000 call(s)" in line
+    assert "95% cached" in line          # the single biggest lever on the bill
+    # (3.2M - 3.051M)@8 + 3.051M@2 + 0.12M@28 CNY/1M = CNY 10.65
+    assert "CNY 10.65" in line
+    # The line must survive the console it is printed to. It did not: a ¥ sign killed
+    # the meter thread on its FIRST emit on this GBK machine, while this very test
+    # stayed green because pytest captures in UTF-8.
+    assert line.isascii(), f"non-ASCII in the meter line: {line!r}"
+    rs._LIVE_CLIENTS.clear()
+
+
+def test_a_wall_of_failures_is_named_not_left_looking_quiet(capsys):
+    """A failed call bills nothing and accounts nothing, so in the token counters a run
+    whose every request was rejected looks exactly like a run making no requests. That is
+    how a 403 once presented itself as a free, successful cost benchmark."""
+    from types import SimpleNamespace
+
+    rs._LIVE_CLIENTS.clear()
+    rs._register_client("sg", "verifier", SimpleNamespace(
+        model="GLM-5.2", calls=0, prompt_tokens=0, cached_prompt_tokens=0,
+        completion_tokens=0, failed_calls=57, last_error="403 team not allowed"))
+    rs.LiveMeter(every=3600)._emit()
+    out = capsys.readouterr().out
+
+    assert "57 FAILED" in out
+    assert "every LLM call so far has FAILED" in out
+    assert "Ctrl-C is free" in out       # because verdicts commit per verdict
+    rs._LIVE_CLIENTS.clear()
