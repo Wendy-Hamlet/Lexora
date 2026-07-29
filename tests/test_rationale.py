@@ -135,3 +135,39 @@ def test_llm_backend_error_falls_back_and_counts():
     out, _note = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
     assert out == template_rationale(_indicator(), _profile(), _clause(), "S. 26")
     assert gen.error_count == 1 and gen.last_error_type == "RuntimeError"
+
+
+def test_the_tool_does_not_score_and_neither_does_its_notes_column():
+    """Lexora's stated scope is ESCAP's Step 1: find the provision and cite it.
+
+    The round-1 submission nevertheless shipped 184 rows whose Notes column speculated
+    about a score, 45 asserting a value outright, and one that managed "whether the
+    framework is scored 0 or 0". A policy judge reads that column. The prompt now
+    forbids it; this is the part that enforces it, because a prompt is a request.
+    """
+    from lexora.cite.rationale import strip_score_talk
+
+    gen = RationaleGenerator(_FakeClient(
+        "Section 26 conditions overseas transfers on comparable protection, mapping to P6-I4.",
+        notes="This is from Singapore's PDPA, a horizontal regime. "
+              "The indicator score for Singapore would be 0.",
+    ))
+    _out, note = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
+    assert "horizontal regime" in note        # the useful half survives...
+    assert "score" not in note.lower()        # ...the out-of-scope half does not
+    assert gen.score_talk_stripped == 1
+
+    # Sentence-granular, so what is left still reads as prose.
+    assert strip_score_talk("Alpha holds. It would score 0. Beta holds.") == \
+        "Alpha holds. Beta holds."
+    # A note that is ONLY about scoring leaves nothing behind.
+    assert strip_score_talk("The indicator scores 0.") == ""
+
+
+def test_a_rationale_that_scores_falls_back_to_the_template():
+    """Out of scope in the ANSWER column is worse than out of scope in a note."""
+    gen = RationaleGenerator(_FakeClient(
+        "Section 26 restricts overseas transfers, so Singapore should score 0 on P6-I4."))
+    out, _note = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
+    assert out == template_rationale(_indicator(), _profile(), _clause(), "S. 26")
+    assert gen.llm_used == 0 and gen.fallbacks == 1

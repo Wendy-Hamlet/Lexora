@@ -21,6 +21,8 @@ only), mirroring the verifier, so the offline test suite needs no server.
 """
 from __future__ import annotations
 
+import re
+
 from lexora.models.clause import Clause
 from lexora.models.indicator import RDTIIIndicator
 from lexora.models.source import SourceProfile
@@ -93,12 +95,37 @@ _SYSTEM = (
     "paraphrase the mechanism only. Base the rationale ONLY on the provided "
     "provision text and indicator definition; do NOT introduce facts from your own "
     "background knowledge into the rationale.\n"
+    "This tool performs the MAPPING step only. Never assess, predict, suggest or "
+    "mention a score for the indicator, in either field — scoring is a separate human "
+    "step and is not being asked of you.\n"
     "Separate channel for your own knowledge: if you have relevant background "
     "knowledge worth flagging (e.g. the provision was later amended, or context not "
     "in the text), put it in 'notes' for analyst review only — it must NOT appear in "
     "the rationale and is NEVER used as the answer.\n"
     'Output a JSON object: {"rationale": "...", "notes": "..."}.'
 )
+
+# The prompt above asks; this enforces. Lexora's stated scope is ESCAP's Step 1 —
+# find the provision and cite it — and it deliberately emits no Raw Score. The
+# round-1 submission nevertheless shipped 184 rows whose Notes column speculated
+# about one, 45 of them asserting a value outright ("The indicator score for
+# Singapore would be 0"), plus one that managed "whether the framework is scored 0
+# or 0". A policy judge reads that column, so an unasked-for score there is not a
+# harmless aside: it is the tool contradicting its own scope in the deliverable.
+_SENTENCE = re.compile(r"[^.!?]+[.!?]?")
+_SCORE_TALK = re.compile(r"\bscor(?:e|es|ed|ing)\b", re.IGNORECASE)
+
+
+def strip_score_talk(note: str) -> str:
+    """Drop whole sentences that talk about scoring; "" if nothing else is left.
+
+    Sentence-granular rather than word-granular so a surviving note still reads as
+    prose. Every mention goes, not only assertions: the note is review-only, so
+    losing a remark about scoring costs nothing, while keeping one invites the
+    reader to treat it as this tool's output.
+    """
+    kept = [s for s in _SENTENCE.findall(note or "") if not _SCORE_TALK.search(s)]
+    return " ".join(s.strip() for s in kept if s.strip()).strip()
 
 _RESPONSE_SCHEMA = {
     "type": "object",
@@ -120,6 +147,7 @@ class RationaleGenerator:
         self._client = client
         self.llm_used = 0
         self.fallbacks = 0
+        self.score_talk_stripped = 0
         self.error_count = 0
         self.last_error_type: str | None = None
 
@@ -150,10 +178,16 @@ class RationaleGenerator:
             return template, ""
 
         rationale = (data.get("rationale") or "").strip()
-        review_note = (data.get("notes") or "").strip()
+        raw_note = (data.get("notes") or "").strip()
+        review_note = strip_score_talk(raw_note)
+        if review_note != raw_note:
+            self.score_talk_stripped += 1
         review_note = f"{_REVIEW_PREFIX} {review_note}" if review_note else ""
         if (
             not rationale
+            # A rationale that scores is out of scope, not merely wordy: fall back to
+            # the deterministic template rather than ship it.
+            or _SCORE_TALK.search(rationale)
             or len(rationale) > RATIONALE_MAX_CHARS
             or copies_provision(rationale, clause.span.text)
         ):
@@ -212,6 +246,7 @@ __all__ = [
     "RATIONALE_MAX_CHARS",
     "RationaleGenerator",
     "copies_provision",
+    "strip_score_talk",
     "make_rationale_generator",
     "template_rationale",
 ]
