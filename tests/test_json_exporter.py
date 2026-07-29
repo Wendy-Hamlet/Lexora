@@ -113,6 +113,29 @@ def test_no_ocr_leaves_cer_null_and_unannotated(tmp_path):
     assert p["retrieval_method"] == "bm25"
 
 
+def test_retrieval_method_names_the_lane_that_decided_inclusion(tmp_path):
+    """Under `per_clause` the 0/1 judge decides EVERY row, so a bare "bm25" understates the
+    method on all of them -- the round-1 sidecar says "bm25" on all 669 rows of a run in
+    which a 9-in-1 LLM judge admitted each one. Naming the lane is the description, not an
+    over-claim; no verifier still reports the retrieval channel alone."""
+    q = "records must be retained for at least seven years"
+    art = _Artifacts(document=_Doc(), citations=[_citation("P7-I3", "c1", q)],
+                     document_text=q)
+    out = tmp_path / "sub.json"
+
+    to_submission_json([art], out)
+    assert json.loads(out.read_text(encoding="utf-8"))["provisions"][0][
+        "retrieval_method"] == "bm25"
+
+    to_submission_json([art], out, judge="per_clause")
+    assert json.loads(out.read_text(encoding="utf-8"))["provisions"][0][
+        "retrieval_method"] == "bm25+llm-per-clause"
+
+    to_submission_json([art], out, judge="per_clause", use_dense=True)
+    assert json.loads(out.read_text(encoding="utf-8"))["provisions"][0][
+        "retrieval_method"] == "bm25+dense+llm-per-clause"
+
+
 def test_quote_not_found_yields_empty_context(tmp_path):
     art = _Artifacts(
         document=_Doc(),

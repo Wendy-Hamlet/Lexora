@@ -237,12 +237,15 @@ def run_one(
     return result, tokens
 
 
-def write_outputs(result: MapResult, out_csv: Path) -> int:
+def write_outputs(result: MapResult, out_csv: Path, *, judge: str = "") -> int:
     """Write one economy's run to the official CSV + the JSON sidecar (and JSON-LD).
 
     The single exporter shared by ``main.py`` (the reviewer's one-command entry point)
     and this script's multi-economy run, so both emit byte-identical formats. Returns
-    the number of CSV rows."""
+    the number of CSV rows.
+
+    ``judge`` names the verifier lane that decided inclusion (e.g. ``"per_clause"``), for
+    the sidecar's ``retrieval_method``. Empty means no verifier ran."""
     from lexora.export import provenance
 
     # A replayed run renames its artifacts. Rocky's engine does the same thing for the same
@@ -261,7 +264,8 @@ def write_outputs(result: MapResult, out_csv: Path) -> int:
     use_dense = os.environ.get("LEXORA_MAP_DENSE", "").lower() in ("1", "true", "yes", "on")
     json_out = out_csv.with_suffix(".json")
     to_submission_json(
-        result.documents, json_out, model_version=f"llm:{cfg.llm_model}", use_dense=use_dense,
+        result.documents, json_out, model_version=f"llm:{cfg.llm_model}",
+        use_dense=use_dense, judge=judge,
     )
     tagged = {}
     for c in result.citations:
@@ -511,6 +515,9 @@ def main() -> None:
     json_out = args.out.with_suffix(".json")
     n_json = to_submission_json(
         all_documents, json_out, model_version=f"llm:{cfg.llm_model}", use_dense=use_dense,
+        judge=("per_clause" if args.verify_clauses
+               else "per_cell" if args.verify_cells
+               else "pick_one" if args.verify else ""),
     )
     summary_out = args.out.with_suffix(".summary.json")
     summary_out.write_text(json.dumps(summaries, ensure_ascii=False, indent=2), encoding="utf-8")

@@ -179,7 +179,8 @@ def main() -> None:
     from lexora.export.provenance import label as _label
 
     out_csv = args.output_dir / _label(f"{economy}_P{ptag}_{stamp}.csv")
-    write_outputs(result, out_csv)   # prints the row count and both file paths
+    # `judge` records WHICH lane decided inclusion, for the sidecar's retrieval_method.
+    write_outputs(result, out_csv, judge="per_clause" if use_llm else "")
 
     if tokens.get("calls"):
         cached = tokens.get("cached_prompt", 0)

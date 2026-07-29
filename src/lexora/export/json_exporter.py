@@ -47,8 +47,15 @@ def _context(text: str, quote: str, window: int) -> tuple[str, str]:
     return before, after
 
 
-def _retrieval_method(use_dense: bool, review_status: str) -> str:
+def _retrieval_method(use_dense: bool, review_status: str, judge: str = "") -> str:
     base = "bm25+dense" if use_dense else "bm25"
+    # `judge` names the verifier lane that actually decided this row's inclusion, or is
+    # empty when no verifier ran. Under `per_clause` the 0/1 judge decides EVERY row, so
+    # reporting a bare "bm25" understates the method on all of them: the round-1 sidecar
+    # says "bm25" on all 669 rows of a run in which a 9-in-1 LLM judge admitted each one.
+    # Naming it is not over-claiming, it is the description.
+    if judge:
+        base = f"{base}+llm-{judge.replace('_', '-')}"
     # `verified` is the DEFAULT validated status of every citation (not an LLM signal),
     # so it tells us nothing about the verifier. Only CONFLICT_REVIEW is unambiguously
     # produced by the LLM verifier — mark just that to avoid over-claiming.
@@ -63,6 +70,7 @@ def to_submission_json(
     *,
     model_version: str = "",
     use_dense: bool = False,
+    judge: str = "",
     context_window: int = 200,
 ) -> int:
     """Write the flat JSON sidecar. ``documents`` is an iterable of per-document
@@ -121,7 +129,8 @@ def to_submission_json(
                 "processing_time_seconds": getattr(art, "processing_time_seconds", None),
                 "model_version": doc_model_version,
                 "retrieval_method": _retrieval_method(
-                    use_dense, getattr(c.review_status, "value", str(c.review_status))
+                    use_dense, getattr(c.review_status, "value", str(c.review_status)),
+                    judge,
                 ),
                 "raw_context_before": before,
                 "raw_context_after": after,
