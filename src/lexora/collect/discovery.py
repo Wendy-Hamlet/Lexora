@@ -733,15 +733,29 @@ def discover(
 # "Act A1727". Used to collapse the many PDF variants one Act surfaces under
 # (e.g. "Act 709 ori.pdf", "ACT 709-REPRINT 2023.pdf", "act-detail.php?act=709").
 _ACT_NO = re.compile(r"act[=_\s-]*([a-z]?\d{1,4})\b", re.I)
+# Singapore (and any jurisdiction that restarts numbering each year) cites an Act as
+# "Act 19 of 2021". There, the bare number is NOT an identity: measured on the round-1
+# submission, "act:19" collapsed Act 19 of 2021, of 2023 AND of 2024 onto one key, and
+# "act:6" collapsed Act 6 of 2024 with Act 6 of 2025. `_merge_into` keeps one
+# representative per key, so the others leave the working set before they are ever
+# fetched -- a law dropped where nothing downstream can notice. Malaysia's "Act 709"
+# carries no "of <year>" and is unaffected.
+_ACT_NO_OF_YEAR = re.compile(
+    r"\bact[=_\s-]*([a-z]?\d{1,4})\s+of\s+((?:19|20)\d{2})\b", re.I
+)
 
 
 def _identity_key(r: DiscoveryResult) -> str:
     """Instrument identity for cross-query dedup. Prefer a portal-native Act
     number (collapses an Act's many full-text PDF variants onto one entry so they
     don't each consume a budget slot); fall back to the URL canonical key. A
-    4-digit year (e.g. 'Act 2010') is not an Act number and is ignored."""
+    4-digit year (e.g. 'Act 2010') is not an Act number and is ignored, and a
+    year-scoped number ("Act 19 of 2021") keeps its year — see `_ACT_NO_OF_YEAR`."""
     text = f"{r.url} {r.title}".lower()
     host = urlparse(r.url).netloc.lower()
+    scoped = _ACT_NO_OF_YEAR.search(text)
+    if scoped:
+        return f"{host}:act:{scoped.group(1)}/{scoped.group(2)}"
     for m in _ACT_NO.findall(text):
         digits = m.lstrip("abcdefghijklmnopqrstuvwxyz")
         if not m[0].isalpha() and _YEARISH_FULL.fullmatch(digits):

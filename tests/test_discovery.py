@@ -227,6 +227,39 @@ def test_new_tag_for_unlisted_instrument():
     assert results[0].matched_instrument is None
 
 
+def test_a_year_scoped_act_number_is_not_collapsed_across_years():
+    """Singapore restarts Act numbering every year, so "Act 19" is not an identity.
+
+    `_identity_key` collapses an Act's many PDF variants onto one working-set slot, and
+    `_merge_into` keeps ONE representative per key -- so a key shared by different Acts
+    drops the others before they are ever fetched, parsed or mapped. Measured on the
+    round-1 submission: "act:19" collapsed Act 19 of 2021, of 2023 AND of 2024, and
+    "act:6" collapsed Act 6 of 2024 with Act 6 of 2025.
+    """
+    from lexora.collect.discovery import DiscoveryResult, _identity_key
+
+    def key(url: str, title: str = "") -> str:
+        return _identity_key(DiscoveryResult(
+            url=url, title=title, source_type=SourceType.primary, score=1.0,
+            via="x", is_pdf_link=False))
+
+    sg = [key("https://sso.agc.gov.sg/Acts-Supp/19-2021/", "Act 19 of 2021"),
+          key("https://sso.agc.gov.sg/Acts-Supp/19-2023/", "Act 19 of 2023"),
+          key("https://sso.agc.gov.sg/Acts-Supp/19-2024/", "Act 19 of 2024")]
+    assert len(set(sg)) == 3, sg
+
+    # The mechanism this key exists for is untouched: one Malaysian Act surfacing as
+    # several PDF variants still collapses onto a single slot.
+    my = [key("https://lom.agc.gov.my/x/ACT%20709.pdf", "Act 709"),
+          key("https://lom.agc.gov.my/x/Act 709 ori.pdf", "Act 709"),
+          key("https://lom.agc.gov.my/x/ACT 709-REPRINT 2023.pdf", "Act 709")]
+    assert len(set(my)) == 1, my
+
+    # And a title year is still not an Act number.
+    assert "act:2012" not in key("https://sso.agc.gov.sg/Act/PDPA2012",
+                                 "Personal Data Protection Act 2012")
+
+
 def test_identity_requires_the_years_to_agree_but_relevance_does_not():
     """``token_set_ratio`` scores the INTERSECTION of the token sets, so a longer title
     that CONTAINS a known one scores a perfect match. Australia's theme-named omnibus Acts
