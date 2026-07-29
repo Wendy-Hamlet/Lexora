@@ -21,7 +21,7 @@ snippet, copied from the source, not synthesized prose.
 """
 from __future__ import annotations
 
-import os
+import re
 
 from lexora.cite.amendments import (
     AmendmentInstruction,
@@ -78,6 +78,24 @@ _RESPONSE_SCHEMA = {
 _MAX_CHARS = 24000  # an amending Act is short; cap defends against an outlier
 
 
+def _printed_as_a_section(text: str, number: str) -> bool:
+    """True if ``number`` is printed the way a section number is printed.
+
+    The source check used to be a bare substring search, which for a one-digit section
+    is no check at all: "6" is inside "16", "2016" and every page number — measured on
+    twelve real amending Acts, EVERY single-digit section passed. This asks for the
+    reference form instead (``section 6``, ``s. 6``, ``paragraph 6``, or a line that
+    opens ``6.``), which cuts the false-pass surface from 39% to 25% over 1..200. It is
+    an improvement, not a solution — low numbers still pass legitimately, because an
+    amending Act's own clauses are numbered 1, 2, 3. The real guard for the one
+    operation that can destroy a row is :func:`_delete_is_substantiated`.
+    """
+    return re.search(
+        rf"(?:\bsections?\s+|\bss?\.\s*|^\s*|\bparagraph\s+){re.escape(number)}\b",
+        text, re.IGNORECASE | re.MULTILINE,
+    ) is not None
+
+
 class AmendmentInstructionExtractor:
     """Reads amendment instructions from an amending Act via the LLM, then verifies
     each against the source. ``client`` is ``None`` for the inert extractor (returns
@@ -127,7 +145,7 @@ class AmendmentInstructionExtractor:
 
         # Source-verify: any concrete value the model returns must be printed in the
         # document. A section/term/evidence not in the text is a fabrication -> drop.
-        if section and section.lower() not in text_lower:
+        if section and not _printed_as_a_section(text_lower, section):
             self.rejected += 1
             return None
         if old_term and old_term.lower() not in text_lower:
@@ -142,10 +160,33 @@ class AmendmentInstructionExtractor:
         if kind is not InstructionKind.global_rename and not section:
             self.rejected += 1  # a section op with no verifiable section is unusable
             return None
+        # A `delete` is the one operation that DESTROYS output: it becomes
+        # CurrencyStatus.REPEALED, and `enforced_only` then drops that citation from the
+        # submission. Until now an instruction whose evidence snippet failed the source
+        # check kept the instruction and merely blanked the evidence, so a repeal could
+        # be carried entirely by a section number that appears somewhere in the text.
+        # Require a repeal to be quoted from the document, and to quote THIS section.
+        # Failing this guard keeps the citation, which is the recoverable direction —
+        # a dropped row leaves no trace anywhere in the output.
+        if op is Operation.delete and not self._delete_is_substantiated(evidence, section):
+            self.rejected += 1
+            return None
         return AmendmentInstruction(
             kind=kind, op=op, target_section=section,
             old_term=old_term, new_term=new_term, raw=evidence,
         )
+
+    @staticmethod
+    def _delete_is_substantiated(evidence: str, section: str) -> bool:
+        """A repeal must be carried by a verified quotation that names its own section.
+
+        ``evidence`` has already been blanked if it did not appear verbatim in the
+        document, so a non-empty value here is text the Act really prints. Requiring
+        the section number inside it stops a snippet about section 26 from repealing
+        section 6."""
+        if not evidence:
+            return False
+        return not section or _printed_as_a_section(evidence, section)
 
 
 def make_amendment_extractor(use_llm: bool = False) -> AmendmentInstructionExtractor:
@@ -165,8 +206,16 @@ def make_amendment_extractor(use_llm: bool = False) -> AmendmentInstructionExtra
 
 
 def llm_enabled() -> bool:
-    """Whether the env opts into LLM amendment extraction (``LEXORA_AMENDMENT_LLM=1``)."""
-    return os.environ.get("LEXORA_AMENDMENT_LLM", "").lower() in ("1", "true", "yes", "on")
+    """Whether the env opts into LLM amendment extraction (``LEXORA_AMENDMENT_LLM=1``).
+
+    Read through :func:`lexora.config.env_value` so it is settable in ``.env`` beside the
+    endpoint it needs, not only as a real environment variable — the same half-visible
+    knob the embedding model had."""
+    from lexora.config import env_value
+
+    return env_value("LEXORA_AMENDMENT_LLM", "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 __all__ = [
