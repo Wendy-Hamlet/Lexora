@@ -114,7 +114,16 @@ _PRINCIPAL_RE = re.compile(
 _INCORP_RES = (
     re.compile(r"incorporating\s+(?:all\s+)?amendments?\b[^.\n]*?" + _YEAR, re.IGNORECASE),
     re.compile(r"\bas at\b[^.\n]*?" + _YEAR, re.IGNORECASE),
-    re.compile(r"\brevised\b(?:\s+up\s+to)?[^.\n]*?" + _YEAR, re.IGNORECASE),
+    # The year must belong to the REVISION CLAIM, not to an Act title that happens to sit
+    # on the same line. `\brevised\b[^.\n]*?<year>` matched Singapore's standing
+    # boilerplate "REVISED EDITION OF THE LAWS ACT 1983" -- the name of the enabling
+    # statute -- on 92 documents, and the SSO label "Revised Edition — Cybersecurity Act
+    # 2018", where the year is the Act's own. Every "revised" match in the corpus was one
+    # of those two: Singapore never states a revision year this way, so nothing real is
+    # lost. Malaysia's genuine reprint marker "Revised—2024" is kept by the dash form.
+    re.compile(r"\brevised\s*[—–-]\s*" + _YEAR, re.IGNORECASE),
+    re.compile(r"\brevised\s+edition[,\s]*" + _YEAR, re.IGNORECASE),
+    re.compile(r"\brevised\s+up\s+to\b[^.\n]{0,30}?" + _YEAR, re.IGNORECASE),
     re.compile(r"\bamendments?\s+incorporated\b[^.\n]*?" + _YEAR, re.IGNORECASE),
     # AU Federal Register compilation masthead, two phrasings seen: "Includes
     # amendments up to: Act No. 79, 2021" and "Includes amendments: Act No. 75,

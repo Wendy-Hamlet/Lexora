@@ -281,6 +281,33 @@ def test_section_of_parses_article_path():
     assert section_of("Preamble") == ""
 
 
+def test_an_act_title_on_a_revised_line_is_not_a_consolidation_point():
+    """`incorporated_to` is the year a compiled document says it folds amendments up to,
+    and `assess_currency` judges every citation against it.
+
+    `\\brevised\\b[^.\\n]*?<year>` matched Singapore's standing boilerplate "REVISED EDITION
+    OF THE LAWS ACT 1983" -- the name of the enabling statute -- on 92 documents, so a 2018
+    Act reported that it incorporated amendments only up to 1983. It also matched the SSO
+    label "Revised Edition — Cybersecurity Act 2018", where the year is the Act's own.
+    Every "revised" match in the corpus was one of those two shapes: 92 of 303 Singapore
+    documents carried a fabricated consolidation point, and after this change 302 carry
+    none, which is the honest answer.
+    """
+    from lexora.cite.amendments import detect_incorporated_to
+
+    # Act titles on a "revised" line are not revision dates.
+    assert detect_incorporated_to("REVISED EDITION OF THE LAWS ACT 1983") is None
+    assert detect_incorporated_to("Revised Edition — Cybersecurity Act 2018") is None
+    assert detect_incorporated_to("Revised Edition — Official Secrets Act 1935") is None
+
+    # Genuine consolidation claims still read, including Malaysia's reprint marker --
+    # 52 Malaysian documents keep a real value spanning 2006-2025.
+    assert detect_incorporated_to("Revised—2024") == 2024
+    assert detect_incorporated_to("Revised Edition 2020") == 2020
+    assert detect_incorporated_to("revised up to 31 December 2019") == 2019
+    assert detect_incorporated_to("Incorporating all amendments up to 1 January 2006") == 2006
+
+
 def test_a_title_year_is_not_an_act_number():
     """`_ACT_NUMBER_RE` is written for Malaysia, where the number FOLLOWS the word
     ("Act 709"). Singapore and Australia put the YEAR there -- "Personal Data Protection
