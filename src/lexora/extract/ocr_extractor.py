@@ -62,18 +62,80 @@ class OcrEngine(Protocol):
         ...
 
 
+# A vertical whitespace corridor this wide (as a fraction of the page's text width, with
+# an absolute floor) separates two columns. Deliberately conservative: on single-column
+# prose every full-width line crosses the middle of the page, so no corridor can exist and
+# no split is possible. It takes a genuinely empty vertical channel to trigger one.
+_MIN_CORRIDOR_FRAC = 0.04
+_MIN_CORRIDOR_ABS = 8.0
+
+
+def _x_columns(items: list) -> list[list]:
+    """Group boxes into vertical columns separated by a whitespace corridor.
+
+    Returns one list per column, left to right; a single-column page returns one group.
+
+    A page is not always one column. Malaysia's statutes set marginal notes in a column
+    beside the body, and gazettes print two languages side by side. Bucketing by y and
+    sorting by x — a single-column reading order — does not merely reorder such a page, it
+    splices one column's words INTO the other's sentences, because each wrapped fragment of
+    the note lands between two body lines.
+
+    Measured: MY Communications and Multimedia Act s.254 shipped in
+    ``submission_final_20260714.csv`` as "... for the purposes of the Aditional execution
+    of this Act ... have powers. power to do all or any of the following:". The marginal
+    note is "Additional powers." (OCR read "Aditional"); the real provision reads "for the
+    purposes of the execution of this Act ... have power to do". The quote was labelled
+    verbatim and was not.
+    """
+    spans = sorted((min(p[0] for p in box), max(p[0] for p in box)) for box, _t, _s in items)
+    if not spans:
+        return [items]
+    merged: list[list[float]] = []
+    for x0, x1 in spans:
+        if merged and x0 <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], x1)
+        else:
+            merged.append([x0, x1])
+    if len(merged) == 1:
+        return [items]
+    width = merged[-1][1] - merged[0][0]
+    floor = max(_MIN_CORRIDOR_FRAC * width, _MIN_CORRIDOR_ABS)
+    cuts = [
+        (merged[i][1] + merged[i + 1][0]) / 2.0
+        for i in range(len(merged) - 1)
+        if merged[i + 1][0] - merged[i][1] >= floor
+    ]
+    if not cuts:
+        return [items]
+    groups: list[list] = [[] for _ in range(len(cuts) + 1)]
+    for it in items:
+        x0 = min(p[0] for p in it[0])
+        idx = sum(1 for c in cuts if x0 > c)
+        groups[idx].append(it)
+    return [g for g in groups if g]
+
+
 def _reading_order(items: list[tuple[list, str, float]]) -> list[tuple[str, float]]:
-    """Sort detected boxes top-to-bottom then left-to-right and drop the box.
+    """Sort detected boxes into reading order and drop the box.
 
     ``items`` are ``[box, text, score]`` as the detectors emit them; ``box`` is
-    four ``[x, y]`` corners. Rows are bucketed by their top-y (so words on the
-    same visual line stay left-to-right) before sorting."""
+    four ``[x, y]`` corners. Columns are separated first (see :func:`_x_columns`), then
+    within each column rows are bucketed by their top-y so words on the same visual line
+    stay left-to-right. Column-major is the right order for both layouts this affects: a
+    two-language gazette reads down one column and then the other, and a marginal note
+    ends up after the body it annotates instead of inside it."""
     def top_left(box) -> tuple[float, float]:
         ys = [pt[1] for pt in box]
         xs = [pt[0] for pt in box]
         return min(ys), min(xs)
 
-    ordered = sorted(items, key=lambda it: (round(top_left(it[0])[0] / 16.0), top_left(it[0])[1]))
+    ordered: list = []
+    for column in _x_columns(list(items)):
+        ordered.extend(sorted(
+            column,
+            key=lambda it: (round(top_left(it[0])[0] / 16.0), top_left(it[0])[1]),
+        ))
     return [(text, float(score)) for _box, text, score in ordered]
 
 

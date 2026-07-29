@@ -12,17 +12,74 @@ from lexora.extract import ocr_extractor as oe
 from lexora.extract.pdf_text_extractor import PAGE_SEPARATOR, PdfPage, assemble_global_text
 
 
-def test_reading_order_sorts_top_to_bottom_then_left_to_right():
-    def box(x, y):
-        return [[x, y], [x + 10, y], [x + 10, y + 8], [x, y + 8]]
+def _box(x0, y0, x1, y1):
+    return [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
 
-    # Out of order: bottom-left, top-right, top-left.
+
+def test_reading_order_sorts_top_to_bottom_then_left_to_right():
+    # Body lines span most of the page width, which is what makes a page single-column:
+    # every line crosses the middle, so there is no vertical whitespace corridor and the
+    # column splitter cannot fire. (The previous fixture used three 10-point-wide boxes
+    # with a 185-point gap between them -- geometrically a two-column layout, which no
+    # page of running prose resembles.)
     items = [
-        [box(5, 100), "third", 0.9],
-        [box(200, 10), "second", 0.8],
-        [box(5, 10), "first", 0.95],
+        [_box(72, 100, 500, 112), "third", 0.9],
+        [_box(300, 10, 500, 22), "second", 0.8],
+        [_box(72, 10, 290, 22), "first", 0.95],
     ]
     assert [t for t, _ in oe._reading_order(items)] == ["first", "second", "third"]
+
+
+def test_marginal_note_is_not_spliced_into_the_provision():
+    """The exact row that shipped in submission_final_20260714.csv.
+
+    Malaysia's statutes set marginal notes in a column beside the body. Bucketing by y and
+    sorting by x put each wrapped fragment of the note BETWEEN two body lines, so MY
+    Communications and Multimedia Act s.254 was published as "... for the purposes of the
+    Aditional execution of this Act ... have powers. power to do all or any of the
+    following:". The provision reads "for the purposes of the execution of this Act ...
+    have power to do". The quote was labelled verbatim and was not.
+    """
+    items = [
+        [_box(96, 100, 432, 118), "254. An authorised officer shall, for the purposes of the", 1.0],
+        [_box(455, 100, 520, 118), "Aditional", 0.9],
+        [_box(96, 120, 432, 138), "execution of this Act or its subsidiary legislation, have", 1.0],
+        [_box(455, 120, 520, 138), "powers.", 0.9],
+        [_box(96, 140, 432, 158), "power to do all or any of the following:", 1.0],
+    ]
+    out = " ".join(t for t, _ in oe._reading_order(items))
+    assert "for the purposes of the execution of this Act" in out
+    assert "have power to do all or any of the following:" in out
+    # The note is kept, just not inside the sentence -- nothing is destroyed.
+    assert out.endswith("Aditional powers.")
+
+
+def test_two_language_gazette_reads_one_column_then_the_other():
+    # Malaysia gazettes print Malay and English side by side. Row-major reading interleaves
+    # them into nonsense; column-major keeps each language whole.
+    items = [
+        [_box(60, 100, 280, 112), "Peraturan-peraturan ini", 1.0],
+        [_box(320, 100, 540, 112), "These Regulations may", 1.0],
+        [_box(60, 120, 280, 132), "bolehlah dinamakan", 1.0],
+        [_box(320, 120, 540, 132), "be cited as the", 1.0],
+    ]
+    assert [t for t, _ in oe._reading_order(items)] == [
+        "Peraturan-peraturan ini", "bolehlah dinamakan",
+        "These Regulations may", "be cited as the",
+    ]
+
+
+def test_a_hanging_indent_is_not_mistaken_for_a_column():
+    # Paragraph markers and indented sub-paragraphs sit INSIDE the body's x-range, so the
+    # union of block spans has no gap and the page stays one column. A false split would
+    # scramble prose far worse than the bug this guards.
+    items = [
+        [_box(72, 100, 500, 112), "(1) An organisation must, on request,", 1.0],
+        [_box(110, 120, 500, 132), "(a) provide the individual with access; and", 1.0],
+        [_box(110, 140, 480, 152), "(b) correct an error or omission.", 1.0],
+    ]
+    assert len(oe._x_columns(items)) == 1
+    assert [t for t, _ in oe._reading_order(items)][0].startswith("(1)")
 
 
 def test_page_text_and_conf_means_line_scores():
