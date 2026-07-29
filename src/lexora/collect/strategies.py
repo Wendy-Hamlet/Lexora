@@ -15,6 +15,7 @@ back to generic harvesting when the strategy yields nothing.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import time
@@ -31,6 +32,8 @@ from lexora.collect.discovery import (
     _fuzzy_known,
 )
 from lexora.models.source import PortalSpec, SourceType
+
+_LOG = logging.getLogger(__name__)
 
 Strategy = Callable[..., list[DiscoveryResult]]
 
@@ -470,6 +473,13 @@ def au_act_catalogue(
         headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
     )
     catalogue: list[dict] = []
+    # Whether paging ran to its natural end. Only a COMPLETE catalogue may be cached: the
+    # loop below also stops on a non-200, and that stop is indistinguishable from the
+    # normal one once you are looking at the list. A single transient 503 on page 30 of 48
+    # therefore used to write ~3,000 of the ~4,700 in-force Acts into a 24-hour cache, and
+    # every run in that window enumerated the truncated list and reported success. A short
+    # catalogue is not an error anyone would notice; it is just fewer laws found.
+    complete = False
     try:
         for page in range(max_pages):
             url = (
@@ -478,23 +488,34 @@ def au_act_catalogue(
             )
             resp = _get_with_retry(client, url)
             if resp.status_code != 200:
+                _LOG.warning(
+                    "AU catalogue paging stopped at page %d on HTTP %d — %d entries so far, "
+                    "not cached", page, resp.status_code, len(catalogue),
+                )
                 break
             values = resp.json().get("value", [])
             if not values:
+                complete = True
                 break
             catalogue.extend(
                 {"id": v["id"], "name": v.get("name", ""), "isPrincipal": bool(v.get("isPrincipal"))}
                 for v in values if v.get("id") and v.get("name")
             )
             if len(values) < _AU_PAGE:
+                complete = True
                 break
+        else:
+            _LOG.warning(
+                "AU catalogue hit max_pages=%d (%d entries) — the register may have grown "
+                "past what this fetches; not cached", max_pages, len(catalogue),
+            )
     except Exception:
         return catalogue
     finally:
         if owns:
             client.close()
 
-    if catalogue:
+    if catalogue and complete:
         try:
             os.makedirs(os.path.dirname(cache_path), exist_ok=True)
             with open(cache_path, "w", encoding="utf-8") as fh:

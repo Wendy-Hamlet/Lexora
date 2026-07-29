@@ -283,6 +283,64 @@ def test_au_amendment_acts_do_not_claim_a_known_instrument_as_new():
                if "Information Disclosure" in title)
 
 
+def _catalogue_pages(fail_at: int | None = None, pages: int = 3, per_page: int = 100):
+    """OData paging handler: `pages` full pages then a short one, or an HTTP 503 at
+    `fail_at` (0-indexed page)."""
+    seen = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        i = seen["n"]
+        seen["n"] += 1
+        if fail_at is not None and i == fail_at:
+            return httpx.Response(503, text="down")
+        n = per_page if i < pages - 1 else 7  # last page is short -> paging ends
+        return httpx.Response(200, json={"value": [
+            {"id": f"C{i}_{k}", "name": f"Act {i}-{k} 1990", "isPrincipal": True}
+            for k in range(n)
+        ]})
+
+    return handler
+
+
+def test_au_catalogue_caches_a_complete_page_run(tmp_path):
+    from lexora.collect.strategies import au_act_catalogue
+
+    cache = tmp_path / "cat.json"
+    client = httpx.Client(transport=httpx.MockTransport(_catalogue_pages()))
+    got = au_act_catalogue(client=client, cache_path=str(cache))
+    client.close()
+    assert len(got) == 100 + 100 + 7
+    assert cache.exists(), "a complete catalogue is cached"
+
+
+def test_au_catalogue_never_caches_a_truncated_page_run(tmp_path):
+    """A non-200 mid-paging stops the loop, and once you are looking at the list that stop
+    is indistinguishable from the normal one. Caching it wrote ~3,000 of the ~4,700
+    in-force Acts into a 24-hour cache, so every run in that window enumerated a truncated
+    register and reported success -- fewer laws found, and nothing to notice."""
+    from lexora.collect.strategies import au_act_catalogue
+
+    cache = tmp_path / "cat.json"
+    client = httpx.Client(transport=httpx.MockTransport(_catalogue_pages(fail_at=2)))
+    got = au_act_catalogue(client=client, cache_path=str(cache))
+    client.close()
+    assert len(got) == 200, "the partial result is still returned for THIS run"
+    assert not cache.exists(), "but it must never be cached as if complete"
+
+
+def test_au_catalogue_does_not_cache_a_max_pages_truncation(tmp_path):
+    # Every page full and the page budget exhausted: the register is bigger than we
+    # fetched, so this is a truncation too.
+    from lexora.collect.strategies import au_act_catalogue
+
+    cache = tmp_path / "cat.json"
+    client = httpx.Client(transport=httpx.MockTransport(_catalogue_pages(pages=99)))
+    got = au_act_catalogue(client=client, cache_path=str(cache), max_pages=2)
+    client.close()
+    assert len(got) == 200
+    assert not cache.exists()
+
+
 def test_au_child_regulations_skips_short_core_and_non_200():
     from lexora.collect.strategies import au_child_regulations
 
