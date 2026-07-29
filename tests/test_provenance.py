@@ -82,6 +82,38 @@ def test_html_has_no_banner_on_a_live_run(live, tmp_path: Path):
     assert provenance.BANNER not in out.read_text(encoding="utf-8")
 
 
+def _run_submission():
+    """Load scripts/run_submission.py (not an installed module)."""
+    import importlib.util
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "run_submission.py"
+    spec = importlib.util.spec_from_file_location("run_submission_prov", script)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+@pytest.mark.parametrize("mode,prefixed", [("replay", True), ("off", False)])
+def test_every_run_writes_the_same_four_artifacts(monkeypatch, tmp_path, mode, prefixed):
+    """One writer for both entry points.
+
+    ``main.py`` (one economy) and ``run_submission.py -j all`` (the command the README
+    gives for the actual submission run) used to write their artifacts separately, and
+    the multi-economy one had drifted: no reviewer console, and no ``DEMO_`` rename — so
+    a replayed full run produced a file named exactly like a real submission.
+    """
+    monkeypatch.setenv("LEXORA_HTTP_CACHE", mode)
+    mod = _run_submission()
+
+    written = mod.write_artifacts([], [], tmp_path / "submission.csv")
+
+    stem = "DEMO_submission" if prefixed else "submission"
+    assert written["csv"].name == f"{stem}.csv"
+    for key in ("csv", "json", "jsonld", "html"):
+        assert written[key].exists(), f"{key} artifact was not written"
+        assert written[key].stem == stem
+
+
 def test_config_swap_reaches_every_llm_lane(monkeypatch):
     """The No-Vendor-Lock-in rubric tests one thing: 'can swap OpenAI API for Llama 3
     (self-hosted) by changing a config value, not rewriting pipelines'. So the config value

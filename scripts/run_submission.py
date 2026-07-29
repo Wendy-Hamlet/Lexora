@@ -237,16 +237,21 @@ def run_one(
     return result, tokens
 
 
-def write_outputs(result: MapResult, out_csv: Path, *, judge: str = "") -> int:
-    """Write one economy's run to the official CSV + the JSON sidecar (and JSON-LD).
+def write_artifacts(citations, documents, out_csv: Path, *, judge: str = "") -> dict:
+    """Write one run's four artifacts and return where they went.
 
-    The single exporter shared by ``main.py`` (the reviewer's one-command entry point)
-    and this script's multi-economy run, so both emit byte-identical formats. Returns
-    the number of CSV rows.
+    THE single writer. ``write_outputs`` (one economy, ``main.py``'s entry point) and
+    the multi-economy run at the bottom of this file both go through it, because while
+    they were separate they drifted: the multi-economy path — the one the README gives
+    for the actual submission run — quietly skipped BOTH the ``DEMO_`` rename and the
+    reviewer console, so a replayed full run wrote a file named exactly like a
+    submission and no page to review it on.
 
-    ``judge`` names the verifier lane that decided inclusion (e.g. ``"per_clause"``), for
-    the sidecar's ``retrieval_method``. Empty means no verifier ran."""
+    ``judge`` names the verifier lane that decided inclusion (e.g. ``"per_clause"``),
+    for the sidecar's ``retrieval_method``. Empty means no verifier ran.
+    """
     from lexora.export import provenance
+    from lexora.export.html_exporter import to_html
 
     # A replayed run renames its artifacts. Rocky's engine does the same thing for the same
     # reason: a demonstration CSV that is byte-shaped like a submission CSV will eventually
@@ -254,19 +259,31 @@ def write_outputs(result: MapResult, out_csv: Path, *, judge: str = "") -> int:
     # renamed by a download folder, or opened in Excel with the header row collapsed.
     out_csv = out_csv.with_name(provenance.label(out_csv.name))
     out_csv.parent.mkdir(parents=True, exist_ok=True)
-    n = to_csv(result.citations, out_csv)
-    to_jsonld(result.citations, out_csv.with_suffix(".jsonld"))
-    from lexora.export.html_exporter import to_html
-
+    n = to_csv(citations, out_csv)
+    jsonld_out = out_csv.with_suffix(".jsonld")
+    to_jsonld(citations, jsonld_out)
     html_out = out_csv.with_suffix(".html")
-    to_html(result.citations, html_out, title=f"Lexora — {out_csv.stem}")
+    to_html(citations, html_out, title=f"Lexora — {out_csv.stem}")
     cfg = load_config()
     use_dense = os.environ.get("LEXORA_MAP_DENSE", "").lower() in ("1", "true", "yes", "on")
     json_out = out_csv.with_suffix(".json")
-    to_submission_json(
-        result.documents, json_out, model_version=f"llm:{cfg.llm_model}",
+    n_json = to_submission_json(
+        documents, json_out, model_version=f"llm:{cfg.llm_model}",
         use_dense=use_dense, judge=judge,
     )
+    return {"csv": out_csv, "rows": n, "json": json_out, "provisions": n_json,
+            "jsonld": jsonld_out, "html": html_out}
+
+
+def write_outputs(result: MapResult, out_csv: Path, *, judge: str = "") -> int:
+    """Write one economy's run (``main.py``'s path) and print its summary.
+
+    Returns the number of CSV rows."""
+    from lexora.export import provenance
+
+    written = write_artifacts(result.citations, result.documents, out_csv, judge=judge)
+    out_csv, n = written["csv"], written["rows"]
+    json_out, html_out = written["json"], written["html"]
     tagged = {}
     for c in result.citations:
         tag = getattr(c.discovery_tag, "value", str(c.discovery_tag))
@@ -504,22 +521,19 @@ def main() -> None:
         print(f"\nLink check: probed {len(checks)} distinct URL(s), "
               f"{dead_links} citation row(s) carry a dead-link note.")
 
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    n = to_csv(all_citations, args.out)
-    jsonld_out = args.out.with_suffix(".jsonld")
-    to_jsonld(all_citations, jsonld_out)
-    # Official "CSV + JSON" deliverable: the technical sidecar (per-provision OCR
-    # audit, timing, model version, raw context). Mirrors the CSV rows.
-    cfg = load_config()
-    use_dense = os.environ.get("LEXORA_MAP_DENSE", "").lower() in ("1", "true", "yes", "on")
-    json_out = args.out.with_suffix(".json")
-    n_json = to_submission_json(
-        all_documents, json_out, model_version=f"llm:{cfg.llm_model}", use_dense=use_dense,
+    # Same writer as main.py: the CSV, the JSON sidecar (per-provision OCR audit, timing,
+    # model version, raw context), the JSON-LD dump and the reviewer console — and the
+    # DEMO_ rename when the run was replayed.
+    written = write_artifacts(
+        all_citations, all_documents, args.out,
         judge=("per_clause" if args.verify_clauses
                else "per_cell" if args.verify_cells
                else "pick_one" if args.verify else ""),
     )
-    summary_out = args.out.with_suffix(".summary.json")
+    out_path, n = written["csv"], written["rows"]
+    json_out, n_json = written["json"], written["provisions"]
+    jsonld_out, html_out = written["jsonld"], written["html"]
+    summary_out = out_path.with_suffix(".summary.json")
     summary_out.write_text(json.dumps(summaries, ensure_ascii=False, indent=2), encoding="utf-8")
 
     print(f"\nRound-1 submission run (budget {args.budget}"
@@ -567,9 +581,16 @@ def main() -> None:
         if not any_gap:
             print("  none — every indicator a secondary source flags is also cited.")
 
-    print(f"Wrote {n} citation row(s) -> {args.out} (submission CSV)")
+    from lexora.export import provenance
+
+    if provenance.is_demonstration():
+        print(f"\n!! {provenance.BANNER}")
+        print("   Artifacts are prefixed "
+              f"{provenance.PREFIX!r} and must not be submitted as results.")
+    print(f"Wrote {n} citation row(s) -> {out_path} (submission CSV)")
     print(f"                          -> {json_out} ({n_json}-provision JSON sidecar)")
     print(f"                          -> {jsonld_out} (JSON-LD)")
+    print(f"                          -> {html_out} (open in a browser to review)")
     print(f"                          -> {summary_out} (run summary)")
 
 
