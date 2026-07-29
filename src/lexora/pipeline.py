@@ -457,7 +457,6 @@ def run_pipeline_map(
     portal: PortalSpec,
     profile: SourceProfile,
     indicators: list[RDTIIIndicator],
-    query: str | None = None,
     per_indicator_limit: int = 8,
     max_queries_per_indicator: int = 4,
     budget: int = 20,

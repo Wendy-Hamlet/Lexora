@@ -126,7 +126,6 @@ def discover(
 @app.command()
 def map(  # noqa: A001 - CLI verb
     jurisdiction: str = typer.Option(..., "--jurisdiction", "-j", help="ISO code, e.g. my"),
-    query: Optional[str] = typer.Option(None, "--query", "-q", help="(reserved) single-query override"),
     portal_index: int = typer.Option(0, "--portal-index", help="Which profile portal to use"),
     config_dir: Path = typer.Option(Path("configs/jurisdictions"), "--config-dir"),
     indicators_path: Path = typer.Option(Path("configs/rdtii_indicators.yaml"), "--indicators"),
@@ -203,7 +202,7 @@ def map(  # noqa: A001 - CLI verb
 
     result = run_pipeline_map(
         portal=portal, profile=profile, indicators=indicators,
-        query=query, top_k=top_k, min_score=min_score, rel_floor=rel_floor, budget=budget,
+        top_k=top_k, min_score=min_score, rel_floor=rel_floor, budget=budget,
         verifier=verifier, rationale_gen=rationale_gen, meta_extractor=meta_extractor,
         amendment_extractor=amendment_extractor,
     )
