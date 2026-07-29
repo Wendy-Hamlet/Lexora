@@ -609,3 +609,14 @@ def test_the_sso_sweep_does_not_pace_itself_against_a_recording(monkeypatch, tmp
     # One gap between the two phrases, plus one before each of the two refused
     # queries the post-sweep retry pass picks up -- both spacing sites, both silenced.
     assert slept == [1.5, 1.5, 1.5]
+
+
+def test_an_unentered_browser_session_says_so(monkeypatch):
+    """`render` turns every failure into an empty page, which is how a refusing portal
+    also looks. A session that was never entered has no context to render through, so
+    it would report "no results" for every query in the sweep."""
+    from lexora.collect.browser import BrowserSession, SessionNotStarted
+
+    monkeypatch.delenv("LEXORA_HTTP_CACHE", raising=False)
+    with pytest.raises(SessionNotStarted):
+        BrowserSession().render("https://sso.agc.gov.sg/")

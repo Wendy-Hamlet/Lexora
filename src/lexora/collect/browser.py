@@ -26,6 +26,16 @@ DEFAULT_UA = (
 )
 
 
+class SessionNotStarted(RuntimeError):
+    """A :class:`BrowserSession` was rendered through without being entered.
+
+    Its own class so :meth:`BrowserSession.render` can let this one out: that method
+    turns every other failure into an empty page — which is also exactly what a refusing
+    portal looks like — so a caller that forgot the ``with`` would get a silent zero-hit
+    sweep instead of an error.
+    """
+
+
 @dataclass
 class RenderedResult:
     status: int
@@ -95,8 +105,16 @@ class BrowserSession:
                 "`playwright install chromium`."
             ) from exc
         self._pw = sync_playwright().start()
-        self._browser = self._pw.chromium.launch(headless=True)
-        self._ctx = self._browser.new_context(user_agent=self._ua)
+        try:
+            self._browser = self._pw.chromium.launch(headless=True)
+            self._ctx = self._browser.new_context(user_agent=self._ua)
+        except Exception:
+            # A `with` statement never calls __exit__ when __enter__ raises, so a launch
+            # that fails halfway would strand the driver subprocess for the rest of the
+            # run. Discovery enters the session outside its own try, so nothing else
+            # would clean it up either.
+            self.__exit__(None, None, None)
+            raise
         return self
 
     def _render_once(
@@ -108,6 +126,10 @@ class BrowserSession:
         wait_selector: str | None = None,
         timeout: float | None = None,
     ) -> RenderedResult:
+        if self._ctx is None:
+            raise SessionNotStarted(
+                "BrowserSession was never entered — use `with BrowserSession() as s:`"
+            )
         timeout_ms = int((timeout or self._timeout) * 1000)
         page = self._ctx.new_page()
         try:
@@ -180,6 +202,8 @@ class BrowserSession:
                     url, wait_until=wait_until, settle_ms=settle_ms,
                     wait_selector=wait_selector, timeout=timeout,
                 )
+            except SessionNotStarted:
+                raise  # a wiring mistake, not a portal that answered nothing
             except Exception:  # noqa: BLE001 — a hung/failed nav is a retryable signal
                 result = None
                 continue
@@ -223,4 +247,5 @@ def render(
         )
 
 
-__all__ = ["RenderedResult", "BrowserSession", "is_available", "render", "DEFAULT_UA"]
+__all__ = ["RenderedResult", "BrowserSession", "SessionNotStarted",
+           "is_available", "render", "DEFAULT_UA"]
