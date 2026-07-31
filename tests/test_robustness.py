@@ -228,3 +228,49 @@ def test_a_wall_of_failures_is_named_not_left_looking_quiet(capsys):
     assert "every LLM call so far has FAILED" in out
     assert "Ctrl-C is free" in out       # because verdicts commit per verdict
     rs._LIVE_CLIENTS.clear()
+
+
+def test_progress_reaches_a_redirected_log_while_the_run_is_still_going(monkeypatch):
+    """Nobody watches a two-hour run in a terminal; they redirect it to a file.
+
+    Python block-buffers stdout as soon as it is not a tty, so every progress line and
+    every 60-second heartbeat sits in an 8 KB buffer instead of reaching the log. The
+    handler was configured and the meter thread was alive, and the paid run STILL showed
+    an empty log file three minutes in — indistinguishable from a hang. A monitor that
+    only reaches its reader in 8 KB batches is not a monitor.
+    """
+    import sys
+
+    class _Redirected:
+        """Stands in for stdout attached to a file: buffered until told otherwise."""
+
+        def __init__(self):
+            self.line_buffering = False
+            self.reconfigured = []
+
+        def reconfigure(self, **kw):
+            self.reconfigured.append(kw)
+            if "line_buffering" in kw:
+                self.line_buffering = kw["line_buffering"]
+
+        def write(self, s):
+            return len(s)
+
+        def flush(self):
+            pass
+
+    fake = _Redirected()
+    monkeypatch.setattr(sys, "stdout", fake)
+    rs.configure_logging()
+    assert fake.line_buffering is True, "a redirected run would buffer its own progress"
+
+    # A stdout that cannot be reconfigured must not take the run down with it.
+    class _Bare:
+        def write(self, s):
+            return len(s)
+
+        def flush(self):
+            pass
+
+    monkeypatch.setattr(sys, "stdout", _Bare())
+    rs.configure_logging()  # must not raise

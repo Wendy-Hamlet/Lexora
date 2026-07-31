@@ -20,6 +20,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
 import os
@@ -60,7 +61,15 @@ def configure_logging(verbose: bool = False) -> None:
     day that was found; this entry point — the one the README gives for the full run —
     never did, so the command most likely to be left running unattended was the one that
     showed nothing while it ran.
+
+    Line buffering is part of the fix, not a detail. Python block-buffers stdout the
+    moment it is not a terminal, so `run_submission.py > run.log` — how anyone actually
+    runs something for two hours — holds every progress line and every heartbeat in an
+    8 KB buffer. The run then looks just as dead as it did with no handler at all, which
+    is how the first launch of the paid run was flying blind three minutes in.
     """
+    with contextlib.suppress(AttributeError, ValueError):  # not a real text stream
+        sys.stdout.reconfigure(line_buffering=True)
     logging.basicConfig(level=logging.INFO, format="%(message)s", stream=sys.stdout)
     if not verbose:
         for noisy in ("httpx", "httpcore", "urllib3", "openai", "PIL", "fontTools"):
