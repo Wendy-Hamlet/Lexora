@@ -192,3 +192,50 @@ def test_an_empty_batch_starts_no_pool():
         raise AssertionError("must not be called")
 
     assert _fetch_in_order(explode, [], workers=8) == []
+
+
+def test_one_unfetchable_document_does_not_lose_the_jurisdiction(monkeypatch, caplog):
+    """`_fetch_in_order` gives the FOLLOW-ON passes this (see the test above); the
+    primary working-set pass -- the one that maps everything discovery found -- did not.
+
+    So a single URL that raised in `fetch` propagated out of `ex.map` and ended the
+    economy. On 2026-07-31 three page-relative Malaysian download links did exactly
+    that: `UnsupportedProtocol`, Malaysia contributed 0 rows, and the run still exited
+    0 and wrote a 561-row submission CSV from Singapore and Australia. The failure has
+    to cost one document and be said out loud, not cost a country and be silent.
+    """
+    import logging
+
+    import lexora.collect.discovery as disc
+    import lexora.pipeline as pipe
+
+    hits = [_hit("https://e.gov/Act/AAA", "KNOWN", 0.9),
+            _hit("downloadPDF.php?token=relative", "NEW", 0.8),
+            _hit("https://e.gov/Act/CCC", "NEW", 0.5)]
+    monkeypatch.setattr(disc, "discover_for_indicators", lambda *a, **k: hits)
+    monkeypatch.setattr(disc, "resolve_fulltext", lambda hit, **k: hit.url)
+
+    def fake_from_url(*, url, discovery_tag, title, **k):
+        if not url.startswith("http"):
+            raise RuntimeError("Request URL is missing an 'http://' protocol.")
+        ind = "P6-I1" if "AAA" in url else "P7-I3"
+        return pipe.DemoArtifacts(
+            document=_doc(), clauses=[],
+            citations=[_cite(ind, f"doc::{ind}", discovery_tag, title)])
+
+    monkeypatch.setattr(pipe, "run_pipeline_from_url", fake_from_url)
+
+    profile = _profile()
+    with caplog.at_level(logging.ERROR):
+        result = pipe.run_pipeline_map(
+            portal=profile.portals[0], profile=profile, indicators=[],
+        )
+
+    # The two good instruments survive; the bad one costs itself and nothing else.
+    assert len(result.documents) == 2
+    assert sorted(c.indicator_id for c in result.citations) == ["P6-I1", "P7-I3"]
+
+    # And the run says so: a jurisdiction that comes back smaller must explain why.
+    logged = caplog.text
+    assert "SKIPPED" in logged and "downloadPDF.php" in logged
+    assert "1 of 3 discovered document(s) skipped" in logged

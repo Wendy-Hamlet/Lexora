@@ -654,13 +654,43 @@ def run_pipeline_map(
     # serial floor of an LLM run) as well as fetch / OCR / rationale across docs.
     # SG full-text resolves by URL construction (no browser render in the loop), so
     # concurrent docs are safe. `map` preserves order; dedup runs sequentially after.
+    skipped: list[str] = []
+
+    def _process_isolated(hit):
+        """One document's failure must not take the jurisdiction with it.
+
+        `_fetch_in_order` has given the FOLLOW-ON passes exactly this since they were
+        written; the primary working-set pass -- the one that maps everything discovery
+        found -- never had it, so a single unfetchable URL raised straight out of
+        `ex.map` and ended the economy. On 2026-07-31 three page-relative Malaysian
+        download links did that: Malaysia contributed 0 rows to a run that exited 0 and
+        wrote a submission CSV of 561 rows from the other two economies.
+
+        Unlike the follow-on version this one is loud. There the candidates are
+        speculative, so a quiet None is right; here every hit is something discovery
+        decided was worth mapping, and losing one silently is how a run comes back
+        smaller with nothing to say why.
+        """
+        try:
+            return _process(hit)
+        except Exception as exc:  # noqa: BLE001 — one document, not the jurisdiction
+            url = getattr(hit, "url", "") or "?"
+            skipped.append(url)
+            logger.error("SKIPPED %s -- %s: %s", url[:110], type(exc).__name__, exc)
+            return None
+
     if doc_workers > 1 and len(hits) > 1:
         from concurrent.futures import ThreadPoolExecutor
 
         with ThreadPoolExecutor(max_workers=min(doc_workers, len(hits))) as ex:
-            documents = list(ex.map(_process, hits))
+            documents = list(ex.map(_process_isolated, hits))
     else:
-        documents = [_process(h) for h in hits]
+        documents = [_process_isolated(h) for h in hits]
+    documents = [d for d in documents if d is not None]
+    if skipped:
+        logger.error("%d of %d discovered document(s) skipped after an unrecoverable "
+                     "error; the rest of this jurisdiction is unaffected",
+                     len(skipped), len(hits))
     # Two hits that resolved to one document now share one artifacts object; carry it
     # once so the JSON sidecar and the currency pass each see the document once.
     seen_artifacts: set[int] = set()

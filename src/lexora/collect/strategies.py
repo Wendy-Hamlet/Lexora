@@ -71,12 +71,19 @@ def _get_with_retry(
     raise last or httpx.TransportError(f"failed to fetch {url}")
 
 
-def _first_href(snippet: str | None) -> str | None:
-    """Extract the first href URL from an HTML anchor snippet (MY download cell)."""
+def _first_href(snippet: str | None, base: str = _MY_API) -> str | None:
+    """Extract the first href URL from an HTML anchor snippet (MY download cell).
+
+    Resolved against the portal, because the cell holds a PAGE-RELATIVE link:
+    `downloadPDF.php?cs=1&token=...`. Handed to the fetcher unjoined it raised
+    UnsupportedProtocol, and since one document's exception takes the whole economy
+    down, three such links cost the entire Malaysian run. Joined, they are real Acts
+    -- the first one is an 18 MB `application/pdf`.
+    """
     if not snippet:
         return None
     m = re.search(r'href="([^"]+)"', snippet)
-    return m.group(1) if m else None
+    return urljoin(base, m.group(1)) if m else None
 
 
 def _tag_for(fuzzy: float, known: list[str]) -> str | None:

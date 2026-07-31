@@ -27,6 +27,7 @@ import os
 import sys
 import threading
 import time
+import traceback
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
@@ -50,6 +51,8 @@ JURIS = REPO / "configs" / "jurisdictions"
 OUT_CSV = REPO / "outputs" / "submission_round1.csv"
 
 ISO_TO_COUNTRY = {"sg": "Singapore", "au": "Australia", "my": "Malaysia"}
+
+log = logging.getLogger("lexora.submission")
 
 
 def configure_logging(verbose: bool = False) -> None:
@@ -673,6 +676,13 @@ def main() -> None:
     for iso in isos:  # input order -> stable summary table
         kind, payload = outcomes[iso]
         if kind == "err":
+            # The summary table gets one line, which is right for a table and useless
+            # for a diagnosis: an economy died mid-run and the traceback -- the only
+            # thing that says WHERE -- was held in the exception object and dropped.
+            # A paid run does not get repeated to find that out.
+            log.error("%s failed, full traceback follows:", ISO_TO_COUNTRY.get(iso, iso))
+            log.error("".join(traceback.format_exception(
+                type(payload), payload, payload.__traceback__)).rstrip())
             summaries.append({"iso": iso, "economy": ISO_TO_COUNTRY.get(iso, iso),
                               "error": f"{type(payload).__name__}: {payload}"})
             continue

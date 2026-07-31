@@ -555,3 +555,26 @@ def test_my_api_live_finds_pdpa():
         known_instruments=["Personal Data Protection Act 2010"],
     )
     assert any("act=709" in r.url for r in results)
+
+
+def test_the_my_download_cell_href_is_resolved_against_the_portal():
+    """Malaysia's Fess rows carry the Act PDF as a PAGE-RELATIVE link inside an HTML
+    cell: `downloadPDF.php?cs=1&token=<base64>`. Unjoined it reached httpx as a URL
+    with no scheme and raised UnsupportedProtocol, which -- before the primary map pass
+    isolated its documents -- ended the entire Malaysian run.
+
+    These are not junk links. Joined, the first one answers 200 `application/pdf`,
+    18 MB of a real Act, so getting this wrong loses statutes, not noise.
+    """
+    from lexora.collect.strategies import _first_href
+
+    cell = '<a href="downloadPDF.php?cs=1&token=aHR0cHM6Ly9sb20u" target="_blank">PDF</a>'
+    assert _first_href(cell) == (
+        "https://lom.agc.gov.my/downloadPDF.php?cs=1&token=aHR0cHM6Ly9sb20u")
+
+    # An href that is already absolute must be left exactly as it is.
+    abs_cell = '<a href="https://lom.agc.gov.my/ilims/upload/ACT%20709.pdf">PDF</a>'
+    assert _first_href(abs_cell) == "https://lom.agc.gov.my/ilims/upload/ACT%20709.pdf"
+
+    assert _first_href(None) is None
+    assert _first_href("<span>no link here</span>") is None
