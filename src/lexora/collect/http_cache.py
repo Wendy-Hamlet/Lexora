@@ -261,7 +261,16 @@ class RecordReplayTransport(httpx.BaseTransport):
             return httpx.Response(status, request=request, headers=headers, content=payload)
 
         response = self._inner.handle_request(request)
-        payload = b"".join(response.stream)  # drain before the connection is released
+        # `response.stream` is the RAW body: at the transport layer httpx has not applied
+        # the content-encoding decoder yet, it does that in Response.read(). Joining the
+        # stream and then stripping `content-encoding` below therefore published gzip
+        # bytes as if they were the decoded document -- and every consumer believed it.
+        # Malaysia's portal gzips, so a recorded run fed `\x1f\x8b...` straight to the
+        # HTML parser and scored 0 hits on all 40 discovery queries, silently, while
+        # Singapore (headless browser, never through this transport) looked perfect.
+        # read() runs the decoder, so what is stored and served is the real document.
+        response.read()
+        payload = response.content
         response.close()
         headers = dict(response.headers)
         if self._mode == RECORD:

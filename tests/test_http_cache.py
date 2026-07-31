@@ -163,3 +163,57 @@ def test_off_mode_installs_nothing(monkeypatch):
     before = httpx.Client.__init__
     assert http_cache.install() == http_cache.OFF
     assert httpx.Client.__init__ is before
+
+
+class _CompressedUpstream(httpx.BaseTransport):
+    """A portal that gzips, like Malaysia's. Streams the body, as a real one does."""
+
+    def __init__(self, encoded: bytes):
+        self.encoded = encoded
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        class _Stream(httpx.SyncByteStream):
+            def __init__(self, data: bytes) -> None:
+                self._data = data
+
+            def __iter__(self):
+                yield self._data
+
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html", "content-encoding": "gzip"},
+            stream=_Stream(self.encoded),
+        )
+
+
+def test_a_gzipped_portal_is_stored_and_served_as_the_document_it_sent(store):
+    """The layer's promise is "byte-identical to what the portal really sent".
+
+    At the transport layer httpx has NOT yet run the content-encoding decoder -- that
+    happens in Response.read(). Draining `response.stream` therefore captured raw gzip,
+    and stripping the `content-encoding` header on the way out published those bytes as
+    if they were the document. Malaysia's portal gzips: a recorded live run fed
+    `\x1f\x8b...` to the HTML parser and returned 0 hits on all 40 discovery queries,
+    with no error anywhere -- while Singapore, which reaches its portal through the
+    headless browser and never through this transport, looked perfect.
+
+    Note what could NOT have caught this: comparing a replay against its own recording.
+    Both sides were corrupt in exactly the same way, so that assertion stayed green.
+    The baseline has to be the plaintext the portal sent.
+    """
+    import gzip
+
+    url = "https://lom.agc.gov.my/search"
+    plain = b"<html><body>Laws of Malaysia: Act 709</body></html>"
+    upstream = _CompressedUpstream(gzip.compress(plain))
+
+    with httpx.Client(transport=RecordReplayTransport(
+            upstream, http_cache.RECORD)) as c:
+        live = c.get(url)
+    assert live.content == plain, "a recorded run got gzip bytes, not the document"
+
+    with httpx.Client(transport=RecordReplayTransport(
+            upstream, http_cache.REPLAY)) as c:
+        replayed = c.get(url)
+    assert replayed.headers["x-lexora-cache"] == "hit"
+    assert replayed.content == plain, "the store kept gzip bytes, so replay serves them"
