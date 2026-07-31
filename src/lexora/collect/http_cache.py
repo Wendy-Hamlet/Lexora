@@ -91,7 +91,14 @@ def serving_from_recording() -> bool:
     return mode() == REPLAY
 
 
-DEFAULT_BODY_DEADLINE = 300.0
+# A BACKSTOP, not a routine cutter. httpx's per-read timeout already fails a peer that
+# sends nothing at all, so the only case left for a total budget is one that dribbles
+# without ever stopping -- and against that, waiting an hour costs nothing that matters.
+# Set to 300s first, which promptly cut two REAL Malaysian Acts at 5.0 MB and 6.8 MB
+# while they were arriving steadily at 16-22 kB/s. This corpus contains a 98 MB scan;
+# at that portal's speed it needs about 1.7 hours, so any "reasonable" budget is a
+# document shredder. Errors here must cost a run time, never its content.
+DEFAULT_BODY_DEADLINE = 7200.0
 
 
 class BodyDeadlineExceeded(httpx.HTTPError):
@@ -118,15 +125,18 @@ def body_deadline() -> float:
 def read_body_within(response: httpx.Response, deadline: float | None = None) -> bytes:
     """Drain a response body under a WALL-CLOCK budget, decoding as httpx would.
 
-    httpx timeouts are per socket operation, not per request. A server that sends a
-    few bytes every couple of seconds resets the read timeout forever, so the request
-    never completes and never fails: on 2026-07-31 Malaysia's portal held a worker for
-    25 minutes at ~107 bytes/second, with the process at 10% CPU, the heartbeat still
-    printing and not one error logged. Nothing anywhere in the pipeline put a ceiling
-    on how long a single document may take.
+    httpx timeouts are per socket operation, not per request, so a peer that sends a
+    few bytes every couple of seconds resets the read timeout forever and the request
+    never completes and never fails. This is the backstop for that one case.
 
-    The two clocks are complementary: the per-read timeout catches a peer that says
-    nothing at all, this catches one that says just enough.
+    It is NOT the answer to a slow portal, and the first version of it got that wrong.
+    On 2026-07-31 a Malaysian fetch appeared to hang for 25 minutes; the throughput
+    figure behind that call -- ~107 B/s -- came from a Windows process I/O counter that
+    does not reliably reflect socket traffic, and was simply wrong. Counting the bytes
+    HERE, where they actually arrive, the same documents download at 16-22 kB/s: slow,
+    but progressing, and they would have finished. Hence a two-hour backstop rather
+    than a minutes-long deadline, and hence the measured rate in the error message --
+    the missing ingredient was never a cap, it was being able to see the rate at all.
     """
     budget = body_deadline() if deadline is None else deadline
     if budget <= 0:

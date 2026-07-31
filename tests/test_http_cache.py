@@ -223,13 +223,13 @@ def test_a_dribbling_body_is_cut_off_by_the_wall_clock():
     """httpx timeouts are per socket read, not per request.
 
     A peer that sends a few bytes every couple of seconds resets the read timeout
-    forever: the request never completes and never fails. On 2026-07-31 Malaysia's
-    portal held a worker for 25 minutes at ~107 bytes/second while the process sat at
-    10% CPU, the heartbeat kept printing, and not one error was logged. Nothing in the
-    pipeline capped how long a single document may take.
+    forever: the request never completes and never fails, and nothing in the pipeline
+    capped how long a single document may take.
 
-    The two clocks are complementary -- the per-read timeout catches a peer that says
-    nothing at all, this one catches a peer that says just enough.
+    The cap is a BACKSTOP and the default is deliberately hours, because the first
+    version -- 300s -- cut two real Malaysian Acts at 5.0 MB and 6.8 MB while they
+    were still arriving at 16-22 kB/s. What the pipeline was missing was never the
+    cap; it was the measured rate, which is why the message carries it.
     """
     import time as _time
 
