@@ -38,6 +38,7 @@ import json
 import os
 import sqlite3
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -88,6 +89,64 @@ def serving_from_recording() -> bool:
     "no server" means.
     """
     return mode() == REPLAY
+
+
+DEFAULT_BODY_DEADLINE = 300.0
+
+
+class BodyDeadlineExceeded(httpx.HTTPError):
+    """One response body took longer than the whole-request budget allows.
+
+    Deliberately NOT an ``httpx.TransportError``: the crawler retries those, and a
+    portal that dribbles is not having a bad second -- retrying buys three more
+    deadlines. This propagates instead, and the per-document isolation in
+    ``run_pipeline_map`` turns it into one SKIPPED line.
+    """
+
+
+def body_deadline() -> float:
+    """Seconds a single response body may take. ``<= 0`` disables the cap."""
+    raw = os.environ.get("LEXORA_BODY_DEADLINE", "").strip()
+    if not raw:
+        return DEFAULT_BODY_DEADLINE
+    try:
+        return float(raw)
+    except ValueError:
+        return DEFAULT_BODY_DEADLINE
+
+
+def read_body_within(response: httpx.Response, deadline: float | None = None) -> bytes:
+    """Drain a response body under a WALL-CLOCK budget, decoding as httpx would.
+
+    httpx timeouts are per socket operation, not per request. A server that sends a
+    few bytes every couple of seconds resets the read timeout forever, so the request
+    never completes and never fails: on 2026-07-31 Malaysia's portal held a worker for
+    25 minutes at ~107 bytes/second, with the process at 10% CPU, the heartbeat still
+    printing and not one error logged. Nothing anywhere in the pipeline put a ceiling
+    on how long a single document may take.
+
+    The two clocks are complementary: the per-read timeout catches a peer that says
+    nothing at all, this catches one that says just enough.
+    """
+    budget = body_deadline() if deadline is None else deadline
+    if budget <= 0:
+        response.read()
+        return response.content
+
+    started = time.monotonic()
+    chunks: list[bytes] = []
+    for chunk in response.iter_bytes():
+        chunks.append(chunk)
+        elapsed = time.monotonic() - started
+        if elapsed > budget:
+            got = sum(len(c) for c in chunks)
+            response.close()
+            raise BodyDeadlineExceeded(
+                f"body still arriving after {elapsed:.0f}s "
+                f"({got} bytes at {got / max(elapsed, 1e-9):.0f} B/s); "
+                f"budget is {budget:.0f}s (LEXORA_BODY_DEADLINE)"
+            )
+    return b"".join(chunks)
 
 
 def default_dir() -> Path:
@@ -268,9 +327,11 @@ class RecordReplayTransport(httpx.BaseTransport):
         # Malaysia's portal gzips, so a recorded run fed `\x1f\x8b...` straight to the
         # HTML parser and scored 0 hits on all 40 discovery queries, silently, while
         # Singapore (headless browser, never through this transport) looked perfect.
-        # read() runs the decoder, so what is stored and served is the real document.
-        response.read()
-        payload = response.content
+        # read() runs the decoder, so what is stored and served is the real document --
+        # here under a wall-clock budget, because this drain is what a dribbling portal
+        # hangs on and recording moves the drain INSIDE the transport, out of reach of
+        # any deadline the caller might apply to its own streaming.
+        payload = read_body_within(response)
         response.close()
         headers = dict(response.headers)
         if self._mode == RECORD:

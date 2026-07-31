@@ -192,12 +192,32 @@ def fetch(
         follow_redirects=True, timeout=timeout, headers={"User-Agent": user_agent}
     )
 
+    def _fetch_once() -> httpx.Response:
+        """One GET whose BODY is drained under a wall-clock budget.
+
+        `client.get()` reads the body inside httpx, where no per-request deadline can
+        reach it, so the body is streamed and drained by `read_body_within` instead.
+        The response is then rebuilt around those bytes -- content-encoding dropped,
+        because they are already decoded -- so every caller still sees a plain response
+        with `.content`, `.url` and `.headers` exactly as before.
+        """
+        streamed = client.send(client.build_request("GET", url), stream=True)
+        try:
+            body = http_cache.read_body_within(streamed)
+        finally:
+            streamed.close()
+        headers = {k: v for k, v in streamed.headers.items()
+                   if k.lower() not in ("content-encoding", "content-length",
+                                        "transfer-encoding")}
+        return httpx.Response(streamed.status_code, headers=headers, content=body,
+                              request=streamed.request)
+
     def _get() -> httpx.Response:
         last_exc: Exception | None = None
         response = None
         for attempt in range(retries + 1):
             try:
-                response = client.get(url)
+                response = _fetch_once()
                 # A replay MISS is dressed as a 504 so callers carry on past it like
                 # any refusing portal — but it is a fact about the recording, not a
                 # server having a bad minute. Retrying it re-reads the same absent row

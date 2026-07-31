@@ -217,3 +217,59 @@ def test_a_gzipped_portal_is_stored_and_served_as_the_document_it_sent(store):
         replayed = c.get(url)
     assert replayed.headers["x-lexora-cache"] == "hit"
     assert replayed.content == plain, "the store kept gzip bytes, so replay serves them"
+
+
+def test_a_dribbling_body_is_cut_off_by_the_wall_clock():
+    """httpx timeouts are per socket read, not per request.
+
+    A peer that sends a few bytes every couple of seconds resets the read timeout
+    forever: the request never completes and never fails. On 2026-07-31 Malaysia's
+    portal held a worker for 25 minutes at ~107 bytes/second while the process sat at
+    10% CPU, the heartbeat kept printing, and not one error was logged. Nothing in the
+    pipeline capped how long a single document may take.
+
+    The two clocks are complementary -- the per-read timeout catches a peer that says
+    nothing at all, this one catches a peer that says just enough.
+    """
+    import time as _time
+
+    class _Dribble(httpx.SyncByteStream):
+        def __iter__(self):
+            for _ in range(10_000):
+                _time.sleep(0.005)
+                yield b"x"
+
+    response = httpx.Response(200, headers={"content-type": "text/html"},
+                              stream=_Dribble())
+    with pytest.raises(http_cache.BodyDeadlineExceeded) as caught:
+        http_cache.read_body_within(response, deadline=0.05)
+    assert "B/s" in str(caught.value)  # says how slow, not just that it was slow
+
+    # Must NOT be a TransportError: the crawler RETRIES those, and retrying a portal
+    # that dribbles just buys three more deadlines. It has to propagate to the
+    # per-document isolation and cost exactly one document.
+    assert not isinstance(caught.value, httpx.TransportError)
+
+
+def test_a_body_that_arrives_in_time_is_returned_whole():
+    """The cap must not truncate a slow-but-finishing download."""
+    class _Chunked(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"<html>"
+            yield b"statute"
+            yield b"</html>"
+
+    response = httpx.Response(200, headers={"content-type": "text/html"},
+                              stream=_Chunked())
+    assert http_cache.read_body_within(response, deadline=30.0) == b"<html>statute</html>"
+
+
+def test_the_deadline_can_be_switched_off():
+    """`LEXORA_BODY_DEADLINE=0` restores the old unbounded read, for anyone who
+    genuinely wants to sit through a 500 MB consolidated statute."""
+    class _Small(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"body"
+
+    response = httpx.Response(200, stream=_Small())
+    assert http_cache.read_body_within(response, deadline=0) == b"body"

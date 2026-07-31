@@ -10,6 +10,8 @@ from __future__ import annotations
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import httpx
+
 from lexora.collect import crawler
 
 
@@ -49,12 +51,21 @@ def test_zero_interval_is_a_noop():
 
 
 class _CountingClient:
-    """Fake httpx client that tracks how many GETs to one host run concurrently."""
+    """Fake httpx client that tracks how many downloads to one host run concurrently.
+
+    Speaks the streaming API (`build_request` + `send(stream=True)`), because that is
+    what the crawler uses: the body has to be drained by the caller so a wall-clock
+    deadline can be applied to it, which `client.get()` reads out of reach inside httpx.
+    The concurrency being measured is the DOWNLOAD, so the sleep stays in the body.
+    """
 
     def __init__(self, registry):
         self._reg = registry
 
-    def get(self, url):
+    def build_request(self, method, url):
+        return httpx.Request(method, url)
+
+    def send(self, request, *, stream=False):
         reg = self._reg
         with reg["guard"]:
             reg["in_flight"] += 1
@@ -62,14 +73,10 @@ class _CountingClient:
         time.sleep(0.05)  # simulate a download in progress
         with reg["guard"]:
             reg["in_flight"] -= 1
-
-        class _Resp:
-            status_code = 200
-            headers = {"content-type": "application/pdf"}
-            content = b"%PDF-1.4 body"
-
-        _Resp.url = url
-        return _Resp()
+        return httpx.Response(
+            200, headers={"content-type": "application/pdf"},
+            content=b"%PDF-1.4 body", request=request,
+        )
 
     def close(self):
         pass
