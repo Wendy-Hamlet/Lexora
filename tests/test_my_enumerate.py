@@ -73,6 +73,10 @@ def _toc_judge(toc, _indicators):
 @pytest.fixture
 def _wired(monkeypatch, tmp_path):
     monkeypatch.setattr(my_inventory, "_CACHE", INVENTORY)
+    # The repository ships 1,287 real verdicts so a fresh clone inherits the judged
+    # statute book. They must not leak into a test whose whole world is six Acts.
+    monkeypatch.setattr("lexora.collect.my_enumerate.SHIPPED_VERDICTS",
+                        tmp_path / "no-such-reference.jsonl")
 
     def fake_toc(url, *, timeout, ocr_engine=None):
         act = url.rsplit("/", 1)[-1].removesuffix(".pdf")
@@ -139,6 +143,34 @@ def test_a_second_run_judges_nothing(_wired):
     enumerate_my_candidates(INDICATORS, title_judge=counting, toc_judge=_toc_judge,
                             verdict_cache=str(_wired), ocr=False, log=lambda *_: None)
     assert calls["n"] == first, "a cached statute book must cost nothing to re-read"
+
+
+def test_the_shipped_verdicts_cover_the_statute_book(monkeypatch, tmp_path):
+    """The pitch says an auditor can re-derive our numbers. That has to be true for
+    someone who is not us, so the judged statute book ships WITH the repository: a fresh
+    clone must reach the Malaysian working set without an API key and without paying to
+    re-judge 1,287 titles."""
+    from lexora.collect.my_enumerate import SHIPPED_VERDICTS, _load_jsonl
+
+    assert SHIPPED_VERDICTS.exists(), "the reference verdict set is not in the repository"
+    shipped = _load_jsonl(SHIPPED_VERDICTS)
+    assert len(shipped) > 1200
+    # Every gold statute must have a verdict on file, whatever that verdict is -- the
+    # backstop covers a wrong one, but a MISSING one means the sweep never saw the Act.
+    for act in ("53", "563", "588", "593", "709", "747", "807", "854", "A1727"):
+        assert act in shipped, f"no shipped verdict for gold Act {act}"
+
+    def _explode(*_a, **_k):
+        raise AssertionError("the shipped verdicts did not cover the statute book")
+
+    monkeypatch.setattr(my_inventory, "_CACHE",
+                        {a: InventoryEntry(act_no=a, title_en=shipped[a]["title"],
+                                           pdf_url=f"https://x/{a}.pdf")
+                         for a in list(shipped)[:200]})
+    results = enumerate_my_candidates(
+        [_Ind(s) for s in ("P6-I1", "P7-I5")], title_judge=_explode, toc_judge=_explode,
+        verdict_cache=str(tmp_path / "empty.jsonl"), ocr=False, log=lambda *_: None)
+    assert results, "a shipped-cache run produced no candidates at all"
 
 
 def test_the_cache_is_one_json_object_per_act(_wired):

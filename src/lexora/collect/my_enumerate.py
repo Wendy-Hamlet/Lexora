@@ -55,6 +55,8 @@ SIZE_CAP = 90_000_000
 _HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
             "Referer": "https://lom.agc.gov.my/"}
 _ACT_DETAIL = "https://lom.agc.gov.my/act-detail.php"
+# Judged verdicts for the whole Malaysian statute book, committed to the repository.
+SHIPPED_VERDICTS = Path(__file__).resolve().parents[3] / "data" / "reference" / "my_enum_verdicts.jsonl"
 
 
 def enumerate_enabled() -> bool:
@@ -177,10 +179,18 @@ def enumerate_my_candidates(
     inventory = fetch_inventory(client, timeout=timeout)
     emit(f"enumerate MY: {len(inventory)} Act(s) in the portal's listings")
 
+    # Two files, one read order. `data/reference/` ships WITH the repository, so a fresh
+    # clone inherits the statute book already judged and a re-derivation of our numbers
+    # costs an auditor nothing — the claim we make about reproducibility has to be true
+    # for someone who is not us. `outputs/cache/` is this machine's writable copy and
+    # wins on conflict, because a re-judged Act is a newer answer than a shipped one.
     path = Path(verdict_cache) if verdict_cache else (
         Path("outputs") / "cache" / "my_enum_verdicts.jsonl")
     path.parent.mkdir(parents=True, exist_ok=True)
-    verdicts = _load_jsonl(path)
+    verdicts = _load_jsonl(SHIPPED_VERDICTS)
+    if verdicts:
+        emit(f"enumerate MY: {len(verdicts)} verdict(s) from the shipped reference set")
+    verdicts.update(_load_jsonl(path))
     pending = [a for a in inventory if a not in verdicts]
     emit(f"enumerate MY: {len(verdicts)} cached, {len(pending)} to judge")
 
