@@ -16,6 +16,14 @@ ocr_languages: ["eng"]
 fetch_policy:
   doc_workers: 4
   min_interval: 0.5
+  # SSO throttles cumulatively per IP, the same way legislation.gov.au does, and only
+  # au.yaml had the mitigation. Measured 2026-07-31/08-01: after four full runs in one
+  # night SG fetched 69 documents and only 4 were real (28 BLOCKED, 22 UNRENDERED, 7
+  # citation rows). A single fetch still worked, so the engine was fine -- it was the
+  # burst that was not. After ~5 hours idle the same command fetched 99 and 80 were
+  # real, 176 rows. Holding the host lock across each download keeps one request in
+  # flight at a time; other hosts and all post-download work stay parallel.
+  serial_fetch: true
 
 # The official RDTII Round-1 gold inventory (configs/eval/legal_inventory_p67.csv)
 # IS the known reference set for SG. Earlier only the four flagship statutes were
