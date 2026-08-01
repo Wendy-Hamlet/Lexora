@@ -32,7 +32,7 @@ from lexora.collect.discovery import (
     DiscoveryResult,
     _fuzzy_known,
 )
-from lexora.models.source import PortalSpec, SourceType
+from lexora.models.source import InstrumentStatus, PortalSpec, SourceType
 
 _LOG = logging.getLogger(__name__)
 
@@ -1125,6 +1125,89 @@ STRATEGIES: dict[str, Strategy] = {
     "legislation.gov.au": au_legislation_api,
     "lom.agc.gov.my": my_legislation_api,
 }
+
+def my_known_from_inventory(
+    portal: PortalSpec,
+    *,
+    known_instrument_ids: dict[str, str] | None = None,
+    timeout: float = 120.0,
+    client: httpx.Client | None = None,
+) -> list[DiscoveryResult]:
+    """The gold instruments, resolved from the portal's own listings instead of search.
+
+    Every Malaysian gold instrument is an Act with a number, and the portal publishes a
+    complete numbered listing (see :mod:`lexora.collect.my_inventory`). So a known Act
+    never needs to be FOUND: it needs to be looked up. That matters because the route we
+    used instead -- asking the Fess proxy for the Act by name -- fails outright for about
+    two queries in five, and when it fails the Act is simply absent from the run. Both of
+    the 2026-08-01 sweeps lost Acts that way, and on 20 July the same call lost every
+    Malaysian gold instrument at once when the proxy stopped filtering.
+
+    The listing also states the things a search result cannot: the English title, a direct
+    English PDF, and whether the Act has been repealed or has not yet come into force.
+    Those are the portal's own words, so they outrank anything we would infer.
+
+    Returns one result per known act number that the inventory knows. It does not
+    re-rank, cut or judge: the caller merges these into whatever discovery found.
+    """
+    ids = known_instrument_ids or {}
+    if not ids:
+        return []
+    from lexora.collect.my_inventory import fetch_inventory
+
+    try:
+        inventory = fetch_inventory(client, timeout=timeout)
+    except Exception as exc:  # noqa: BLE001 — a backstop that raises is not a backstop
+        _LOG.warning("Malaysian inventory unavailable, gold backstop skipped (%s: %s)",
+                     type(exc).__name__, exc)
+        return []
+
+    results: list[DiscoveryResult] = []
+    for act_no, gold_name in ids.items():
+        entry = inventory.get(str(act_no).strip())
+        if entry is None or not entry.pdf_url:
+            continue
+        if entry.repealed:
+            status = InstrumentStatus.repealed.value
+        elif entry.in_force is False:
+            status = InstrumentStatus.draft.value  # portal says NOT YET IN FORCE
+        elif entry.in_force is True:
+            status = InstrumentStatus.in_force.value
+        else:
+            status = InstrumentStatus.unknown.value
+        results.append(DiscoveryResult(
+            url=f"{_MY_ACT_DETAIL}?act={entry.act_no}&lang=BI",
+            title=entry.title_en or gold_name,
+            source_type=portal.source_type,
+            score=1.0,
+            via="api",
+            is_pdf_link=False,
+            discovery_tag=TAG_KNOWN,
+            matched_instrument=gold_name,
+            fulltext_url=entry.pdf_url,
+            law_number=f"Act {entry.act_no}",
+            status=status,
+        ))
+    return results
+
+
+_MY_ACT_DETAIL = "https://lom.agc.gov.my/act-detail.php"
+
+# host substring -> resolver for the jurisdiction's KNOWN instruments, independent of
+# search. Only registered where the portal publishes a numbered listing of its own.
+KNOWN_RESOLVERS: dict[str, Callable[..., list[DiscoveryResult]]] = {
+    "lom.agc.gov.my": my_known_from_inventory,
+}
+
+
+def known_resolver_for(portal: PortalSpec) -> Callable[..., list[DiscoveryResult]] | None:
+    """Return the registered known-instrument resolver for a portal's host, or None."""
+    host = urlparse(str(portal.url)).netloc.lower()
+    for needle, resolver in KNOWN_RESOLVERS.items():
+        if needle in host:
+            return resolver
+    return None
+
 
 # host substring -> regulator-portal guidance connector
 PORTAL_CONNECTORS: dict[str, PortalConnector] = {

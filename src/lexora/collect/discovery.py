@@ -1180,6 +1180,34 @@ def discover_for_indicators(
                 _merge_into(agg, r, key)
                 indicators_by_key.setdefault(key, set()).update(r.indicator_hits)
 
+    # Gold backstop. A KNOWN instrument is one whose identity we already have, so losing
+    # it to a search failure is losing something we never had to search for. Where the
+    # portal publishes a numbered listing of its own, resolve the known Acts from that
+    # listing and merge in the ones the sweep did not surface. Measured on Malaysia: the
+    # Fess proxy refuses about two queries in five, and on 20 July it silently stopped
+    # filtering altogether and cost the run every gold instrument at once.
+    #
+    # It merges rather than replaces, so an Act discovery DID find keeps the indicator
+    # attribution its concept query earned -- the backstop knows the law exists, not
+    # which indicator it answers.
+    if known_instrument_ids:
+        from lexora.collect.strategies import known_resolver_for
+
+        resolve_known = known_resolver_for(portal)
+        if resolve_known is not None:
+            recovered = 0
+            for r in resolve_known(
+                portal, known_instrument_ids=known_instrument_ids,
+                timeout=timeout, client=client,
+            ):
+                key = _identity_key(r)
+                if key not in agg:
+                    recovered += 1
+                _merge_into(agg, r, key)
+            if recovered:
+                _LOG.info("gold backstop: %d known instrument(s) the sweep missed, "
+                          "resolved from the portal's own listing", recovered)
+
     for key, res in agg.items():
         res.indicator_hits = sorted(indicators_by_key.get(key, set()))
 
