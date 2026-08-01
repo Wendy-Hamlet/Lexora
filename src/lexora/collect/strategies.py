@@ -76,6 +76,15 @@ def _get_with_retry(
     return _request_with_retry(client, url, retries=retries, backoff=backoff)
 
 
+# Sent on every request to the proxy. It rejects the POST without them, and they must
+# ride on the REQUEST because the caller supplies the client in every real sweep.
+_MY_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "application/json",
+    "Referer": "https://lom.agc.gov.my/",
+    "X-Requested-With": "XMLHttpRequest",
+}
+
 _MY_CLIENT: httpx.Client | None = None
 _MY_CLIENT_LOCK = threading.Lock()
 
@@ -100,27 +109,29 @@ def _my_client(timeout: float) -> httpx.Client:
     with _MY_CLIENT_LOCK:
         if _MY_CLIENT is None:
             _MY_CLIENT = httpx.Client(
-                follow_redirects=True, timeout=timeout,
-                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json",
-                         "Referer": "https://lom.agc.gov.my/",
-                         "X-Requested-With": "XMLHttpRequest"},
+                follow_redirects=True, timeout=timeout, headers=dict(_MY_HEADERS),
             )
         return _MY_CLIENT
 
 
 def _request_with_retry(
     client: httpx.Client, url: str, *, data: dict | None = None,
-    retries: int = 3, backoff: float = 1.0,
+    headers: dict | None = None, retries: int = 3, backoff: float = 1.0,
 ) -> httpx.Response:
     """``_get_with_retry`` with an optional form body, which makes it a POST.
+
+    ``headers`` go on the REQUEST, not on the client, because the caller owns the
+    client here: every discovery sweep passes its own. Putting Malaysia's required
+    headers on our pooled client left them unused in production -- the pooled client
+    is only reached when nobody supplies one, which in a real run is never.
 
     Malaysia's proxy needs the POST; see ``my_legislation_api``.
     """
     last: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            response = (client.post(url, data=data) if data is not None
-                        else client.get(url))
+            response = (client.post(url, data=data, headers=headers)
+                        if data is not None else client.get(url, headers=headers))
             if (response.status_code < 500
                     or response.headers.get("x-lexora-cache") == "miss"
                     or attempt == retries):
@@ -750,7 +761,7 @@ def my_legislation_api(
     owns = False  # the pooled client outlives this call by design; see _my_client
     client = client or _my_client(timeout)
     try:
-        resp = _request_with_retry(client, _MY_API, data=params)
+        resp = _request_with_retry(client, _MY_API, data=params, headers=_MY_HEADERS)
         if resp.status_code != 200:
             return []
         docs = resp.json().get("response", {}).get("docs", [])
