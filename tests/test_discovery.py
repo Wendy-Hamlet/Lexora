@@ -463,6 +463,52 @@ def test_discover_for_indicators_fetches_a_shared_phrase_once():
     assert calls["n"] == 1
 
 
+def test_sweep_spaces_queries_on_a_portal_that_asks_for_it(monkeypatch):
+    # The spacing used to be gated on holding a browser session, which made it
+    # unreachable for an API portal -- exactly the kind that answers a burst with a
+    # refusal (Malaysia's Fess proxy: one spaced POST fine, every request of the
+    # sweep after it a 500). Assert the sleeps happen with no session in sight.
+    slept: list[float] = []
+    monkeypatch.setattr("lexora.collect.discovery.time.sleep", slept.append)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_MULTI_ACT_HTML.encode(),
+                              headers={"content-type": "text/html"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    portal = PortalSpec(
+        name="Fess", url="https://api.example.gov/", source_type=SourceType.primary,
+        fetch_method=FetchMethod.http, sweep_interval=20.0,
+        search_url_template="https://api.example.gov/search?q={query}",
+    )
+    inds = [_ind("6.1", "P6-I1", ["alpha"]), _ind("7.3", "P7-I3", ["beta"])]
+    discover_for_indicators(portal, inds, client=client, budget=5)
+    client.close()
+    # Spacing goes BETWEEN queries, so two phrases cost one wait, not two.
+    assert slept == [20.0]
+
+
+def test_sweep_does_not_space_a_portal_that_did_not_ask(monkeypatch):
+    # The knob is opt-in: an unconfigured portal must sweep at full speed, or every
+    # jurisdiction pays for one portal's limiter.
+    slept: list[float] = []
+    monkeypatch.setattr("lexora.collect.discovery.time.sleep", slept.append)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=_MULTI_ACT_HTML.encode(),
+                              headers={"content-type": "text/html"})
+
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    portal = PortalSpec(
+        name="Plain", url="https://plain.example.gov/", source_type=SourceType.primary,
+        search_url_template="https://plain.example.gov/search?q={query}",
+    )
+    inds = [_ind("6.1", "P6-I1", ["alpha"]), _ind("7.3", "P7-I3", ["beta"])]
+    discover_for_indicators(portal, inds, client=client, budget=5)
+    client.close()
+    assert slept == []
+
+
 def test_discover_for_indicators_name_driven_on_non_full_text_portal():
     # A name-only portal (AU OData): concept phrases are ignored; discovery is
     # driven by the jurisdiction's known instrument NAMES instead.

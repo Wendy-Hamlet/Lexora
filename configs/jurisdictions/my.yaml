@@ -91,6 +91,14 @@ portals:
     source_type: "primary"
     fetch_method: "api"   # Fess/Solr proxy (my_legislation_api strategy)
     search_query: "personal data protection"
+    # Seconds between discovery queries. Measured 2026-08-01: a single spaced POST
+    # answered 200 with a filtered result set (numFound 818, PDPA first), and the
+    # 40-query sweep that started a minute later got 500 on its very first request
+    # and on all 15 that followed. The proxy does not error on the query, it stops
+    # answering after the burst, so the sweep is what has to slow down. 20s is a
+    # first attempt, not a measured optimum: it costs ~13 min of wall time and the
+    # alternative is a blind Malaysia. Lower it only against a run that stayed 200.
+    sweep_interval: 20.0
     notes: "Official AGC repository. Discovered via fess-proxy.php (Fess/Solr JSON); results carry _os_url like act-detail.php?act=709 (PDPA = Act 709)."
 
   - name: "Personal Data Protection Department (JPDP)"

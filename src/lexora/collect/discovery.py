@@ -1040,6 +1040,14 @@ def discover_for_indicators(
         # 10-min budget while roughly halving the burst rate the limiter sees — cheap
         # insurance against the cumulative throttle, since render time dominates anyway.
         sweep_interval = 1.5
+    # A portal may declare its own spacing and override the default above. SSO is not
+    # the only limiter we have met: Malaysia's Fess proxy answered a single POST with a
+    # filtered result set and then 500'd every request of the sweep that followed
+    # (measured 2026-08-01, 16 consecutive 500s starting at the FIRST query), which the
+    # adapter turns into an empty list and discovery silently replaces with harvested
+    # page furniture. Spacing is the only knob that addresses the burst itself.
+    if portal.sweep_interval is not None:
+        sweep_interval = portal.sweep_interval
     if http_cache.serving_from_recording():
         # Replay renders come off the local store, so the cumulative per-IP limiter
         # this spacing exists for is not in the loop at all. Measured on the Singapore
@@ -1067,8 +1075,12 @@ def discover_for_indicators(
     _LOG.info("discovery sweep: %d quer(ies) on %s", len(phrase_indicators), portal.name)
     try:
         for i, (phrase, ind_ids) in enumerate(phrase_indicators.items()):
-            if i and sweep_interval and session is not None:
-                time.sleep(sweep_interval)  # space SSO navigations under its rate limit
+            # Space the queries under the portal's rate limit. This used to also require
+            # a browser session, which silently made the knob unreachable for every
+            # portal that is not SG SSO -- an API portal has no session, so any interval
+            # it declared was skipped and the sweep ran at full speed anyway.
+            if i and sweep_interval:
+                time.sleep(sweep_interval)
             # A single flaky query must not abort the whole sweep. render() already
             # degrades a hung/failed browser nav to an empty result, but guard the
             # call anyway so any other per-query fault (strategy, harvest) just skips
@@ -1102,7 +1114,7 @@ def discover_for_indicators(
             _LOG.info("retrying %d refused quer(ies) after the sweep cooled",
                       len(retryable))
             for phrase in retryable:
-                if sweep_interval and session is not None:
+                if sweep_interval:
                     time.sleep(sweep_interval)
                 try:
                     hits = discover(

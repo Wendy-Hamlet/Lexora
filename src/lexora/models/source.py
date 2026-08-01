@@ -72,6 +72,13 @@ class PortalSpec(BaseModel):
     # meaning and a query that merely adds a ubiquitous word ("Act") asks the same
     # question — so query variants that differ only in those ways are redundant.
     word_tokenised_search: bool = False
+    # Minimum seconds between two DISCOVERY QUERIES to this portal. This is the
+    # search-side twin of `FetchPolicy.min_interval`, which only spaces document
+    # downloads: a sweep asks ~40 questions back to back and that burst is what
+    # several of these portals answer with a refusal. Left unset, SG SSO keeps its
+    # measured 1.5s and every other portal sweeps at full speed. Spacing is skipped
+    # entirely under replay, where no limiter is in the loop.
+    sweep_interval: float | None = None
     notes: str | None = None
 
 
