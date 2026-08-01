@@ -699,6 +699,25 @@ def run_pipeline_map(
     with _progress_lock:
         _progress["total"] = None  # the discovered set is done; what follows is follow-on
 
+    # Give every document its real name BEFORE anything reads the title.
+    #
+    # `_resolve_doc_metadata` has always called `resolve_law_name`, but it runs per
+    # CITATION, hundreds of lines below — after the amendment pass, which builds its
+    # search queries FROM the title. So a Malaysian Act the portal serves as an upload
+    # name was searched for as `"Akta91y2006bi (Amendment) Act"`, matched nothing, and
+    # its currency stayed UNKNOWN. The fix existed and was tested; it simply ran too
+    # late to reach the caller that needed it. Stale law is one of the three failure
+    # modes the organisers named for AI on this task, so a whole class of documents
+    # silently unable to report amendments is not a cosmetic defect.
+    #
+    # The later call stays: the follow-on passes below ADD documents after this point,
+    # and re-resolving an already-resolved name is a no-op (a real law name is not
+    # filename-shaped, so the resolver returns it untouched).
+    for artifact in documents:
+        if artifact.document_text:
+            artifact.document.title = resolve_law_name(
+                artifact.document.title, artifact.document_text)
+
     # Tag every fetched law original/amendment/consolidated and, for each ORIGINAL,
     # look for ITS amendments (queries derived from its own title — general, not a
     # fixed amendment list). Found amending Acts join the working set so the currency

@@ -57,6 +57,47 @@ def test_the_masthead_anchor_is_not_relaxed_to_the_copyright_page():
         == "Act 643 Reprint 2006"
 
 
+# Act 588's real masthead, as PyMuPDF extracts it: the title is set in SMALL caps, which
+# come out lower case. Verbatim from the recorded document, mojibake and all.
+ACT_588_MASTHEAD = (
+    "Reprint\nAct 588\ncommunications and\nmultimedia act 1998\n"
+    "Incorporating all amendments up to 1 January 2006\nPublished by\n"
+    "The Commissioner of Law revision, Malaysia\n"
+    "Under the Authority of the Revision of Laws Act 1968\n"
+)
+
+
+def test_a_small_caps_masthead_is_read_too():
+    """The caps-only test skipped Act 588 entirely, so the Communications and Multimedia
+    Act 1998 -- a gold instrument -- sat in the submission under the name "Act 588", and
+    our own recall audit scored it as MISSING while four of its provisions were in the
+    CSV. Small caps extract as lower case; uniform case is what marks a title line."""
+    assert statute_title_from_text(ACT_588_MASTHEAD) == "Communications And Multimedia Act 1998"
+
+
+def test_uniform_case_still_refuses_the_copyright_line():
+    """Act 588's own masthead contains "Under the Authority of the Revision of Laws Act
+    1968" three lines below the anchor -- it ends like a law title and would be a forgery
+    if accepted. It is MIXED case, which is exactly why uniform case is the test and
+    "any line at all" is not."""
+    trap = "Act 588\nUnder the Authority of the Revision of Laws Act 1968\n"
+    assert statute_title_from_text(trap) == ""
+
+
+def test_a_bare_act_number_names_no_instrument():
+    """"Act 588" is not a file name, so the resolver used to leave it alone -- and a
+    number in the Law Name column defeats every check that matches our output against a
+    gold inventory BY NAME, including a scorer's."""
+    assert resolve_law_name("Act 588", ACT_588_MASTHEAD) == "Communications And Multimedia Act 1998"
+
+
+def test_a_bare_act_number_survives_when_the_document_does_not_name_itself():
+    # Uninformative but true beats cleaned to nothing: the cleanup rules would strip
+    # "Act 710" to an empty string, and an empty Law Name is worse than a number.
+    assert resolve_law_name("Act 710", "ONLINE VERSION OF UPDATED TEXT OF REPRINT\n") == "Act 710"
+    assert resolve_law_name("Act A1502", "") == "Act A1502"
+
+
 def test_a_real_law_name_is_never_touched():
     # "Online Safety ... Act 2025" contains a word the upload-noise rules look for, so the
     # filename test must be settled by how the name ENDS, not by what it contains -- a

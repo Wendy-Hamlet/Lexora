@@ -93,6 +93,21 @@ def looks_like_a_filename(title: str | None) -> bool:
     return bool(_UPLOAD_NOISE.search(t)) and not _ENDS_LIKE_A_LAW.search(t)
 
 
+# A title that is ONLY an act number names no instrument. "Act 588" is as unhelpful in
+# the Law Name column as a file name, and it is worse in one specific way: it silently
+# defeats every check that matches our output against a gold inventory BY NAME. Our own
+# recall audit on 2026-08-01 scored the Communications and Multimedia Act 1998 as MISSING
+# while four of its provisions sat in the CSV under "Act 588" -- work we had done, read as
+# work we had not. A scorer comparing names would make the same mistake, and there the
+# cost is points.
+_BARE_ACT_NUMBER = re.compile(r"(?i)^act\s+[a-z]?\d+[a-z]?$")
+
+
+def _names_no_instrument(name: str) -> bool:
+    """True when the title identifies no law by name, so the masthead should be asked."""
+    return looks_like_a_filename(name) or bool(_BARE_ACT_NUMBER.fullmatch(name))
+
+
 def statute_title_from_text(document_text: str, max_lines: int = 24) -> str:
     """The Act's own title as printed on its masthead, or ``""`` if not clearly there.
 
@@ -104,8 +119,17 @@ def statute_title_from_text(document_text: str, max_lines: int = 24) -> str:
             continue
         parts: list[str] = []
         for nxt in lines[i + 1 : i + 5]:
-            if nxt != nxt.upper() or not any(c.isalpha() for c in nxt):
-                break  # title lines are set in caps; stop at the first that is not
+            # Title lines are set in caps or SMALL caps, and small caps come out of the
+            # PDF as lower case -- Act 588's masthead reads "communications and /
+            # multimedia act 1998", which the caps-only test skipped, leaving the Law
+            # Name column saying "Act 588" for the Communications and Multimedia Act.
+            # Uniform case is the discriminator that still excludes ordinary prose: the
+            # copyright line this guard exists to reject, "Under the Authority of the
+            # Revision of Laws Act 1968", is mixed case and ends like a law title, so
+            # accepting mixed case would forge exactly the name the docstring warns of.
+            uniform_case = nxt == nxt.upper() or nxt == nxt.lower()
+            if not uniform_case or not any(c.isalpha() for c in nxt):
+                break
             parts.append(nxt)
             joined = re.sub(r"\s+", " ", " ".join(parts))
             if _TITLE_TAIL.search(joined):
@@ -117,16 +141,20 @@ def resolve_law_name(title: str | None, document_text: str = "") -> str:
     """The best available name for the instrument.
 
     A portal title that already reads like a law name is kept untouched — this only ever
-    engages when the portal gave us a file name. Then the Act's own masthead wins if it
-    states one; otherwise the file name is *cleaned*, never replaced, so the result cannot
-    name an instrument the document does not.
+    engages when the portal gave us a file name or a bare act number. Then the Act's own
+    masthead wins if it states one; otherwise the file name is *cleaned*, never replaced,
+    so the result cannot name an instrument the document does not.
     """
     name = normalize_law_name(title)
-    if not looks_like_a_filename(name):
+    if not _names_no_instrument(name):
         return name
     from_text = statute_title_from_text(document_text)
     if from_text:
         return from_text
+    if _BARE_ACT_NUMBER.fullmatch(name):
+        # No masthead to read. Keep the number: it is uninformative but TRUE, and the
+        # cleaning rules below would strip it to nothing.
+        return name
     cleaned = _FILE_EXT.sub("", name)
     while True:
         stripped = _UPLOAD_NOISE.sub("", cleaned).strip(" -_,.")
