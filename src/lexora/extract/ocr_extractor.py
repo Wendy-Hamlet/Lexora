@@ -25,6 +25,7 @@ re-reads and may paraphrase, which would break the char-offset verbatim contract
 from __future__ import annotations
 
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
@@ -298,6 +299,9 @@ class _RapidEngine:
         self._RapidOCR = _r.RapidOCR
         self._ocr = None
         self._want_cuda = _ocr_cuda_ready()
+        # One engine is shared across document workers, so the mid-document fallback
+        # below must not have two threads rebuilding it at once.
+        self._lock = threading.Lock()
         try:
             from importlib.metadata import version
 
@@ -338,8 +342,33 @@ class _RapidEngine:
 
     def recognize(self, image: np.ndarray) -> list[tuple[str, float]]:
         if self._ocr is None:
-            self._build()
-        result, _elapse = self._ocr(image)
+            with self._lock:
+                if self._ocr is None:
+                    self._build()
+        try:
+            result, _elapse = self._ocr(image)
+        except Exception as exc:  # noqa: BLE001 — see below; this is not a swallow
+            # A GPU that builds is not a GPU that runs. Measured 2026-08-02 on the
+            # Communications and Multimedia Act 1998 -- a GOLD instrument, 33 MB of scan:
+            # every session came up on CUDA, then a page threw
+            # `CUDNN_FE failure 11: CUDNN_BACKEND_API_FAILED` mid-document and the whole
+            # Act was skipped. The same pages OCR fine on CPU. Losing a statute to a
+            # cuDNN error is a far worse trade than reading it five times slower, so the
+            # engine drops to CPU and retries the page ONCE. If CPU fails too, the error
+            # is real and propagates.
+            import logging
+
+            if not self._want_cuda:
+                raise
+            logging.getLogger(__name__).warning(
+                "OCR: the GPU failed mid-document (%s: %s); rebuilding on CPU and "
+                "retrying this page. The run gets slower, not shorter.",
+                type(exc).__name__, str(exc)[:160])
+            with self._lock:
+                self._want_cuda = False
+                self._ocr = self._RapidOCR()
+                self.name = f"rapidocr:{self._ver}"
+            result, _elapse = self._ocr(image)
         if not result:
             return []
         return _reading_order([[row[0], row[1], row[2]] for row in result])

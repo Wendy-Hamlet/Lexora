@@ -8,6 +8,8 @@ A fake engine / monkeypatched extract_ocr keeps this independent of rapidocr.
 """
 from __future__ import annotations
 
+import pytest
+
 from lexora.extract import ocr_extractor as oe
 from lexora.extract.pdf_text_extractor import PAGE_SEPARATOR, PdfPage, assemble_global_text
 
@@ -275,3 +277,69 @@ def test_scanned_pdf_running_head_is_stripped_after_ocr_fills_the_pages(monkeypa
     # The verbatim invariant still holds against the CLEANED text.
     for p in out:
         assert text[p.char_start:p.char_end] == p.text
+
+
+def test_a_gpu_that_fails_mid_document_costs_speed_not_the_document(monkeypatch, caplog):
+    """A GPU that BUILDS is not a GPU that RUNS. Measured 2026-08-02 on the
+    Communications and Multimedia Act 1998 -- a gold instrument, 33 MB of scan: every
+    session came up on CUDA, then a page threw CUDNN_BACKEND_API_FAILED mid-document and
+    the whole Act was skipped. The same pages read fine on CPU. Reading a statute five
+    times slower beats not reading it."""
+    import logging
+
+    from lexora.extract import ocr_extractor as ox
+
+    built = []
+
+    class _FakeRapid:
+        def __init__(self, **kwargs):
+            built.append(kwargs)
+            self._on_gpu = bool(kwargs)
+
+        def __call__(self, image):
+            if self._on_gpu:
+                raise RuntimeError("CUDNN_FE failure 11: CUDNN_BACKEND_API_FAILED")
+            return [[[[0, 0], [9, 0], [9, 9], [0, 9]], "Access to computerized data", 0.9]], None
+
+    engine = ox._RapidEngine.__new__(ox._RapidEngine)
+    engine._RapidOCR = _FakeRapid
+    engine._ocr = None
+    engine._want_cuda = True
+    engine._ver = "test"
+    engine.name = "rapidocr:test"
+    engine._lock = ox.threading.Lock()
+    monkeypatch.setattr(engine, "_build",
+                        lambda: setattr(engine, "_ocr", _FakeRapid(det_use_cuda=True)))
+
+    with caplog.at_level(logging.WARNING):
+        lines = engine.recognize(object())
+
+    assert [t for t, _ in lines] == ["Access to computerized data"], "the page was lost"
+    assert "the GPU failed mid-document" in caplog.text
+    assert "slower, not shorter" in caplog.text
+    assert engine._want_cuda is False, "it must not go back to the GPU page after page"
+    assert engine.name == "rapidocr:test", "the name must stop claiming +cuda"
+
+
+def test_a_cpu_failure_is_real_and_propagates(monkeypatch):
+    """The fallback is for the GPU only. If CPU cannot read it either, that is a genuine
+    error and swallowing it would turn a broken page into a silently empty one."""
+    from lexora.extract import ocr_extractor as ox
+
+    class _AlwaysFails:
+        def __init__(self, **kwargs):
+            pass
+
+        def __call__(self, image):
+            raise RuntimeError("image is not readable")
+
+    engine = ox._RapidEngine.__new__(ox._RapidEngine)
+    engine._RapidOCR = _AlwaysFails
+    engine._ocr = _AlwaysFails()
+    engine._want_cuda = False          # already on CPU
+    engine._ver = "test"
+    engine.name = "rapidocr:test"
+    engine._lock = ox.threading.Lock()
+
+    with pytest.raises(RuntimeError, match="not readable"):
+        engine.recognize(object())
