@@ -620,3 +620,29 @@ def test_an_unentered_browser_session_says_so(monkeypatch):
     monkeypatch.delenv("LEXORA_HTTP_CACHE", raising=False)
     with pytest.raises(SessionNotStarted):
         BrowserSession().render("https://sso.agc.gov.sg/")
+
+
+def test_portal_furniture_is_not_an_instrument():
+    """Malaysia's LOM portal put five navigation labels into a 13-slot working set.
+
+    On 2026-08-01 the Fess search backend answered 500 with an empty body. Discovery
+    fell back to scraping the portal's own links and returned "Ordinance", "Search",
+    "Translated", "Top Hit (Weekly)" and "See All..." as instruments. They were fetched,
+    parsed, counted, and they crowded the statutes out of the working set -- the
+    Personal Data Protection Act 2010 never made it in.
+
+    The match must be on the WHOLE anchor text. As a substring, "search" would discard
+    Criminal Procedure Code results about search and seizure and "ordinance" would
+    discard every real Ordinance. Checked against all 470 distinct law names in our
+    outputs and gold inventories: zero would be filtered.
+    """
+    from lexora.collect.discovery import _is_nav_label
+
+    for junk in ("Ordinance", "Search", "Translated", "Top Hit (Weekly)",
+                 "See All...", "see all", "  ADVANCED SEARCH  ", "View All"):
+        assert _is_nav_label(junk), f"portal furniture not caught: {junk!r}"
+
+    for real in ("Criminal Procedure Code", "Emergency Ordinance 1969",
+                 "Search and Seizure Act 1988", "Personal Data Protection Act 2010",
+                 "Ordinance 12 of 1955", "Home Affairs Act 1999"):
+        assert not _is_nav_label(real), f"real law discarded: {real!r}"

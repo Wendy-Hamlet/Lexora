@@ -57,6 +57,30 @@ _CHROME_MARKERS = (
     "frequently-accessed", "acts-supp", "act-rev", "/sso-guide",
     "my collections", "revised editions", "acts supplement",
 )
+# Anchor texts that are a portal's own furniture, matched WHOLE and never as a
+# substring. Malaysia's LOM portal put five of these into a 13-slot working set on
+# 2026-08-01 -- "Ordinance", "Search", "Translated", "Top Hit (Weekly)", "See All..."
+# were fetched, parsed and counted as instruments, crowding out the statutes.
+#
+# Whole-string equality is the point. "search" as a substring would throw away
+# `Criminal Procedure Code` results about search and seizure, and "ordinance" would
+# throw away every real Ordinance. A label is furniture only when it is the ENTIRE
+# title; the same word inside a real title is signal.
+_NAV_LABELS = frozenset({
+    "search", "advanced search", "see all", "see all...", "see more", "more",
+    "ordinance", "ordinances", "translated", "translation", "top hit", "top hits",
+    "top hit (weekly)", "top hit (monthly)", "home", "back", "next", "previous",
+    "all", "view all", "browse", "download", "print", "help",
+})
+
+
+def _is_nav_label(text: str) -> bool:
+    """True when the anchor text IS a navigation label, not a title containing one."""
+    return " ".join((text or "").split()).strip().lower().rstrip(".") in {
+        lab.rstrip(".") for lab in _NAV_LABELS
+    }
+
+
 _RESULT_CONTAINER = re.compile(r"result|item|card|search|title|listing|row", re.I)
 _YEAR = re.compile(r"\b(19|20)\d{2}\b")
 _YEARISH_FULL = re.compile(r"(?:19|20)\d{2}")  # a bare 4-digit year (for fullmatch)
@@ -147,6 +171,8 @@ def _pick_representative(urls: set[str]) -> str:
 
 
 def _is_chrome(href_l: str, text_l: str) -> bool:
+    if _is_nav_label(text_l):
+        return True
     return any(m in href_l or m in text_l for m in _CHROME_MARKERS)
 
 
