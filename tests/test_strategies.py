@@ -601,7 +601,7 @@ def test_a_search_that_stopped_searching_is_reported(caplog):
     """
     import logging
 
-    from lexora.collect.strategies import _QUERY_ECHO, _warn_if_query_ignored
+    from lexora.collect.discovery import _QUERY_ECHO, _warn_if_query_ignored
 
     _QUERY_ECHO.clear()
     with caplog.at_level(logging.ERROR):
