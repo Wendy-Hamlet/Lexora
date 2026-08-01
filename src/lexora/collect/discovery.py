@@ -1002,6 +1002,56 @@ def discover_for_indicators(
                 timeout=timeout, user_agent=user_agent,
             )
 
+    # MY statute-book enumeration (opt-in via LEXORA_MY_ENUMERATE). Malaysia's search
+    # proxy refuses about two requests in five and on 20 July stopped filtering
+    # altogether, so discovery there was hostage to a service we do not control. The
+    # portal's own listings give all 1,287 Acts in four requests; a two-stage judge
+    # (title, then table of contents, OCR'ing the scans) narrows that to a working pool.
+    #
+    # Unlike Australia this does NOT return the enumeration alone. Enumeration decides
+    # relevance, and a relevance judgement can be wrong: it cut Income Tax Act 1967 and
+    # Service Tax Act 2018, both gold. A KNOWN instrument must never depend on being
+    # judged relevant -- we already know it is -- so the gold backstop is merged on top
+    # and the two together are what discovery returns.
+    from lexora.collect.my_enumerate import enumerate_enabled as my_enumerate_enabled
+
+    if my_enumerate_enabled() and "lom.agc.gov.my" in urlparse(str(portal.url)).netloc.lower():
+        from lexora.classify.brute_judge import make_brute_judge
+        from lexora.collect.my_enumerate import enumerate_my_candidates
+        from lexora.collect.strategies import known_resolver_for
+
+        judge = make_brute_judge(enabled=True)
+        if judge is not None:
+            def _judge(text: str, inds: list) -> set[str]:
+                return judge.relevant(text, inds)
+
+            enumerated = enumerate_my_candidates(
+                indicators, title_judge=_judge, toc_judge=_judge,
+                source_type=portal.source_type,
+                known_instruments=known_instruments,
+                known_instrument_ids=known_instrument_ids,
+                verdict_cache=os.environ.get("LEXORA_MY_ENUM_VERDICTS"),
+                judge_workers=int(os.environ.get("LEXORA_MY_ENUM_WORKERS", "16")),
+                timeout=timeout, client=client,
+            )
+            merged: dict[str, DiscoveryResult] = {}
+            for r in enumerated:
+                _merge_into(merged, r, _identity_key(r))
+            resolve_known = known_resolver_for(portal)
+            if resolve_known is not None and known_instrument_ids:
+                recovered = 0
+                for r in resolve_known(portal, known_instrument_ids=known_instrument_ids,
+                                       timeout=timeout, client=client):
+                    key = _identity_key(r)
+                    if key not in merged:
+                        recovered += 1
+                    _merge_into(merged, r, key)
+                if recovered:
+                    _LOG.info("gold backstop: %d known instrument(s) the enumeration "
+                              "did not shortlist, added anyway", recovered)
+            return sorted(merged.values(), key=lambda r: (r.score, r.n_variants),
+                          reverse=True)
+
     # Build the query -> attributed-indicators map. On a full-text portal we use
     # each indicator's concept phrases (and credit the surfacing indicators). On a
     # name-only portal (AU OData) concept phrases return nothing useful, so we
