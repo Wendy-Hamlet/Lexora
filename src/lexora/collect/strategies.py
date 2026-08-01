@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 from collections.abc import Callable
 from urllib.parse import quote, urlencode, urljoin, urlparse
@@ -50,24 +51,85 @@ def _odata_escape(value: str) -> str:
 
 
 def _get_with_retry(
-    client: httpx.Client, url: str, *, retries: int = 2, backoff: float = 1.0
+    client: httpx.Client, url: str, *, retries: int = 3, backoff: float = 1.0
 ) -> httpx.Response:
-    """GET ``url`` retrying on transport errors with exponential backoff.
+    """GET ``url`` retrying on transport errors AND 5xx, with exponential backoff.
 
     MY's Fess proxy (lom.agc.gov.my) intermittently drops the TLS connection
-    mid-handshake/read, and the AU OData catalogue paging (~48 sequential GETs)
-    is similarly exposed to a transient blip. ``httpx.TransportError`` covers the
-    connect/read/SSL family; only it is retried (an HTTP 4xx/5xx is a real
-    response and returned as-is). The final error propagates after the last
-    attempt, where the caller turns it into a graceful empty result."""
+    mid-handshake/read, and the AU OData catalogue paging (~48 sequential GETs) is
+    similarly exposed to a transient blip. ``httpx.TransportError`` covers the
+    connect/read/SSL family.
+
+    5xx is retried too, and this version of the docstring exists because the previous
+    one asserted the opposite -- "an HTTP 4xx/5xx is a real response and returned
+    as-is". For this endpoint that is false. Measured 2026-08-01: **fourteen identical
+    requests to fess-proxy.php returned seven 500s and seven 200s.** The failure is a
+    coin flip, and `discover_my_fess` turns a non-200 into an empty result, so half of
+    Malaysia's forty discovery queries were silently finding nothing -- which is most
+    of why Malaysia's working set was thirteen instruments and never contained the
+    Personal Data Protection Act. Four attempts take that 50% down to about 6%.
+
+    4xx is still returned as-is: a 404 is an answer, and retrying it only costs time.
+    A replay MISS is dressed as a 504 by the record/replay layer; it carries
+    ``x-lexora-cache: miss`` and is taken at its word rather than re-asked three times.
+    """
+    return _request_with_retry(client, url, retries=retries, backoff=backoff)
+
+
+_MY_CLIENT: httpx.Client | None = None
+_MY_CLIENT_LOCK = threading.Lock()
+
+
+def _my_client(timeout: float) -> httpx.Client:
+    """One pooled client for the whole Malaysian sweep, because the 500s are per-connection.
+
+    Measured 2026-08-01 against `fess-proxy.php`, the same POST repeated:
+
+        a fresh httpx.Client each time   ->  6 x 500, 4 x 200
+        one client reused               -> 10 x 200
+
+    The failure is the first request on a new connection, not the query and not the
+    server's health. Every discovery query used to build its own client, so Malaysia
+    paid that coin flip forty times a run. Retries only paper over it.
+
+    Built lazily and never at import: `http_cache.install()` patches
+    `httpx.Client.__init__`, so a client constructed at import time would be created
+    before the patch and quietly bypass the record/replay layer.
+    """
+    global _MY_CLIENT
+    with _MY_CLIENT_LOCK:
+        if _MY_CLIENT is None:
+            _MY_CLIENT = httpx.Client(
+                follow_redirects=True, timeout=timeout,
+                headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json",
+                         "Referer": "https://lom.agc.gov.my/",
+                         "X-Requested-With": "XMLHttpRequest"},
+            )
+        return _MY_CLIENT
+
+
+def _request_with_retry(
+    client: httpx.Client, url: str, *, data: dict | None = None,
+    retries: int = 3, backoff: float = 1.0,
+) -> httpx.Response:
+    """``_get_with_retry`` with an optional form body, which makes it a POST.
+
+    Malaysia's proxy needs the POST; see ``my_legislation_api``.
+    """
     last: Exception | None = None
     for attempt in range(retries + 1):
         try:
-            return client.get(url)
+            response = (client.post(url, data=data) if data is not None
+                        else client.get(url))
+            if (response.status_code < 500
+                    or response.headers.get("x-lexora-cache") == "miss"
+                    or attempt == retries):
+                return response
         except httpx.TransportError as exc:
             last = exc
-            if attempt < retries:
-                time.sleep(backoff * (attempt + 1))
+            if attempt == retries:
+                break
+        time.sleep(backoff * (attempt + 1))
     raise last or httpx.TransportError(f"failed to fetch {url}")
 
 
@@ -665,19 +727,30 @@ def my_legislation_api(
         return []
     known = known_instruments or []
 
+    # POST, not GET, and the difference is the whole Malaysian corpus.
+    #
+    # On GET the proxy accepts the request and IGNORES the query: `numFound` comes back
+    # as 10000 -- the entire corpus -- and the first rows are simply the lowest act
+    # numbers, so every one of the forty discovery queries returned the same handful
+    # (MINISTERIAL FUNCTIONS ACT 1969, FINANCE COMPANIES ACT 1969, ...). It answers 200,
+    # so nothing ever looked wrong. Measured 2026-08-01, same term:
+    #
+    #     GET  q="personal data"  -> numFound 10000, first: MINISTERIAL FUNCTIONS ACT 1969
+    #     POST q="personal data"  -> numFound   821, first: PERSONAL DATA PROTECTION ACT 2010
+    #
+    # POST also honours `rows` (GET capped the page at 10). Every flagship the gold
+    # inventory names -- Computer Crimes Act 1997, Security Offences (Special Measures)
+    # Act 2012, Communications and Multimedia Act 1998 -- is the top hit for its own
+    # concept query over POST, and was unreachable over GET.
     params = {
         "q": query, "fq": "", "start": "0", "rows": "25",
         "sort": "", "lookup": "all", "kategori": "all", "draw": "1",
     }
-    url = f"{_MY_API}?{urlencode(params)}"
 
-    owns = client is None
-    client = client or httpx.Client(
-        follow_redirects=True, timeout=timeout,
-        headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"},
-    )
+    owns = False  # the pooled client outlives this call by design; see _my_client
+    client = client or _my_client(timeout)
     try:
-        resp = _get_with_retry(client, url)
+        resp = _request_with_retry(client, _MY_API, data=params)
         if resp.status_code != 200:
             return []
         docs = resp.json().get("response", {}).get("docs", [])

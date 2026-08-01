@@ -286,11 +286,13 @@ def test_au_amendment_acts_do_not_claim_a_known_instrument_as_new():
 def _catalogue_pages(fail_at: int | None = None, pages: int = 3, per_page: int = 100):
     """OData paging handler: `pages` full pages then a short one, or an HTTP 503 at
     `fail_at` (0-indexed page)."""
-    seen = {"n": 0}
-
     def handler(request: httpx.Request) -> httpx.Response:
-        i = seen["n"]
-        seen["n"] += 1
+        # Page index comes from $skip, not from a request counter. 5xx is retried now,
+        # and a counter-keyed stub answers a RETRY with the next page's data -- so the
+        # retry silently repaired the very truncation this test exists to catch. A real
+        # server returns 503 for the same page however many times you ask.
+        skip = int(request.url.params.get("$skip", 0) or 0)
+        i = skip // per_page
         if fail_at is not None and i == fail_at:
             return httpx.Response(503, text="down")
         n = per_page if i < pages - 1 else 7  # last page is short -> paging ends
@@ -383,7 +385,12 @@ def test_strategy_for_matches_my_host():
 def test_my_api_finds_act_709_first():
     def handler(request: httpx.Request) -> httpx.Response:
         assert "fess-proxy.php" in str(request.url)
-        assert "q=personal+data+protection" in str(request.url)
+        # The query travels in the POST BODY. Over GET the proxy answers 200 and
+        # ignores it entirely -- numFound comes back as the whole 10,000-instrument
+        # corpus and the first rows are just the lowest act numbers, so every concept
+        # query returned the same handful and Act 709 was unreachable.
+        assert request.method == "POST"
+        assert b"q=personal+data+protection" in request.content
         return httpx.Response(200, json=MY_JSON)
 
     client = httpx.Client(transport=httpx.MockTransport(handler))
@@ -469,7 +476,7 @@ def test_my_api_gives_up_gracefully_after_retries(monkeypatch):
     client = httpx.Client(transport=httpx.MockTransport(handler))
     results = my_legislation_api(MY_PORTAL, query="x", client=client)
     client.close()
-    assert calls["n"] == 3          # initial + 2 retries
+    assert calls["n"] == 4          # initial + 3 retries
     assert results == []
 
 
