@@ -99,6 +99,7 @@ def serving_from_recording() -> bool:
 # at that portal's speed it needs about 1.7 hours, so any "reasonable" budget is a
 # document shredder. Errors here must cost a run time, never its content.
 DEFAULT_BODY_DEADLINE = 7200.0
+DEFAULT_BODY_IDLE = 180.0
 
 
 class BodyDeadlineExceeded(httpx.HTTPError):
@@ -122,6 +123,22 @@ def body_deadline() -> float:
         return DEFAULT_BODY_DEADLINE
 
 
+def body_idle_deadline() -> float:
+    """Seconds the body may produce NO new byte before we give up. ``<= 0`` disables it.
+
+    This is the cap that should fire in practice; ``body_deadline`` is the far backstop.
+    180s is generous against a portal that pauses mid-transfer and still an order of
+    magnitude below the 27-minute silence measured on 2026-08-02.
+    """
+    raw = os.environ.get("LEXORA_BODY_IDLE", "").strip()
+    if not raw:
+        return DEFAULT_BODY_IDLE
+    try:
+        return float(raw)
+    except ValueError:
+        return DEFAULT_BODY_IDLE
+
+
 def read_body_within(response: httpx.Response, deadline: float | None = None) -> bytes:
     """Drain a response body under a WALL-CLOCK budget, decoding as httpx would.
 
@@ -139,17 +156,36 @@ def read_body_within(response: httpx.Response, deadline: float | None = None) ->
     the missing ingredient was never a cap, it was being able to see the rate at all.
     """
     budget = body_deadline() if deadline is None else deadline
-    if budget <= 0:
+    idle_budget = body_idle_deadline()
+    if budget <= 0 and idle_budget <= 0:
         response.read()
         return response.content
 
-    started = time.monotonic()
+    started = last_byte = time.monotonic()
     chunks: list[bytes] = []
+    got = 0
     for chunk in response.iter_bytes():
+        now = time.monotonic()
+        # An IDLE budget, not just a total one, because the two failures look nothing
+        # alike and only one of them is a failure. A body arriving steadily at 54 kB/s
+        # is a 33 MB Act downloading; a body that has produced no new byte in minutes is
+        # a socket that was accepted and abandoned. Capping TOTAL time cannot tell them
+        # apart, and cost us both ways: a 300s cap once cut two real Malaysian Acts, and
+        # a 600s cap cut the Communications and Multimedia Act 1998 -- a GOLD instrument
+        # -- at 32.8 MB and 54 kB/s, while a 27-minute stall with the total budget at two
+        # hours went entirely unnoticed. Measure the gap between bytes instead.
+        if idle_budget > 0 and (now - last_byte) > idle_budget:
+            response.close()
+            raise BodyDeadlineExceeded(
+                f"no body byte for {now - last_byte:.0f}s "
+                f"({got} bytes in {now - started:.0f}s so far); "
+                f"idle budget is {idle_budget:.0f}s (LEXORA_BODY_IDLE)"
+            )
         chunks.append(chunk)
-        elapsed = time.monotonic() - started
-        if elapsed > budget:
-            got = sum(len(c) for c in chunks)
+        got += len(chunk)
+        last_byte = now
+        elapsed = now - started
+        if 0 < budget < elapsed:
             response.close()
             raise BodyDeadlineExceeded(
                 f"body still arriving after {elapsed:.0f}s "

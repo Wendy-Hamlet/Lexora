@@ -273,3 +273,59 @@ def test_the_deadline_can_be_switched_off():
 
     response = httpx.Response(200, stream=_Small())
     assert http_cache.read_body_within(response, deadline=0) == b"body"
+
+
+def test_a_slow_but_moving_body_is_never_cut():
+    """The cap that fires in practice is IDLE time, not total time, because the two
+    failures look nothing alike and only one is a failure.
+
+    Measured 2026-08-02: a 600s TOTAL budget cut the Communications and Multimedia Act
+    1998 -- a gold instrument -- at 32.8 MB arriving steadily at 54 kB/s. Nothing was
+    wrong with that download except its size. Meanwhile a socket that had been accepted
+    and abandoned held three workers for 27 minutes and the total budget, set to two
+    hours precisely so real Acts survive, never noticed.
+    """
+    import time as _time
+
+    class _SlowButSteady(httpx.SyncByteStream):
+        def __iter__(self):
+            for _ in range(40):
+                _time.sleep(0.005)
+                yield b"statute-bytes"
+
+    response = httpx.Response(200, stream=_SlowButSteady())
+    body = http_cache.read_body_within(response, deadline=0)   # total cap off, idle on
+    assert body == b"statute-bytes" * 40
+
+
+def test_a_body_that_stops_producing_bytes_is_cut(monkeypatch):
+    monkeypatch.setenv("LEXORA_BODY_IDLE", "0.05")
+
+    import time as _time
+
+    class _StallsMidway(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"header"
+            _time.sleep(0.2)          # the gap between bytes is the signal
+            yield b"one late byte"
+
+    response = httpx.Response(200, stream=_StallsMidway())
+    with pytest.raises(http_cache.BodyDeadlineExceeded) as caught:
+        http_cache.read_body_within(response, deadline=0)
+    message = str(caught.value)
+    assert "no body byte for" in message
+    assert "LEXORA_BODY_IDLE" in message
+    # Same contract as the total cap: NOT a TransportError, so the crawler does not
+    # retry it into three more deadlines; it costs exactly one document.
+    assert not isinstance(caught.value, httpx.TransportError)
+
+
+def test_both_caps_off_is_the_old_unbounded_read(monkeypatch):
+    monkeypatch.setenv("LEXORA_BODY_IDLE", "0")
+
+    class _Small(httpx.SyncByteStream):
+        def __iter__(self):
+            yield b"body"
+
+    response = httpx.Response(200, stream=_Small())
+    assert http_cache.read_body_within(response, deadline=0) == b"body"
