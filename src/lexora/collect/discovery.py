@@ -170,8 +170,13 @@ def _pick_representative(urls: set[str]) -> str:
     )
 
 
-_QUERY_ECHO: dict[str, tuple[str, tuple]] = {}
+_QUERY_ECHO: dict[str, dict[tuple, set[str]]] = {}
+_QUERY_ECHO_WARNED: set[tuple[str, tuple]] = set()
 _QUERY_ECHO_LOCK = threading.Lock()
+# How many DISTINCT queries must share one result set before we call it a dead search.
+# Two is a coincidence a real portal produces (see the false positive in the docstring);
+# three in one sweep is not.
+_QUERY_ECHO_THRESHOLD = 3
 
 
 def _warn_if_query_ignored(portal_key: str, query: str, ids: list) -> None:
@@ -186,24 +191,44 @@ def _warn_if_query_ignored(portal_key: str, query: str, ids: list) -> None:
     which means they encode what we BELIEVE about it and stay green while the real one
     drifts.
 
-    So assert something only a working search satisfies, on live traffic, for free: two
-    DIFFERENT queries must not come back with an identical result set. One line in the
-    log the first run after a portal changes is worth more than any number of green
-    tests about a server we are not talking to.
+    So assert something only a working search satisfies, on live traffic, for free:
+    DIFFERENT queries must not keep coming back with an identical result set. One line
+    in the log the first run after a portal changes is worth more than any number of
+    green tests about a server we are not talking to.
+
+    It counts distinct queries per result set rather than comparing each query with the
+    one before it, because both blind spots of the pairwise version showed up on the
+    same 2026-08-01 run:
+
+    * **Alternating failure was invisible.** The Malaysian proxy answered roughly one
+      query in three; a real answer between two dead ones made the consecutive pair
+      differ, so the check stayed quiet through a half-blind sweep.
+    * **A genuinely empty query looked like a dead search.** Australia tripped it on two
+      policy-document titles that match no legislation at all -- the no-result fallback
+      harvests the same page furniture both times, which is correct behaviour, not a
+      broken endpoint.
+
+    Counting fixes the first (a dead endpoint accumulates the same fingerprint all sweep
+    long, however the hits are interleaved) and the threshold suppresses the second.
+    Warns once per portal and result set: this belongs in the log once, not forty times.
     """
     fingerprint = tuple(ids)
     if not fingerprint:
         return
     with _QUERY_ECHO_LOCK:
-        previous = _QUERY_ECHO.get(portal_key)
-        _QUERY_ECHO[portal_key] = (query, fingerprint)
-    if previous and previous[0] != query and previous[1] == fingerprint:
-        _LOG.error(
-            "%s returned an IDENTICAL result set for two different queries "
-            "(%r and %r) -- the endpoint is ignoring the query. Discovery is running "
-            "blind: every phrase will map the same handful of instruments.",
-            portal_key, previous[0][:60], query[:60],
-        )
+        queries = _QUERY_ECHO.setdefault(portal_key, {}).setdefault(fingerprint, set())
+        queries.add(query)
+        if (len(queries) < _QUERY_ECHO_THRESHOLD
+                or (portal_key, fingerprint) in _QUERY_ECHO_WARNED):
+            return
+        _QUERY_ECHO_WARNED.add((portal_key, fingerprint))
+        sample = sorted(queries)[:_QUERY_ECHO_THRESHOLD]
+    _LOG.error(
+        "%s returned an IDENTICAL result set for %d different queries (%s) -- the "
+        "endpoint is ignoring the query. Discovery is running blind: every phrase will "
+        "map the same handful of instruments.",
+        portal_key, len(queries), ", ".join(repr(q[:50]) for q in sample),
+    )
 
 
 def _is_chrome(href_l: str, text_l: str) -> bool:

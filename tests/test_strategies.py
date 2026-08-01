@@ -587,6 +587,14 @@ def test_the_my_download_cell_href_is_resolved_against_the_portal():
     assert _first_href("<span>no link here</span>") is None
 
 
+def _reset_echo() -> None:
+    """The check keeps per-portal state for the whole process; tests must not inherit it."""
+    from lexora.collect.discovery import _QUERY_ECHO, _QUERY_ECHO_WARNED
+
+    _QUERY_ECHO.clear()
+    _QUERY_ECHO_WARNED.clear()
+
+
 def test_a_search_that_stopped_searching_is_reported(caplog):
     """The 20 July submission mapped 150 Malaysian rows -- Personal Data Protection Act
     2010, Cyber Security Act 2024, Communications and Multimedia Act 1998 -- with
@@ -596,29 +604,81 @@ def test_a_search_that_stopped_searching_is_reported(caplog):
 
     Mocked tests cannot catch that: they encode what we believe about the portal and
     stay green while the real one drifts. This asserts, on live traffic and at no extra
-    cost, the one thing only a working search satisfies -- two different queries must
-    not return an identical result set.
+    cost, the one thing only a working search satisfies -- different queries must not
+    keep returning an identical result set.
     """
     import logging
 
-    from lexora.collect.discovery import _QUERY_ECHO, _warn_if_query_ignored
+    from lexora.collect.discovery import _warn_if_query_ignored
 
-    _QUERY_ECHO.clear()
+    _reset_echo()
     with caplog.at_level(logging.ERROR):
         _warn_if_query_ignored("portal", "cross-border data transfer", ["a", "b", "c"])
-        assert not caplog.text, "one query alone proves nothing"
-
-        # A different question, the same answer: the query is not being read.
         _warn_if_query_ignored("portal", "data retention period", ["a", "b", "c"])
+        assert not caplog.text, "two queries agreeing is a coincidence portals produce"
+
+        # A third distinct question, still the same answer: the query is not being read.
+        _warn_if_query_ignored("portal", "computer misuse offences", ["a", "b", "c"])
         assert "ignoring the query" in caplog.text
         assert "cross-border data transfer" in caplog.text
 
+        # ...and it says so once, not once per remaining query in the sweep.
+        caplog.clear()
+        _warn_if_query_ignored("portal", "government access to data", ["a", "b", "c"])
+        assert not caplog.text
+
     caplog.clear()
     with caplog.at_level(logging.ERROR):
-        _warn_if_query_ignored("portal", "computer misuse", ["x", "y"])
-        assert not caplog.text, "a genuinely different result set is the healthy case"
+        for q in ("alpha", "beta", "gamma"):
+            _warn_if_query_ignored("portal", q, [f"only-for-{q}"])
+        assert not caplog.text, "distinct answers are the healthy case"
 
         # The SAME query repeating its own answer is not evidence of anything.
-        _warn_if_query_ignored("portal", "computer misuse", ["x", "y"])
+        for _ in range(5):
+            _warn_if_query_ignored("portal", "computer misuse", ["x", "y"])
         assert not caplog.text
-    _QUERY_ECHO.clear()
+    _reset_echo()
+
+
+def test_query_echo_survives_an_endpoint_that_fails_intermittently(caplog):
+    """Malaysia's proxy answered about one query in three on 2026-08-01, and the
+    pairwise version of this check went quiet the moment a real answer landed between
+    two dead ones -- a half-blind sweep with nothing in the log. Counting distinct
+    queries per result set, rather than comparing neighbours, sees it regardless of how
+    the failures interleave.
+    """
+    import logging
+
+    from lexora.collect.discovery import _warn_if_query_ignored
+
+    _reset_echo()
+    dead = ["nav-1", "nav-2", "nav-3"]  # the same harvested page furniture every time
+    with caplog.at_level(logging.ERROR):
+        _warn_if_query_ignored("portal", "query one", dead)
+        _warn_if_query_ignored("portal", "query two", ["real-hit-a", "real-hit-b"])
+        _warn_if_query_ignored("portal", "query three", dead)
+        assert not caplog.text
+        _warn_if_query_ignored("portal", "query four", ["real-hit-c"])
+        _warn_if_query_ignored("portal", "query five", dead)
+        assert "ignoring the query" in caplog.text
+    _reset_echo()
+
+
+def test_query_echo_ignores_two_queries_that_legitimately_match_nothing(caplog):
+    """Australia tripped the pairwise version on two policy-document titles that match
+    no legislation: the no-result fallback harvests the same page furniture both times,
+    which is correct behaviour and not a broken endpoint. A false alarm on a healthy
+    portal is how a canary gets ignored, so two agreeing queries must stay silent.
+    """
+    import logging
+
+    from lexora.collect.discovery import _warn_if_query_ignored
+
+    _reset_echo()
+    with caplog.at_level(logging.ERROR):
+        _warn_if_query_ignored("au", "2023-2030 Australian Cyber Security Strategy",
+                               ["chrome-1", "chrome-2"])
+        _warn_if_query_ignored("au", "Privacy Impact Assessment 2020",
+                               ["chrome-1", "chrome-2"])
+        assert not caplog.text
+    _reset_echo()
