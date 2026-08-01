@@ -16,9 +16,10 @@ back-compat but is inert by default; the per-clause verifier supersedes it for r
 Model choice (validated 2026-06-29). The default backend ``gpt-5.4`` is a reasoning
 model that returns EMPTY content ~45-55% of the time (independent of concurrency,
 unfixable by prompt/params), so a single 9-in-1 call is unreliable there. A
-NON-reasoning model — ``deepseek-v4-flash`` — returns valid JSON ~100% first try, has a
+NON-reasoning model — ``DeepSeek-V4-Flash`` — returns valid JSON ~100% first try, has a
 ~1M-token context (a whole Act fits, no chunking) and matched/beat gpt's recall. Hence
-``LEXORA_BRUTE_MODEL`` defaults to it, independent of ``LEXORA_LLM_MODEL``.
+``LEXORA_BRUTE_MODEL`` defaults to it, independent of ``LEXORA_LLM_MODEL``. The id is
+CASE-SENSITIVE at the gateway; see ``DEFAULT_BRUTE_MODEL``.
 
 Prompt is RECALL-oriented (candidate shortlisting, not a final strict verdict): a strict
 "is this relevant" framing dropped 0.5/boundary cases (e.g. a general-law computer-offence
@@ -33,6 +34,7 @@ pipeline keeps its existing discovery-attribution behaviour.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 
@@ -40,7 +42,15 @@ import httpx
 
 from lexora.models.indicator import RDTIIIndicator
 
-DEFAULT_BRUTE_MODEL = "deepseek-v4-flash"
+_LOG = logging.getLogger(__name__)
+
+# EXACTLY as the endpoint spells it. Measured 2026-08-01: the gateway matches model ids
+# CASE-SENSITIVELY and answers a lowercase "deepseek-v4-flash" with HTTP 400, "There are
+# no healthy deployments for this model" -- so this feature could not start at all, and
+# it failed silently, because `_one` swallows the error and the caller reads an empty
+# result as "the judge found nothing" rather than "the judge never ran". `/v1/models`
+# lists the deployed ids; check there before changing this string.
+DEFAULT_BRUTE_MODEL = "DeepSeek-V4-Flash"
 
 
 def brute_enabled() -> bool:
@@ -112,6 +122,16 @@ class BruteJudge:
         self.timeout = timeout
         self.calls = 0
         self.total_tokens = 0
+        self.error_count = 0
+        self.last_error: str = ""
+
+    def _report(self, detail: str) -> None:
+        """Record a backend failure, and log the first one so a dead judge is visible."""
+        self.error_count += 1
+        self.last_error = detail
+        if self.error_count == 1:
+            _LOG.error("brute judge backend refused model %r: %s -- every candidate will "
+                       "fall back to its existing attribution", self.model, detail)
 
     def _one(self, system: str, text: str, temperature: float) -> set[str] | None:
         headers = {
@@ -132,6 +152,12 @@ class BruteJudge:
             r = httpx.post(self.base_url + "/chat/completions", headers=headers, json=body, timeout=self.timeout)
             self.calls += 1
             if r.status_code != 200:
+                # Say it ONCE. Returning None here is correct -- the caller degrades to
+                # its existing attribution -- but a judge that never ran and a judge that
+                # found nothing produce the same empty result, and on 2026-08-01 a single
+                # wrong character in the model id made every call a 400 with nothing in
+                # the log to say so.
+                self._report(f"HTTP {r.status_code}: {r.text[:160]}")
                 return None
             j = r.json()
             self.total_tokens += int((j.get("usage") or {}).get("total_tokens", 0) or 0)
