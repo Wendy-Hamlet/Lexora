@@ -43,6 +43,7 @@ from lexora.classify.retrieval import (
     retrieve_candidates,
 )
 from lexora.collect.crawler import fetch, ingest_local_file
+from lexora.console import console_safe
 from lexora.export.law_name import resolve_law_name
 from lexora.extract.html_extractor import HtmlBlock, extract_html
 from lexora.extract.html_extractor import assemble_global_text as assemble_html_text
@@ -643,7 +644,7 @@ def run_pipeline_map(
         where = f"{n}/{total}" if total is not None and n <= total else f"{n} (follow-on)"
         logger.info(
             "mapped %-12s %-38s %d clause(s) -> %d citation(s) [%.1fs]",
-            where, (hit.title or hit.url)[:38],
+            where, console_safe((hit.title or hit.url)[:38]),
             len(artifacts.clauses), len(artifacts.citations),
             artifacts.processing_time_seconds,
         )
