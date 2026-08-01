@@ -21,7 +21,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
-from urllib.parse import quote, urlencode, urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 import httpx
 from bs4 import BeautifulSoup
