@@ -138,6 +138,9 @@ class LiveMeter(threading.Thread):
         self._stopped = threading.Event()
         self._t0 = time.monotonic()
         self._over_budget = False
+        self._last_counters: tuple | None = None
+        self._still_since: float | None = None
+        self._said_stalled_at = 0.0
 
     def stop(self) -> None:
         self._stopped.set()
@@ -153,6 +156,50 @@ class LiveMeter(threading.Thread):
                 # is GBK, so the thread died on its FIRST emit while the unit test (UTF-8
                 # capsys) stayed green. Everything printed is ASCII now; this is the belt.
                 print(f"  ~ (meter: {type(exc).__name__}, continuing)", flush=True)
+
+    # How long the counters may stand still before that itself is the news. Long enough
+    # to sit through a big scan's OCR and a slow download (one Malaysian document
+    # legitimately took 21 minutes), short enough to beat the body deadline.
+    STILL_SECONDS = 480.0
+
+    def _report_if_nothing_moved(self, totals: dict, elapsed: float) -> None:
+        """Say when the numbers stop changing, because the heartbeat itself will not.
+
+        Measured 2026-08-02: a Malaysian run stood still for 27 minutes -- same call
+        count, same cost, no document finished -- while this meter printed a cheerful,
+        identical line every 60 seconds. Three worker threads were blocked on portal
+        sockets that had been accepted and were delivering nothing. Every layer was
+        "working": the process was alive, the heartbeat was on time, the log was
+        growing. Reading it required noticing that two numbers a minute apart were the
+        same, which is exactly the kind of noticing a monitor exists to do for you.
+
+        This does not decide anything is wrong -- OCR and a slow fetch are silent here
+        too, and saying "hung" about a healthy run is how a warning gets ignored. It
+        reports the fact and how long it has held.
+        """
+        counters = (totals["calls"], totals["prompt"], totals["completion"], totals["failed"])
+        now = time.monotonic()
+        if counters != self._last_counters:
+            self._last_counters = counters
+            self._still_since = None
+            self._said_stalled_at = 0.0
+            return
+        if self._still_since is None:
+            self._still_since = now
+            return
+        still_for = now - self._still_since
+        if still_for < self.STILL_SECONDS:
+            return
+        # Repeat on the same cadence rather than once: a stall that is still there ten
+        # minutes later is a different decision from one that has just started.
+        if self._said_stalled_at and (now - self._said_stalled_at) < self.STILL_SECONDS:
+            return
+        self._said_stalled_at = now
+        print(f"  !! NOTHING has moved for {int(still_for // 60)}m - same call count, same "
+              f"tokens, same cost, after {int(elapsed // 60)}m of run. OCR and a slow fetch "
+              "look like this too, so it is not proof of a hang; but if it holds, workers "
+              "are blocked on sockets that are delivering nothing. Ctrl-C loses no judged "
+              "clause.", flush=True)
 
     def _emit(self) -> None:
         t = _live_totals()
@@ -170,6 +217,7 @@ class LiveMeter(threading.Thread):
             + (f" | {t['failed']} FAILED" if t["failed"] else ""),
             flush=True,
         )
+        self._report_if_nothing_moved(t, elapsed)
         # A run whose calls are all failing bills nothing and accounts nothing, so the
         # token line alone looks like a run that is simply quiet. Name it.
         if t["failed"] and not t["calls"]:

@@ -274,3 +274,52 @@ def test_progress_reaches_a_redirected_log_while_the_run_is_still_going(monkeypa
 
     monkeypatch.setattr(sys, "stdout", _Bare())
     rs.configure_logging()  # must not raise
+
+
+def test_a_run_that_stops_moving_says_so(capsys, monkeypatch):
+    """The heartbeat cannot report a stall by printing: an identical line every 60 s is
+    exactly what a stall looks like. Measured 2026-08-02, a Malaysian run stood still for
+    27 minutes -- same calls, same cost, no document finished -- while three workers were
+    blocked on portal sockets delivering nothing, and every line on screen said the run
+    was fine. Reading it required noticing two equal numbers a minute apart."""
+    from types import SimpleNamespace
+
+    rs._LIVE_CLIENTS.clear()
+    rs._register_client("my", "verifier", SimpleNamespace(
+        model="GLM-5.2", calls=1395, prompt_tokens=3_210_000,
+        cached_prompt_tokens=2_630_000, completion_tokens=60_000, failed_calls=0))
+    meter = rs.LiveMeter(every=3600)
+
+    clock = {"t": 1000.0}
+    monkeypatch.setattr(rs.time, "monotonic", lambda: clock["t"])
+
+    meter._emit()                      # first sight of these counters
+    capsys.readouterr()
+    meter._emit()                      # unchanged -> start the stopwatch, say nothing yet
+    assert "NOTHING has moved" not in capsys.readouterr().out
+
+    clock["t"] += meter.STILL_SECONDS + 1
+    meter._emit()
+    out = capsys.readouterr().out
+    assert "NOTHING has moved" in out
+    assert "Ctrl-C loses no judged clause" in out
+    assert out.isascii(), f"non-ASCII in the meter line: {out!r}"
+
+    # It must NOT keep shouting every minute...
+    clock["t"] += 60
+    meter._emit()
+    assert "NOTHING has moved" not in capsys.readouterr().out
+    # ...but a stall that is still there much later is news again.
+    clock["t"] += meter.STILL_SECONDS
+    meter._emit()
+    assert "NOTHING has moved" in capsys.readouterr().out
+
+    # And any movement at all clears it.
+    rs._LIVE_CLIENTS.clear()
+    rs._register_client("my", "verifier", SimpleNamespace(
+        model="GLM-5.2", calls=1400, prompt_tokens=3_220_000,
+        cached_prompt_tokens=2_640_000, completion_tokens=60_100, failed_calls=0))
+    clock["t"] += meter.STILL_SECONDS + 1
+    meter._emit()
+    assert "NOTHING has moved" not in capsys.readouterr().out
+    rs._LIVE_CLIENTS.clear()
