@@ -85,6 +85,42 @@ _MY_HEADERS = {
     "X-Requested-With": "XMLHttpRequest",
 }
 
+_QUERY_ECHO: dict[str, tuple[str, tuple]] = {}
+_QUERY_ECHO_LOCK = threading.Lock()
+
+
+def _warn_if_query_ignored(portal_key: str, query: str, ids: list) -> None:
+    """Shout when a search endpoint stops searching.
+
+    The 20 July submission mapped 150 Malaysian rows -- Personal Data Protection Act
+    2010, Cyber Security Act 2024, Communications and Multimedia Act 1998 -- using
+    exactly the GET this adapter still used on 1 August, when the same code found none
+    of them. The code did not regress. The portal changed under it: `q` used to filter
+    and now does not, and the response is still 200 with rows in it, so nothing looked
+    wrong at any layer. Unit tests could not catch it either -- they mock the portal,
+    which means they encode what we BELIEVE about it and stay green while the real one
+    drifts.
+
+    So assert something only a working search satisfies, on live traffic, for free: two
+    DIFFERENT queries must not come back with an identical result set. One line in the
+    log the first run after a portal changes is worth more than any number of green
+    tests about a server we are not talking to.
+    """
+    fingerprint = tuple(ids)
+    if not fingerprint:
+        return
+    with _QUERY_ECHO_LOCK:
+        previous = _QUERY_ECHO.get(portal_key)
+        _QUERY_ECHO[portal_key] = (query, fingerprint)
+    if previous and previous[0] != query and previous[1] == fingerprint:
+        _LOG.error(
+            "%s returned an IDENTICAL result set for two different queries "
+            "(%r and %r) -- the endpoint is ignoring the query. Discovery is running "
+            "blind: every phrase will map the same handful of instruments.",
+            portal_key, previous[0][:60], query[:60],
+        )
+
+
 _MY_CLIENT: httpx.Client | None = None
 _MY_CLIENT_LOCK = threading.Lock()
 
@@ -765,6 +801,8 @@ def my_legislation_api(
         if resp.status_code != 200:
             return []
         docs = resp.json().get("response", {}).get("docs", [])
+        _warn_if_query_ignored(
+            "lom.agc.gov.my", query, [d.get("_os_url") or d.get("id") for d in docs])
     except Exception:
         return []
     finally:

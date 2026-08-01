@@ -585,3 +585,40 @@ def test_the_my_download_cell_href_is_resolved_against_the_portal():
 
     assert _first_href(None) is None
     assert _first_href("<span>no link here</span>") is None
+
+
+def test_a_search_that_stopped_searching_is_reported(caplog):
+    """The 20 July submission mapped 150 Malaysian rows -- Personal Data Protection Act
+    2010, Cyber Security Act 2024, Communications and Multimedia Act 1998 -- with
+    exactly the request this adapter still sent on 1 August, when the same code found
+    none of them. The code did not regress; the portal changed under it. `q` stopped
+    filtering, the response stayed 200 with rows in it, and no layer saw anything wrong.
+
+    Mocked tests cannot catch that: they encode what we believe about the portal and
+    stay green while the real one drifts. This asserts, on live traffic and at no extra
+    cost, the one thing only a working search satisfies -- two different queries must
+    not return an identical result set.
+    """
+    import logging
+
+    from lexora.collect.strategies import _QUERY_ECHO, _warn_if_query_ignored
+
+    _QUERY_ECHO.clear()
+    with caplog.at_level(logging.ERROR):
+        _warn_if_query_ignored("portal", "cross-border data transfer", ["a", "b", "c"])
+        assert not caplog.text, "one query alone proves nothing"
+
+        # A different question, the same answer: the query is not being read.
+        _warn_if_query_ignored("portal", "data retention period", ["a", "b", "c"])
+        assert "ignoring the query" in caplog.text
+        assert "cross-border data transfer" in caplog.text
+
+    caplog.clear()
+    with caplog.at_level(logging.ERROR):
+        _warn_if_query_ignored("portal", "computer misuse", ["x", "y"])
+        assert not caplog.text, "a genuinely different result set is the healthy case"
+
+        # The SAME query repeating its own answer is not evidence of anything.
+        _warn_if_query_ignored("portal", "computer misuse", ["x", "y"])
+        assert not caplog.text
+    _QUERY_ECHO.clear()
