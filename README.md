@@ -176,6 +176,52 @@ Refusals are now classified, retried once after the sweep has cooled, and report
 `--doc-workers` only with these counts in front of you: concurrency that turns answers
 into refusals is not a speed-up.
 
+### Malaysia: read the statute book, do not search it
+
+Malaysia's search proxy is worse than slow. Measured 2026-08-01 it answered roughly three
+requests in five and returned HTTP 500 for the rest — and on 20 July it silently stopped
+*filtering*: the same request that used to return the Personal Data Protection Act began
+returning the first page of the register, with status 200 and real Act titles. Nothing
+errored anywhere in the stack.
+
+So it is no longer the primary route. `lom.agc.gov.my` renders its own listing pages from
+JSON feeds, and those are a different service: **four requests give 1,287 Acts**, 1,183
+with a direct English PDF, plus the English title, the commencement remark (including
+`NOT YET IN FORCE`) and a 116-entry repeal chain naming the repealing Act.
+
+```bash
+LEXORA_MY_ENUMERATE=1 LEXORA_BRUTE_JUDGE=1 \
+  python scripts/run_submission.py -j my --budget 120 --verify-clauses
+```
+
+| Variable | What it does |
+| :---- | :---- |
+| `LEXORA_MY_ENUMERATE` | Use the portal's listings + a two-stage relevance filter instead of its search |
+| `LEXORA_MY_ENUM_VERDICTS` | Where to append the verdict cache (default `outputs/cache/my_enum_verdicts.jsonl`) |
+| `LEXORA_MY_ENUM_WORKERS` | Parallel title judgements (default 16) |
+
+The listings carry no subject metadata, so relevance is decided in two stages: from each
+Act's **title**, then — for the ones flagged only for retention (P7-I3) or government
+access (P7-I5), which almost any statute might carry — from its **table of contents**,
+OCR'ing scans twelve pages deep. 1,287 → 249 → about 110.
+
+**A keyword filter cannot substitute for the first stage.** Over the same titles it
+reached 5 of the 8 Malaysian gold statutes and scored `CYBER SECURITY ACT 2024` at
+**exactly 0.00**, because those two words appear in none of our indicator phrases.
+
+Three properties are deliberate and will not change without a reason on the record:
+
+- **An Act we could not read is KEPT.** Over the size cap, no text layer, no English PDF —
+  those mean "not judged", never "judged irrelevant".
+- **OCR noise never reaches the judge.** A judge shown noise answers "nothing relevant",
+  which is indistinguishable from a real verdict and would delete the Act silently.
+- **A KNOWN instrument never depends on being judged relevant.** The filter cut Income Tax
+  Act 1967 and Service Tax Act 2018, both gold; the backstop restored both and said so in
+  the log.
+
+The 1,287 verdicts ship in `data/reference/my_enum_verdicts.jsonl`, so a fresh clone
+reaches the same working set **without an API key and without paying to re-judge**.
+
 ### All three Round-1 economies in one file
 
 ```bash
