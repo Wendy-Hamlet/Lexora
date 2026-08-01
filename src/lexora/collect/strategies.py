@@ -90,16 +90,26 @@ _MY_CLIENT_LOCK = threading.Lock()
 
 
 def _my_client(timeout: float) -> httpx.Client:
-    """One pooled client for the whole Malaysian sweep, because the 500s are per-connection.
+    """One pooled client for the whole Malaysian sweep. It does not help; it does not hurt.
 
-    Measured 2026-08-01 against `fess-proxy.php`, the same POST repeated:
+    This docstring used to claim pooling was worth 10/10 successes against 4/10 for a
+    fresh client each time, and that the failures were per-connection. That measurement
+    came from the batch this project had already flagged as contaminated -- dozens of
+    rapid probes had driven the endpoint from 10/10 success to 8/8 failure while it was
+    being taken.
 
-        a fresh httpx.Client each time   ->  6 x 500, 4 x 200
-        one client reused               -> 10 x 200
+    Re-measured cold on 2026-08-02: ten requests per arm, ALTERNATING and spaced 12 s so
+    neither arm gets the fresh window.
 
-    The failure is the first request on a new connection, not the query and not the
-    server's health. Every discovery query used to build its own client, so Malaysia
-    paid that coin flip forty times a run. Retries only paper over it.
+        one client reused        -> 4/10 answered and filtered
+        a fresh client each time -> 4/10 answered and filtered
+
+    Identical, with the same failure mode (HTTP 500) on both. Roughly three requests in
+    five are refused, and how the client is built has nothing to do with it. The pooled
+    client stays because one client is simpler than forty, not because it wins anything.
+
+    None of this is on the critical path any more: Malaysian discovery reads the portal's
+    own listings (:mod:`lexora.collect.my_inventory`) instead of asking this proxy.
 
     Built lazily and never at import: `http_cache.install()` patches
     `httpx.Client.__init__`, so a client constructed at import time would be created
