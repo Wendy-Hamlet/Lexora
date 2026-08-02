@@ -92,6 +92,39 @@ def serving_from_recording() -> bool:
     return mode() == REPLAY
 
 
+def clamp_read_timeout(request: httpx.Request, seconds: float) -> httpx.Request:
+    """Make ``seconds`` the ceiling on how long one socket read may block.
+
+    This is the only mechanism that actually interrupts a stalled download, and finding
+    that out cost two dead runs. The watchdog below closes the response when a budget is
+    blown, which works over plain HTTP and does NOT work over TLS: py-spy on the second
+    stalled run showed three workers parked in ``ssl.read`` inside ``read_body_within``,
+    twenty-five minutes after ``response.close()`` had been called on them. Closing an
+    httpx response returns a connection to the pool; it does not tear a socket out from
+    under a thread already blocked in ``recv``.
+
+    httpcore ends every read with ``self._sock.settimeout(timeout); self._sock.recv(...)``
+    where ``timeout`` comes from ``request.extensions["timeout"]["read"]``. When that is
+    ``None`` the socket blocks forever, which is what a portal that accepts a connection
+    and then says nothing relies on. Setting it here puts the deadline in the socket,
+    where it runs without a thread and cannot be ignored.
+
+    httpx's read timeout is an IDLE timeout -- time between reads, not total -- so the
+    idle budget is exactly the right number for it, and a slow-but-moving 33 MB download
+    is untouched. Only lowered, never raised: a caller that asked for something stricter
+    keeps it.
+    """
+    if seconds <= 0:
+        return request
+    extensions = dict(request.extensions or {})
+    timeout = dict(extensions.get("timeout") or {})
+    current = timeout.get("read")
+    timeout["read"] = seconds if current is None else min(float(current), seconds)
+    extensions["timeout"] = timeout
+    request.extensions = extensions
+    return request
+
+
 def disk_cache_still_valid(path: str | os.PathLike, ttl_hours: float) -> bool:
     """Whether a TTL'd side-cache file on disk may still be used.
 
@@ -441,6 +474,10 @@ class RecordReplayTransport(httpx.BaseTransport):
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         body = request.content or b""
         method, url = request.method, str(request.url)
+        # Every client in the process comes through here while recording, which makes it
+        # the one place that can put a socket-level deadline on all of them -- the same
+        # reason `install()` patches the constructor instead of the call sites.
+        clamp_read_timeout(request, body_idle_deadline())
 
         if self._mode == REPLAY:
             found = store().get(method, url, body)

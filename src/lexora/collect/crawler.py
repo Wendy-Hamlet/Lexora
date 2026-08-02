@@ -201,7 +201,12 @@ def fetch(
         because they are already decoded -- so every caller still sees a plain response
         with `.content`, `.url` and `.headers` exactly as before.
         """
-        streamed = client.send(client.build_request("GET", url), stream=True)
+        # The socket deadline goes on here as well as in the record/replay transport,
+        # because that transport only exists when LEXORA_HTTP_CACHE is set and a plain
+        # live run is the one that faces the portal with nothing in between.
+        request = http_cache.clamp_read_timeout(
+            client.build_request("GET", url), http_cache.body_idle_deadline())
+        streamed = client.send(request, stream=True)
         try:
             body = http_cache.read_body_within(streamed)
         finally:

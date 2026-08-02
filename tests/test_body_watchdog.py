@@ -200,3 +200,91 @@ def test_the_watchdog_thread_does_not_outlive_the_read(monkeypatch):
         assert left == [], f"watchdog threads left running: {left}"
     finally:
         server.close()
+
+
+# --- the socket deadline, which is what actually interrupts a stalled read ----------
+#
+# These matter more than the watchdog tests above, and exist because those tests passed
+# while production hung. They ran over plain HTTP, where closing the response happens to
+# unblock the reader. Production is HTTPS: py-spy on the second stalled record run showed
+# three workers parked in `ssl.read` inside `read_body_within`, twenty-five minutes after
+# the watchdog had called `response.close()` on them.
+#
+# So these tests DISABLE THE WATCHDOG (the env var drives both mechanisms, so switching
+# budgets off is not enough -- `_watch_body` is stubbed out) and leave the socket timeout
+# as the only thing that can end the read. Otherwise they would prove, once again, that
+# the mechanism which does not work in production works in a test.
+
+@pytest.fixture
+def no_watchdog(monkeypatch):
+    from lexora.collect import http_cache
+
+    monkeypatch.setattr(http_cache, "_watch_body", lambda *a, **k: None)
+
+
+def test_the_read_deadline_reaches_the_socket_not_just_a_thread(
+    silent, no_watchdog, monkeypatch
+):
+    """If this returns, it is because httpcore called `sock.settimeout()` with our
+    number -- nothing else is left that could end the read."""
+    monkeypatch.setenv("LEXORA_BODY_IDLE", "2")
+    monkeypatch.setenv("LEXORA_BODY_DEADLINE", "0")
+    from lexora.collect.http_cache import clamp_read_timeout
+
+    client = httpx.Client(timeout=httpx.Timeout(connect=5.0, read=None,
+                                                write=5.0, pool=5.0))
+    request = clamp_read_timeout(
+        client.build_request("GET", f"http://127.0.0.1:{silent.port}/act.pdf"), 2.0)
+    t0 = time.monotonic()
+    with pytest.raises(httpx.ReadTimeout):
+        response = client.send(request, stream=True)
+        for _ in response.iter_bytes():
+            pass
+    assert time.monotonic() - t0 < 15
+
+
+def test_clamp_only_lowers_never_raises():
+    """A caller that asked for something stricter keeps it; and a request with no timeout
+    at all -- the case that blocks forever, because settimeout(None) never returns --
+    gets one."""
+    from lexora.collect.http_cache import clamp_read_timeout
+
+    client = httpx.Client()
+    req = client.build_request("GET", "http://example.invalid/")
+    req.extensions = {"timeout": {"connect": 5.0, "read": None}}
+    clamp_read_timeout(req, 120.0)
+    assert req.extensions["timeout"]["read"] == 120.0
+    assert req.extensions["timeout"]["connect"] == 5.0, "other timeouts must survive"
+
+    req.extensions = {"timeout": {"read": 30.0}}
+    clamp_read_timeout(req, 120.0)
+    assert req.extensions["timeout"]["read"] == 30.0, "a stricter caller keeps its number"
+
+    req.extensions = {"timeout": {"read": 300.0}}
+    clamp_read_timeout(req, 120.0)
+    assert req.extensions["timeout"]["read"] == 120.0
+
+    req.extensions = {}
+    clamp_read_timeout(req, 0.0)
+    assert req.extensions.get("timeout", {}).get("read") is None, "0 disables, as elsewhere"
+
+
+def test_a_document_fetch_gives_up_instead_of_blocking_forever(
+    silent, no_watchdog, monkeypatch
+):
+    """End to end through the real fetch path, with the watchdog stubbed out. This is the
+    call chain that hung twice: `crawler.fetch` -> `_fetch_once` -> `read_body_within`."""
+    monkeypatch.setenv("LEXORA_BODY_IDLE", "2")
+    monkeypatch.setenv("LEXORA_BODY_DEADLINE", "0")
+    from lexora.collect import crawler
+
+    t0 = time.monotonic()
+    with pytest.raises(Exception) as err:
+        crawler.fetch(
+            f"http://127.0.0.1:{silent.port}/act.pdf",
+            jurisdiction="MY", portal_name="test", source_type="legislation",
+            dest_dir=None, retries=0, timeout=None,
+        )
+    elapsed = time.monotonic() - t0
+    assert elapsed < 30, f"fetch blocked for {elapsed:.0f}s -- the deadline never landed"
+    assert err.type is not AssertionError
