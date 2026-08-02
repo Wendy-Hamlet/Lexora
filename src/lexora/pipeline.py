@@ -496,7 +496,18 @@ def run_pipeline_map(
     fetch_min_interval: float = 0.0,
     serial_fetch: bool = False,
     secondary_signals: list | None = None,
+    # The three follow-on passes, independently switchable. They used to share one flag,
+    # which made the cheapest of them unreachable without the most expensive: the
+    # amendment search issues a title query PER ACT (110 of them on Malaysia, hours), the
+    # regulator pass fetches three known URLs (minutes). Bundled, "skip follow-on to save
+    # the evening" also skipped Malaysia's three PDPC Codes of Practice -- gold
+    # instruments the statute portal does not index -- and with them the ONLY evidence
+    # for MY / P7-I4. The engine would then have reported NO PROVISION FOUND for a
+    # country that plainly has a data-protection authority: a collection gap presented as
+    # a legal finding, which is the one thing this pipeline must never do.
     discover_amendments: bool = True,
+    discover_child_regulations: bool = True,
+    discover_regulator_instruments: bool = True,
     amendment_extractor=None,
     brute_judge=None,
 ) -> MapResult:
@@ -752,17 +763,20 @@ def run_pipeline_map(
             documents, _process, portal, profile,
             force_browser=force_browser, timeout=timeout, workers=doc_workers,
         )
-        # AU only: pull in the principal REGULATIONS made under each Act. The brute
-        # Act-enumeration skips delegated legislation (a different FRL collection), so
-        # a regulation that carries an indicator (e.g. Telecommunications Regulations
-        # 2021 -> P7-I5) is otherwise unreachable. Runs after the amendment pass so it
-        # sees (and de-dups against) the amendments already added.
+    # AU only: pull in the principal REGULATIONS made under each Act. The brute
+    # Act-enumeration skips delegated legislation (a different FRL collection), so
+    # a regulation that carries an indicator (e.g. Telecommunications Regulations
+    # 2021 -> P7-I5) is otherwise unreachable. Runs after the amendment pass so it
+    # sees (and de-dups against) any amendments already added.
+    if discover_child_regulations:
         documents = documents + _discover_child_regulations(
             documents, _process, profile=profile, timeout=timeout, workers=doc_workers,
         )
-        # Regulator soft-law (codes of practice / standards) the statute portal does
-        # not index — gold instruments (MY: PDP Codes of Practice + Standard 2015)
-        # otherwise unreachable by the map pipeline.
+    # Regulator soft-law (codes of practice / standards) the statute portal does
+    # not index — gold instruments (MY: PDP Codes of Practice + Standard 2015)
+    # otherwise unreachable by the map pipeline. Three known URLs, no search: this is
+    # the cheap pass, and it carries 84 of Malaysia's 183 rows.
+    if discover_regulator_instruments:
         documents = documents + _discover_regulator_instruments(
             profile, _process, documents, timeout=timeout, workers=doc_workers,
         )

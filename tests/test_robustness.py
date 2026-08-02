@@ -427,3 +427,61 @@ def test_map_result_carries_the_indicators_it_was_asked_about():
     r2 = MapResult(discovered=[], documents=[], citations=[],
                    indicators=[SimpleNamespace(submission_id="P6-I1")])
     assert [i.submission_id for i in r2.indicators] == ["P6-I1"]
+
+
+def _map_kwargs(monkeypatch):
+    """Capture what run_pipeline_map is actually asked to do, without running it."""
+    seen = {}
+
+    def _fake(**kw):
+        seen.update(kw)
+        from lexora.pipeline import MapResult
+        return MapResult(discovered=[], documents=[], citations=[],
+                         indicators=list(kw.get("indicators") or []))
+
+    monkeypatch.setattr(rs, "run_pipeline_map", _fake)
+    return seen
+
+
+def test_the_three_follow_on_passes_are_independently_switchable(monkeypatch, tmp_path):
+    """They shared one flag, so the only way to skip the expensive pass was to skip the
+    cheap one too. Amendment discovery issues a title search PER ACT (110 on Malaysia,
+    hours); the regulator pass fetches three known URLs (minutes) and carries 84 of
+    Malaysia's 183 rows -- and the only evidence for MY / P7-I4. Bundled, "save the
+    evening" silently meant "report NO PROVISION FOUND for a country that has a data
+    protection authority"."""
+    seen = _map_kwargs(monkeypatch)
+    monkeypatch.setattr(rs, "make_verifier", lambda *a, **k: None)
+    monkeypatch.setattr(rs, "make_rationale_generator",
+                        lambda *a, **k: SimpleNamespace(_client=None))
+    monkeypatch.setattr(rs, "make_metadata_extractor",
+                        lambda *a, **k: SimpleNamespace(_client=None))
+    monkeypatch.setattr(rs, "make_amendment_extractor",
+                        lambda *a, **k: SimpleNamespace(_client=None))
+
+    rs.run_one("my", budget=1, verify=False, timeout=5.0,
+               discover_amendments=False)
+    assert seen["discover_amendments"] is False
+    assert seen["discover_child_regulations"] is True, \
+        "skipping the expensive pass must not take the cheap one with it"
+    assert seen["discover_regulator_instruments"] is True
+
+    seen.clear()
+    rs.run_one("my", budget=1, verify=False, timeout=5.0,
+               discover_regulator_instruments=False)
+    assert seen["discover_amendments"] is True
+    assert seen["discover_regulator_instruments"] is False
+
+
+def test_follow_on_is_all_on_by_default(monkeypatch):
+    """The submission path must be unchanged: a run with no flags does everything."""
+    seen = _map_kwargs(monkeypatch)
+    monkeypatch.setattr(rs, "make_verifier", lambda *a, **k: None)
+    for name in ("make_rationale_generator", "make_metadata_extractor",
+                 "make_amendment_extractor"):
+        monkeypatch.setattr(rs, name, lambda *a, **k: SimpleNamespace(_client=None))
+
+    rs.run_one("my", budget=1, verify=False, timeout=5.0)
+    assert seen["discover_amendments"] is True
+    assert seen["discover_child_regulations"] is True
+    assert seen["discover_regulator_instruments"] is True

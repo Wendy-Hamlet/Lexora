@@ -293,6 +293,9 @@ def run_one(
     verify_cells: bool = False,
     verify_clauses: bool = False,
     pillars: list[int] | None = None,
+    discover_amendments: bool = True,
+    discover_child_regulations: bool = True,
+    discover_regulator_instruments: bool = True,
 ) -> MapResult:
     """Run the production multi-instrument map for one economy.
 
@@ -350,6 +353,9 @@ def run_one(
         meta_extractor=meta_extractor, llm_workers=llm_workers, doc_workers=doc_workers,
         fetch_min_interval=fetch_min_interval, serial_fetch=serial_fetch,
         secondary_signals=secondary, amendment_extractor=amendment_extractor,
+        discover_amendments=discover_amendments,
+        discover_child_regulations=discover_child_regulations,
+        discover_regulator_instruments=discover_regulator_instruments,
     )
     tokens = {"calls": 0, "prompt": 0, "completion": 0, "total": 0, "cached_prompt": 0,
               "failed": 0}
@@ -663,6 +669,23 @@ def main() -> None:
                          "scanned-only statutes (e.g. MY gazette PDFs) are not silently "
                          "dropped to 0 clauses; pass this only to reproduce the text-layer-"
                          "only behaviour.")
+    # The three follow-on passes, separately. They shared one switch until 2026-08-02,
+    # which meant the only way to skip the expensive one was to skip the cheap one too.
+    # Cost is wildly asymmetric: amendment discovery issues a title search PER ACT (110
+    # on Malaysia, hours), child regulations is AU-only, and regulator soft law fetches
+    # three known URLs (minutes) while carrying 84 of Malaysia's 183 rows -- and the ONLY
+    # evidence for MY / P7-I4.
+    ap.add_argument("--no-amendment-discovery", action="store_true",
+                    help="skip the per-Act amendment search. By far the most expensive "
+                         "follow-on pass; skipping it costs amendment currency, not "
+                         "instruments.")
+    ap.add_argument("--no-child-regulations", action="store_true",
+                    help="skip delegated legislation (AU only).")
+    ap.add_argument("--no-regulator-instruments", action="store_true",
+                    help="skip regulator soft law (codes of practice, standards). "
+                         "CHEAP and high-yield -- skipping it removes gold instruments "
+                         "the statute portal does not index, and can empty a whole "
+                         "indicator. Rarely what you want.")
     ap.add_argument("--dry-run", action="store_true", help="plan only, no network")
     ap.add_argument("--heartbeat", type=float, default=60.0, metavar="SECONDS",
                     help="How often to print live call/token/cost totals (0 = off). A "
@@ -746,7 +769,10 @@ def main() -> None:
                        timeout=args.timeout, llm_workers=args.llm_workers,
                        doc_workers=args.doc_workers, fetch_min_interval=args.fetch_min_interval,
                        serial_fetch=args.serial_fetch, use_secondary=args.secondary,
-                       verify_cells=args.verify_cells, verify_clauses=args.verify_clauses)
+                       verify_cells=args.verify_cells, verify_clauses=args.verify_clauses,
+                       discover_amendments=not args.no_amendment_discovery,
+                       discover_child_regulations=not args.no_child_regulations,
+                       discover_regulator_instruments=not args.no_regulator_instruments)
 
     # Country-level parallelism: economies are independent, so run them concurrently.
     # Threads (not processes) because the heavy stages — network fetch, OCR
