@@ -554,6 +554,7 @@ def summarize(iso: str, result: MapResult) -> dict:
         "n_indicators_covered": len(indicators_covered),
         "indicators_in_scope": in_scope,
         "indicators_empty": indicators_empty,
+        "working_set_filter": getattr(result, "working_set_filter", ""),
         "citations_by_indicator": {
             ind: sum(1 for c in result.citations if c.indicator_id == ind)
             for ind in indicators_covered
@@ -587,6 +588,18 @@ def _print_indicator_grid(summaries: list[dict]) -> None:
     scope = sorted({i for s in rows for i in s["indicators_in_scope"]})
     print("\nIndicator coverage (every indicator this run asked about, hit or miss):")
     print(f"  in scope: {', '.join(scope)}")
+    # A filtered run must never let "no provision found" be read as a fact about the
+    # country. On a full run the sentence means the ECONOMY has nothing for that
+    # indicator; on a run narrowed to one Act it means only that THIS ACT does not -- and
+    # Malaysia plainly does have cross-border provisions. Presenting the second as the
+    # first would turn a demo's convenience into a false statement about a legal system,
+    # on the one screen a judge is watching.
+    for s in rows:
+        if s.get("working_set_filter"):
+            print(f"  !! {s['economy']}: working set was FILTERED to "
+                  f"{s['working_set_filter']!r}. Below, 'NO PROVISION FOUND' means THAT "
+                  "ACT has none - it says nothing about the economy. Re-run without "
+                  "LEXORA_ONLY_LAW before quoting any of it.")
     for s in rows:
         hits = dict(s.get("citations_by_indicator") or {})
         empty = set(s.get("indicators_empty") or [])

@@ -485,3 +485,43 @@ def test_follow_on_is_all_on_by_default(monkeypatch):
     assert seen["discover_amendments"] is True
     assert seen["discover_child_regulations"] is True
     assert seen["discover_regulator_instruments"] is True
+
+
+def test_a_filtered_run_does_not_report_a_miss_as_a_fact_about_the_country(capsys):
+    """LEXORA_ONLY_LAW narrows the working set so a demo can finish while someone is
+    watching -- measured, 42 minutes for a Malaysian replay against 8 minutes of
+    presentation. But on a run narrowed to one Act, "NO PROVISION FOUND" for P6-I4 means
+    THAT ACT has no cross-border provision. Malaysia plainly has them. Printing the
+    unqualified sentence would turn the demo's own convenience into a false statement
+    about a legal system, on the one screen a judge is watching."""
+    summaries = [{
+        "economy": "Malaysia",
+        "working_set_filter": "MONEY SERVICES BUSINESS ACT 2011",
+        "indicators_in_scope": ["P6-I4", "P7-I3"],
+        "indicators_covered": ["P7-I3"],
+        "indicators_empty": ["P6-I4"],
+        "citations_by_indicator": {"P7-I3": 1},
+    }]
+    rs._print_indicator_grid(summaries)
+    out = capsys.readouterr().out
+
+    assert "FILTERED" in out
+    assert "MONEY SERVICES BUSINESS ACT 2011" in out
+    assert "says nothing about the economy" in out
+    assert "NO PROVISION FOUND" in out          # still printed, but now qualified
+    assert out.isascii()
+
+
+def test_an_unfiltered_run_carries_no_such_warning(capsys):
+    summaries = [{
+        "economy": "Malaysia",
+        "working_set_filter": "",
+        "indicators_in_scope": ["P6-I4", "P7-I3"],
+        "indicators_covered": ["P7-I3"],
+        "indicators_empty": ["P6-I4"],
+        "citations_by_indicator": {"P7-I3": 1},
+    }]
+    rs._print_indicator_grid(summaries)
+    out = capsys.readouterr().out
+    assert "FILTERED" not in out
+    assert "Malaysia    P6-I4   NO PROVISION FOUND" in out

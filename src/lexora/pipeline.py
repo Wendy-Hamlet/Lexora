@@ -128,6 +128,12 @@ class MapResult:
     # facts: "we did not look" and "we looked and there is nothing there" are the two
     # answers a judge asking about one country and one indicator most needs told apart.
     indicators: list = field(default_factory=list)
+    # Set when LEXORA_ONLY_LAW narrowed the working set. It has to travel with the result,
+    # because "no provision found" means something different once it has been set: on a
+    # full run it says the ECONOMY has nothing for that indicator, on a filtered one it
+    # says only that THIS ACT does. Reporting the first when the second is true would turn
+    # the demo's own convenience into a false statement about a country's law.
+    working_set_filter: str = ""
 
 
 def _map_use_dense() -> bool:
@@ -571,7 +577,28 @@ def run_pipeline_map(
         known_instrument_ids=profile.known_instrument_ids,
         extra_seed_queries=seed_queries,
     )
+    # Narrow the working set to one law, for a demo that has to finish while someone is
+    # watching. A judge asking "run indicator X for country Y" is asking about a CELL, and
+    # a full economy is not an answer to it: measured 2026-08-02, replaying Malaysia takes
+    # 42 minutes, against 8 minutes of presentation and 7 of questions. This is a FILTER on
+    # what was really discovered, never a shortcut around discovery -- the sweep runs in
+    # full, the log still reports the true working-set size, and the line below says how
+    # many of them the filter kept, so nobody can mistake a narrowed demo for a full run.
+    only = os.environ.get("LEXORA_ONLY_LAW", "").strip()
     logger.info("working set: %d instrument(s) to map", len(hits))
+    if only:
+        needle = only.casefold()
+        kept = [h for h in hits
+                if needle in (h.title or "").casefold() or needle in str(h.url).casefold()]
+        logger.info(
+            "LEXORA_ONLY_LAW=%r -> mapping %d of %d discovered instrument(s). "
+            "This is a filtered demo, NOT a full run.", only, len(kept), len(hits))
+        if not kept:
+            logger.warning(
+                "LEXORA_ONLY_LAW=%r matched nothing; mapping the full working set "
+                "instead of silently producing an empty run.", only)
+        else:
+            hits = kept
 
     import threading
 
@@ -813,6 +840,7 @@ def run_pipeline_map(
     return MapResult(
         discovered=hits, documents=documents, citations=citations,
         secondary_signals=list(secondary_signals), indicators=list(indicators),
+        working_set_filter=only,
     )
 
 
