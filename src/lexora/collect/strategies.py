@@ -32,6 +32,7 @@ from lexora.collect.discovery import (
     DiscoveryResult,
     _fuzzy_known,
 )
+from lexora.collect.http_cache import disk_cache_still_valid
 from lexora.models.source import InstrumentStatus, PortalSpec, SourceType
 
 _LOG = logging.getLogger(__name__)
@@ -547,7 +548,7 @@ def au_act_catalogue(
     caches the result to disk for ``ttl_hours`` to keep repeat runs cheap.
     """
     cache_path = cache_path or os.path.join("outputs", "cache", "au_act_catalogue.json")
-    if os.path.exists(cache_path) and (time.time() - os.path.getmtime(cache_path)) < ttl_hours * 3600:
+    if disk_cache_still_valid(cache_path, ttl_hours):
         try:
             with open(cache_path, encoding="utf-8") as fh:
                 cached = json.load(fh)

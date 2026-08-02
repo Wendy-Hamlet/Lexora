@@ -16,7 +16,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -24,6 +23,7 @@ from typing import Protocol, runtime_checkable
 
 import yaml
 
+from lexora.collect.http_cache import disk_cache_still_valid
 from lexora.models.indicator import RDTIIIndicator
 from lexora.models.secondary import Presence, SecondarySignal
 
@@ -128,7 +128,7 @@ def cached_json(cache_path: str | os.PathLike, ttl_hours: float, producer: Calla
     live call rather than raising.
     """
     cache_path = os.fspath(cache_path)
-    if os.path.exists(cache_path) and (time.time() - os.path.getmtime(cache_path)) < ttl_hours * 3600:
+    if disk_cache_still_valid(cache_path, ttl_hours):
         try:
             with open(cache_path, encoding="utf-8") as fh:
                 cached = json.load(fh)

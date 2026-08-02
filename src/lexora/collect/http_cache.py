@@ -91,6 +91,31 @@ def serving_from_recording() -> bool:
     return mode() == REPLAY
 
 
+def disk_cache_still_valid(path: str | os.PathLike, ttl_hours: float) -> bool:
+    """Whether a TTL'd side-cache file on disk may still be used.
+
+    Several layers keep their own JSON cache next to the recording: the AU Act catalogue
+    (~48 requests) and six secondary-source adapters. Each expires after a few hours,
+    which is right for a live run — the point of a TTL is to notice that the world moved.
+
+    Under replay the world cannot move. Every byte comes from a store with a date on it,
+    so an expiry does not fetch a fresher answer, it fetches a synthetic 504: the refetch
+    finds no recording, the paging loop stops on page 0, and the caller gets an EMPTY
+    catalogue. On 2026-08-01 that is exactly what happened — ``au_act_catalogue.json`` was
+    ten hours past its 24-hour TTL, the semantic crosswalk (the only source of Australia's
+    NEW instruments) received zero entries, and the run finished with 463 rows instead of
+    499 and no error anywhere. The demo would have lost a third of Australia on stage,
+    silently, and the only visible symptom is a row count nobody memorises.
+
+    So under replay a side-cache never expires: what is on disk is what that run recorded.
+    """
+    if not os.path.exists(path):
+        return False
+    if serving_from_recording():
+        return True
+    return (time.time() - os.path.getmtime(path)) < ttl_hours * 3600
+
+
 # A BACKSTOP, not a routine cutter. httpx's per-read timeout already fails a peer that
 # sends nothing at all, so the only case left for a total budget is one that dribbles
 # without ever stopping -- and against that, waiting an hour costs nothing that matters.
