@@ -323,3 +323,61 @@ def test_a_run_that_stops_moving_says_so(capsys, monkeypatch):
     meter._emit()
     assert "NOTHING has moved" not in capsys.readouterr().out
     rs._LIVE_CLIENTS.clear()
+
+
+def test_a_fully_cached_run_is_still_watched_for_stalls(monkeypatch, capsys):
+    """The stall check used to sit below an early return taken whenever nothing had
+    reached an LLM -- so on a run whose judge cache answers every clause, the only
+    monitor that notices a hang was silently switched off. That is exactly the
+    configuration a replayed demo runs in: 8019/8019 clauses from cache, zero calls.
+
+    Progress on such a run shows up as documents finished, not as tokens, so that is
+    what the watch has to include."""
+    rs._LIVE_CLIENTS.clear()          # no client at all: nothing has reached the model
+    meter = rs.LiveMeter(every=3600)
+
+    clock = {"t": 500.0}
+    monkeypatch.setattr(rs.time, "monotonic", lambda: clock["t"])
+    docs = {"n": 12}
+    monkeypatch.setattr(rs, "documents_completed", lambda: docs["n"])
+
+    meter._emit()
+    capsys.readouterr()
+    meter._emit()
+    assert "NOTHING has moved" not in capsys.readouterr().out
+
+    clock["t"] += meter.STILL_SECONDS + 1
+    meter._emit()
+    out = capsys.readouterr().out
+    assert "NOTHING has moved" in out, \
+        "a fully cached run that hangs must still say so -- it is the demo configuration"
+    assert out.isascii()
+
+    # A document finishing is progress even though no token moved.
+    docs["n"] = 13
+    clock["t"] += meter.STILL_SECONDS + 1
+    meter._emit()
+    assert "NOTHING has moved" not in capsys.readouterr().out
+    rs._LIVE_CLIENTS.clear()
+
+
+def test_documents_completed_counts_across_the_thread_pool():
+    """The counter the meter reads is bumped from the document workers, so it has to be
+    safe to read from the meter thread while they run."""
+    import threading
+
+    from lexora import pipeline
+
+    start = pipeline.documents_completed()
+
+    def _bump():
+        for _ in range(200):
+            with pipeline._DOCS_DONE_LOCK:
+                pipeline._DOCS_DONE += 1
+
+    threads = [threading.Thread(target=_bump) for _ in range(4)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert pipeline.documents_completed() == start + 800

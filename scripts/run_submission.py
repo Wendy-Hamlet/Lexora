@@ -43,7 +43,7 @@ from lexora.export.csv_exporter import to_csv  # noqa: E402
 from lexora.export.json_exporter import to_submission_json  # noqa: E402
 from lexora.export.jsonld_exporter import to_jsonld  # noqa: E402
 from lexora.indicators import load_indicators  # noqa: E402
-from lexora.pipeline import MapResult, run_pipeline_map  # noqa: E402
+from lexora.pipeline import MapResult, documents_completed, run_pipeline_map  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent
 INDICATORS = REPO / "configs" / "rdtii_indicators.yaml"
@@ -177,7 +177,12 @@ class LiveMeter(threading.Thread):
         too, and saying "hung" about a healthy run is how a warning gets ignored. It
         reports the fact and how long it has held.
         """
-        counters = (totals["calls"], totals["prompt"], totals["completion"], totals["failed"])
+        # Documents finished belongs in here with the token counters, and is the only one
+        # of the five that moves on a fully cached run -- the configuration a replayed
+        # demo runs in. Watching the LLM alone, "every clause was already judged" and
+        # "three workers are blocked on dead sockets" look exactly the same.
+        counters = (totals["calls"], totals["prompt"], totals["completion"],
+                    totals["failed"], documents_completed())
         now = time.monotonic()
         if counters != self._last_counters:
             self._last_counters = counters
@@ -203,9 +208,14 @@ class LiveMeter(threading.Thread):
 
     def _emit(self) -> None:
         t = _live_totals()
+        elapsed = time.monotonic() - self._t0
+        # BEFORE the early return, not after. The stall check used to sit at the bottom
+        # of this method, below a `return` taken whenever nothing had reached an LLM --
+        # so on a run whose judge cache answers everything, the one monitor that notices
+        # a hang was silently switched off. That is the replayed-demo configuration.
+        self._report_if_nothing_moved(t, elapsed)
         if not t["calls"] and not t["failed"]:
             return  # nothing has reached an LLM yet; the log lines carry the progress
-        elapsed = time.monotonic() - self._t0
         cached_share = f" {t['cached'] / t['prompt']:.0%} cached" if t["prompt"] else ""
         cost = t["cost_cny"]
         money = (f"CNY {cost:.2f}" if cost is not None
@@ -217,7 +227,6 @@ class LiveMeter(threading.Thread):
             + (f" | {t['failed']} FAILED" if t["failed"] else ""),
             flush=True,
         )
-        self._report_if_nothing_moved(t, elapsed)
         # A run whose calls are all failing bills nothing and accounts nothing, so the
         # token line alone looks like a run that is simply quiet. Name it.
         if t["failed"] and not t["calls"]:

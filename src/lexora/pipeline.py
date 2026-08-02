@@ -72,6 +72,22 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+_DOCS_DONE = 0
+_DOCS_DONE_LOCK = threading.Lock()
+
+
+def documents_completed() -> int:
+    """Documents that have finished mapping in this process, cumulatively.
+
+    A progress signal that does not go through the model. The live meter watches the LLM
+    counters to decide whether a run is moving, and on a fully cached run those never
+    move at all -- which is precisely the configuration a replayed demo runs in. Without
+    this, "every clause was already judged" and "three workers are blocked on dead
+    sockets" produce byte-identical monitoring.
+    """
+    with _DOCS_DONE_LOCK:
+        return _DOCS_DONE
+
 
 @dataclass
 class DemoArtifacts:
@@ -633,6 +649,9 @@ def run_pipeline_map(
         artifacts.processing_time_seconds = round(time.perf_counter() - t0, 3)
         with _processed_lock:
             _processed[cache_key] = artifacts
+        global _DOCS_DONE
+        with _DOCS_DONE_LOCK:
+            _DOCS_DONE += 1
         with _progress_lock:
             _progress["done"] += 1
             n = _progress["done"]
