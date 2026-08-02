@@ -32,6 +32,8 @@ from typing import Protocol
 
 import numpy as np
 
+from lexora.extract import ocr_cache
+from lexora.extract.ocr_cache import document_digest
 from lexora.extract.pdf_text_extractor import (
     PAGE_SEPARATOR,
     PdfPage,
@@ -459,18 +461,45 @@ def extract_ocr(
     ``page_numbers`` (1-indexed) restricts OCR to those pages — used to fill only
     the blank slots of a mixed PDF. char offsets here are page-local placeholders;
     :func:`ocr_fill_pages` reflows them into the global document offsets.
+
+    Pages already transcribed at this DPI by this engine family come back from
+    :mod:`lexora.extract.ocr_cache` without being rendered or recognised again — OCR is
+    the one expensive step the record/replay layer cannot cover, because no socket is
+    involved. See that module for why the key ignores GPU vs CPU.
     """
     eng = engine or make_engine()
+    cache = ocr_cache.shared()
+    doc_sha = document_digest(source) if cache is not None else ""
+    hits = misses = 0
     pages: list[OcrPage] = []
     with _open_doc(source) as doc:
         cursor = 0
         for idx, page in enumerate(doc, start=1):
             if page_numbers is not None and idx not in page_numbers:
-                text, conf = "", 0.0
+                text, conf, produced = "", 0.0, eng.name
             else:
-                text, conf = _page_text_and_conf(eng.recognize(_render_page(page, dpi)))
-            pages.append(OcrPage(idx, text, cursor, cursor + len(text), conf, eng.name))
+                key = cache.key(doc_sha, idx, dpi, eng.name) if cache is not None else ""
+                found = cache.get(key) if cache is not None else None
+                if found is not None:
+                    text, conf, produced = found
+                    hits += 1
+                else:
+                    text, conf = _page_text_and_conf(eng.recognize(_render_page(page, dpi)))
+                    # eng.name is read AFTER recognize on purpose: a mid-document GPU
+                    # failure rewrites it, and the row must say which engine really
+                    # produced this page, not which one was asked.
+                    produced = eng.name
+                    misses += 1
+                    if cache is not None:
+                        cache.put(key, text, conf, produced)
+            pages.append(OcrPage(idx, text, cursor, cursor + len(text), conf, produced))
             cursor += len(text) + len(PAGE_SEPARATOR)
+    if cache is not None and (hits or misses):
+        import logging
+
+        logging.getLogger(__name__).info(
+            "OCR cache: %d/%d page(s) served from cache, %d recognised",
+            hits, hits + misses, misses)
     return pages
 
 
