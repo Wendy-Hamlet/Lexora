@@ -123,6 +123,11 @@ class MapResult:
     # is on. Non-citable discovery aid — carried so the runner can print the
     # coverage cross-check; never exported as evidence.
     secondary_signals: list = field(default_factory=list)
+    # The indicators this run was ASKED about. Without them a caller can see which
+    # indicators produced citations but not which produced none, and those are different
+    # facts: "we did not look" and "we looked and there is nothing there" are the two
+    # answers a judge asking about one country and one indicator most needs told apart.
+    indicators: list = field(default_factory=list)
 
 
 def _map_use_dense() -> bool:
@@ -793,7 +798,7 @@ def run_pipeline_map(
 
     return MapResult(
         discovered=hits, documents=documents, citations=citations,
-        secondary_signals=list(secondary_signals),
+        secondary_signals=list(secondary_signals), indicators=list(indicators),
     )
 
 

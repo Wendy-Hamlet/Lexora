@@ -512,6 +512,15 @@ def summarize(iso: str, result: MapResult) -> dict:
     new_instruments = sum(1 for r in result.discovered if r.discovery_tag == "NEW")
     known_instruments = sum(1 for r in result.discovered if r.discovery_tag == "KNOWN")
     indicators_covered = sorted({c.indicator_id for c in result.citations})
+    # An indicator the run ASKED ABOUT and found nothing for is a result, not an absence
+    # of one, and until now it left no trace anywhere: the row simply was not written.
+    # The judges may ask us to run one indicator in one country, so "we returned nothing
+    # for that cell" has to be something the engine SAYS, not something we explain over a
+    # blank screen. Singapore has no data-localisation requirement; the honest output for
+    # SG P6-I1 is an explicit miss, and a tool that produced a provision there would be
+    # inventing one.
+    in_scope = sorted({i.submission_id for i in (result.indicators or [])})
+    indicators_empty = [i for i in in_scope if i not in set(indicators_covered)]
     review_rows = sum(
         1 for c in result.citations if c.review_status.value == "CONFLICT_REVIEW"
     )
@@ -537,10 +546,50 @@ def summarize(iso: str, result: MapResult) -> dict:
         "citations": len(result.citations),
         "indicators_covered": indicators_covered,
         "n_indicators_covered": len(indicators_covered),
+        "indicators_in_scope": in_scope,
+        "indicators_empty": indicators_empty,
+        "citations_by_indicator": {
+            ind: sum(1 for c in result.citations if c.indicator_id == ind)
+            for ind in indicators_covered
+        },
         "review_rows": review_rows,
         "amendment_review_rows": amendment_review_rows,
         "currency_breakdown": currency_breakdown,
     }
+
+
+def _print_indicator_grid(summaries: list[dict]) -> None:
+    """One line per economy per indicator, INCLUDING the ones that found nothing.
+
+    The judges have confirmed that a "specific case" may be one indicator in one country.
+    Until now the answer to a cell we found nothing for was a blank screen, which is the
+    same thing the screen shows when a run is broken -- so the operator had to talk over
+    silence and ask to be believed.
+
+    An empty cell is a finding. Singapore has no data-localisation requirement, so
+    SG / P6-I1 SHOULD come back empty, and a tool that produced a provision for it would
+    be inventing one. That is a good answer, and it is only a good answer if the engine
+    is the thing that says it.
+
+    NO PROVISION FOUND is not the same as NOT ASKED: the scope line above it names every
+    indicator this run put to the judge, so a reader can tell a real miss from a pillar
+    nobody enumerated.
+    """
+    rows = [s for s in summaries if not s.get("error") and s.get("indicators_in_scope")]
+    if not rows:
+        return
+    scope = sorted({i for s in rows for i in s["indicators_in_scope"]})
+    print("\nIndicator coverage (every indicator this run asked about, hit or miss):")
+    print(f"  in scope: {', '.join(scope)}")
+    for s in rows:
+        hits = dict(s.get("citations_by_indicator") or {})
+        empty = set(s.get("indicators_empty") or [])
+        for ind in sorted(s["indicators_in_scope"]):
+            if ind in empty:
+                print(f"  {s['economy']:<11} {ind:<7} NO PROVISION FOUND "
+                      "- judged and returned nothing (not skipped)")
+            else:
+                print(f"  {s['economy']:<11} {ind:<7} {hits.get(ind, 0)} citation(s)")
 
 
 def main() -> None:
@@ -789,6 +838,7 @@ def main() -> None:
               f"{s['citations']:<7}{s['n_indicators_covered']:<6}{s['review_rows']:<8}"
               f"{s.get('amendment_review_rows', 0)}")
     print("-" * 78)
+    _print_indicator_grid(summaries)
     # Amendment-currency roll-up across economies (Tier-2 activity at a glance).
     _curr: dict[str, int] = {}
     for s in summaries:

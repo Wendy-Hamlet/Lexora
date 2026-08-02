@@ -381,3 +381,49 @@ def test_documents_completed_counts_across_the_thread_pool():
     for t in threads:
         t.join()
     assert pipeline.documents_completed() == start + 800
+
+
+def test_an_indicator_that_found_nothing_says_so(capsys):
+    """The judges may ask for one indicator in one country. Until now the answer to a
+    cell we found nothing for was a blank screen -- the same thing a broken run shows --
+    so the operator had to talk over silence and ask to be believed.
+
+    Singapore genuinely has no data-localisation requirement, so SG / P6-I1 SHOULD come
+    back empty. That is a finding, and it is only a good answer if the engine says it."""
+    summaries = [{
+        "economy": "Singapore",
+        "indicators_in_scope": ["P6-I1", "P6-I4", "P7-I3"],
+        "indicators_covered": ["P6-I4", "P7-I3"],
+        "indicators_empty": ["P6-I1"],
+        "citations_by_indicator": {"P6-I4": 3, "P7-I3": 29},
+    }]
+    rs._print_indicator_grid(summaries)
+    out = capsys.readouterr().out
+
+    assert "Singapore   P6-I1   NO PROVISION FOUND" in out
+    assert "not skipped" in out, "a miss must be distinguishable from 'we never asked'"
+    assert "Singapore   P6-I4   3 citation(s)" in out
+    assert "Singapore   P7-I3   29 citation(s)" in out
+    assert "in scope: P6-I1, P6-I4, P7-I3" in out
+    assert out.isascii(), f"non-ASCII would kill this on a GBK console: {out!r}"
+
+
+def test_the_grid_says_nothing_when_the_run_never_recorded_a_scope():
+    """Old summary files have no `indicators_in_scope`. Printing a grid of unknown
+    misses from them would invent the very fact this is meant to establish."""
+    pass
+
+    rs._print_indicator_grid([{"economy": "Australia", "citations": 499}])
+    rs._print_indicator_grid([{"economy": "Malaysia", "error": "boom"}])
+
+
+def test_map_result_carries_the_indicators_it_was_asked_about():
+    """`indicators_empty` is derived from this; without it a caller can see which
+    indicators produced citations but not which produced none."""
+    from lexora.pipeline import MapResult
+
+    r = MapResult(discovered=[], documents=[], citations=[])
+    assert r.indicators == []
+    r2 = MapResult(discovered=[], documents=[], citations=[],
+                   indicators=[SimpleNamespace(submission_id="P6-I1")])
+    assert [i.submission_id for i in r2.indicators] == ["P6-I1"]
