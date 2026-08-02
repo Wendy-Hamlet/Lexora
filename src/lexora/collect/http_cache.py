@@ -33,6 +33,7 @@ by URL. Both stores live under ``data/http_cache/``.
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -186,38 +187,106 @@ def read_body_within(response: httpx.Response, deadline: float | None = None) ->
         response.read()
         return response.content
 
-    started = last_byte = time.monotonic()
+    started = time.monotonic()
     chunks: list[bytes] = []
     got = 0
-    for chunk in response.iter_bytes():
+    state = _BodyClock(started)
+
+    # The budgets are enforced by a WATCHDOG THREAD, not by a check inside the read loop.
+    #
+    # The check used to live in the loop, which cannot work and shipped anyway: the loop
+    # body only runs when a chunk ARRIVES, so a stream that stops dead never evaluates it.
+    # It could catch a trickle that resumed after too long a gap; it could never catch the
+    # thing it was written for. Measured 2026-08-02, four hours after that guard shipped:
+    # three sockets to the Malaysian portal sat ESTABLISHED for 27 minutes, zero bytes in
+    # any 60-second window, process CPU flat at +0.016 s/30 s -- and the idle budget, set
+    # to 180 s, was never once evaluated. httpx's own read timeout (60 s here) did not
+    # fire either; rather than reason about why, the deadline is now kept by a clock that
+    # runs whether or not bytes arrive.
+    #
+    # Closing the response from the watchdog is what unblocks the read: the socket goes
+    # away underneath it and the iterator raises. That is asserted in the tests against a
+    # real server that accepts a connection, sends headers and then never sends a byte.
+    watchdog = threading.Thread(
+        target=_watch_body, args=(response, state, budget, idle_budget),
+        name="lexora-body-watchdog", daemon=True,
+    )
+    watchdog.start()
+    try:
+        for chunk in response.iter_bytes():
+            chunks.append(chunk)
+            got += len(chunk)
+            state.saw_bytes(got)
+    except Exception:
+        # A read that fails because the watchdog pulled the socket is a deadline, not a
+        # network fault: callers treat the two very differently (one is a refusing portal
+        # to retry, the other is a document to give up on and say so).
+        if state.expired is not None:
+            raise BodyDeadlineExceeded(state.expired) from None
+        raise
+    finally:
+        state.stop.set()
+        watchdog.join(timeout=1.0)
+    if state.expired is not None:
+        raise BodyDeadlineExceeded(state.expired)
+    return b"".join(chunks)
+
+
+class _BodyClock:
+    """When the last byte landed, readable from the watchdog thread."""
+
+    def __init__(self, started: float) -> None:
+        self.started = started
+        self._last = started
+        self._got = 0
+        self._lock = threading.Lock()
+        self.stop = threading.Event()
+        self.expired: str | None = None
+
+    def saw_bytes(self, total: int) -> None:
+        with self._lock:
+            self._last = time.monotonic()
+            self._got = total
+
+    def snapshot(self) -> tuple[float, int]:
+        with self._lock:
+            return self._last, self._got
+
+
+def _watch_body(
+    response: httpx.Response, state: _BodyClock, budget: float, idle_budget: float
+) -> None:
+    """Close ``response`` once a budget is blown, so the blocked read gives up.
+
+    An IDLE budget as well as a total one, because the two failures look nothing alike and
+    only one of them is a failure. A body arriving steadily at 54 kB/s is a 33 MB Act
+    downloading; a body that has produced no new byte in minutes is a socket that was
+    accepted and abandoned. Capping TOTAL time cannot tell them apart, and cost us both
+    ways: a 300 s cap once cut two real Malaysian Acts, and a 600 s cap cut the
+    Communications and Multimedia Act 1998 -- a GOLD instrument -- at 32.8 MB and 54 kB/s.
+    """
+    tick = min(1.0, idle_budget / 4 if idle_budget > 0 else 1.0)
+    while not state.stop.wait(tick):
         now = time.monotonic()
-        # An IDLE budget, not just a total one, because the two failures look nothing
-        # alike and only one of them is a failure. A body arriving steadily at 54 kB/s
-        # is a 33 MB Act downloading; a body that has produced no new byte in minutes is
-        # a socket that was accepted and abandoned. Capping TOTAL time cannot tell them
-        # apart, and cost us both ways: a 300s cap once cut two real Malaysian Acts, and
-        # a 600s cap cut the Communications and Multimedia Act 1998 -- a GOLD instrument
-        # -- at 32.8 MB and 54 kB/s, while a 27-minute stall with the total budget at two
-        # hours went entirely unnoticed. Measure the gap between bytes instead.
-        if idle_budget > 0 and (now - last_byte) > idle_budget:
-            response.close()
-            raise BodyDeadlineExceeded(
-                f"no body byte for {now - last_byte:.0f}s "
-                f"({got} bytes in {now - started:.0f}s so far); "
+        last, got = state.snapshot()
+        elapsed = now - state.started
+        if idle_budget > 0 and (now - last) > idle_budget:
+            state.expired = (
+                f"no body byte for {now - last:.0f}s "
+                f"({got} bytes in {elapsed:.0f}s so far); "
                 f"idle budget is {idle_budget:.0f}s (LEXORA_BODY_IDLE)"
             )
-        chunks.append(chunk)
-        got += len(chunk)
-        last_byte = now
-        elapsed = now - started
-        if 0 < budget < elapsed:
-            response.close()
-            raise BodyDeadlineExceeded(
+        elif 0 < budget < elapsed:
+            state.expired = (
                 f"body still arriving after {elapsed:.0f}s "
                 f"({got} bytes at {got / max(elapsed, 1e-9):.0f} B/s); "
                 f"budget is {budget:.0f}s (LEXORA_BODY_DEADLINE)"
             )
-    return b"".join(chunks)
+        else:
+            continue
+        with contextlib.suppress(Exception):
+            response.close()
+        return
 
 
 def default_dir() -> Path:
