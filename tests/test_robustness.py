@@ -651,7 +651,10 @@ def test_the_sdk_is_told_not_to_retry_under_replay(monkeypatch):
         def __init__(self, **kw):
             seen.update(kw)
 
-    import openai
+    # CI installs `.[dev]`, not `.[llm]`, so the SDK is absent there and this test
+    # would fail on import alone -- as it did on d6e4350. The behaviour it checks is
+    # real; only the dependency is optional.
+    openai = pytest.importorskip("openai")
     monkeypatch.setattr(openai, "OpenAI", _Fake)
 
     for replay, expected in ((True, 0), (False, None)):
