@@ -37,6 +37,7 @@ import contextlib
 import hashlib
 import json
 import os
+import socket
 import sqlite3
 import threading
 import time
@@ -237,9 +238,10 @@ def read_body_within(response: httpx.Response, deadline: float | None = None) ->
     # fire either; rather than reason about why, the deadline is now kept by a clock that
     # runs whether or not bytes arrive.
     #
-    # Closing the response from the watchdog is what unblocks the read: the socket goes
-    # away underneath it and the iterator raises. That is asserted in the tests against a
-    # real server that accepts a connection, sends headers and then never sends a byte.
+    # Shutting the socket down from the watchdog is what unblocks the read: the reader gets
+    # EOF and either raises or returns short. Closing it is NOT enough -- that works on
+    # Windows and does nothing on POSIX, which is why this asserted itself green here for a
+    # day while hanging forever on Linux. See `_interrupt`.
     watchdog = threading.Thread(
         target=_watch_body, args=(response, state, budget, idle_budget),
         name="lexora-body-watchdog", daemon=True,
@@ -317,8 +319,34 @@ def _watch_body(
             )
         else:
             continue
-        with contextlib.suppress(Exception):
-            response.close()
+        _interrupt(response)
+
+
+def _interrupt(response: httpx.Response) -> None:
+    """End a read that is already blocked in ``recv``, on this platform and the other one.
+
+    ``response.close()`` alone is enough on Windows, where closing a socket wakes a recv
+    that is already waiting on it. On POSIX it is not: the kernel keeps the underlying file
+    description alive for the blocked call, so closing the descriptor changes nothing and
+    the reader waits forever. Measured 2026-08-03 -- the same probe returns in 1.0s on
+    win32 and is still blocked after 20s on Linux.
+
+    That difference cost a CI job six hours on all three Python versions, with no output at
+    all: the suite hung in the very test that asserts this deadline works, and because
+    stdout is block-buffered when it is not a terminal, a process that never exits never
+    flushes a single character. The watchdog was decorative on every machine but ours.
+
+    ``shutdown`` is the portable interrupt -- it delivers EOF to the waiting reader rather
+    than trying to take the descriptor away from it. Closing afterwards still matters: it
+    releases the connection.
+    """
+    stream = response.extensions.get("network_stream")
+    sock = stream.get_extra_info("socket") if stream is not None else None
+    if sock is not None:
+        with contextlib.suppress(OSError, AttributeError):
+            sock.shutdown(socket.SHUT_RDWR)
+    with contextlib.suppress(Exception):
+        response.close()
         return
 
 

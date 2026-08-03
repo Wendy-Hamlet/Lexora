@@ -100,6 +100,27 @@ def test_a_socket_that_sends_nothing_gives_up_on_the_idle_budget(silent, monkeyp
     assert "LEXORA_BODY_IDLE" in str(err.value)
 
 
+def test_the_read_ends_even_when_closing_the_response_does_nothing(silent, monkeypatch):
+    """The watchdog used to rely on `response.close()` waking a recv already blocked on the
+    socket. That is a Windows behaviour, not a portable one: the same probe returns in 1.0s
+    on win32 and is still blocked after 20s on Linux, because POSIX keeps the file
+    description alive for the waiting call. So this file -- the file that asserts the
+    deadline works -- hung forever on CI, on all three Python versions, and the job was
+    killed at the runner's six-hour limit having printed nothing at all.
+
+    Disabling close() leaves the socket shutdown as the only thing that can end the read.
+    That is the mechanism which works on both platforms, so it is the one under test."""
+    monkeypatch.setenv("LEXORA_BODY_IDLE", "2")
+    monkeypatch.setenv("LEXORA_BODY_DEADLINE", "0")
+    monkeypatch.setattr(httpx.Response, "close", lambda self: None)
+
+    t0 = time.monotonic()
+    with pytest.raises(BodyDeadlineExceeded):
+        read_body_within(_stream(silent.port))
+    elapsed = time.monotonic() - t0
+    assert elapsed < 15, f"took {elapsed:.1f}s -- only close() was ending this read"
+
+
 def test_a_dribble_that_never_ends_gives_up_on_the_total_budget(monkeypatch):
     """The other failure, and the reason a total budget survives: bytes keep arriving, so
     the idle clock is reset forever, and only the wall-clock cap stops it."""

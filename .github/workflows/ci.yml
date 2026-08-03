@@ -8,6 +8,10 @@ on:
 jobs:
   lint-and-test:
     runs-on: ubuntu-latest
+    # A normal run is ~80s. The default is SIX HOURS, and on 2026-08-02 all three jobs
+    # spent every minute of it blocked in one test, then reported "cancelled" -- which
+    # reads like someone pressed a button, not like a bug.
+    timeout-minutes: 15
     strategy:
       matrix:
         python-version: ["3.10", "3.11", "3.12"]
@@ -33,4 +37,8 @@ jobs:
         continue-on-error: true
 
       - name: Test (pytest)
-        run: pytest --cov=lexora --cov-report=term-missing
+        # -u, because the six-hour hang produced ZERO output: pytest's dots go to a pipe,
+        # a pipe is block-buffered, and a process that never exits never flushes. The log
+        # could not say whether it died on the first test or the last. Unbuffered, the
+        # next hang names itself. -v for the same reason.
+        run: python -u -m pytest -v --cov=lexora --cov-report=term-missing
