@@ -512,6 +512,48 @@ def test_a_filtered_run_does_not_report_a_miss_as_a_fact_about_the_country(capsy
     assert out.isascii()
 
 
+def _cite(ind: str):
+    return SimpleNamespace(indicator_id=ind)
+
+
+def test_narrowing_the_output_does_not_narrow_the_run(capsys, monkeypatch):
+    """A judge names one indicator. Loading only that indicator would rewrite the judge
+    prompt, and the verdict cache is keyed on the rendered prompt -- in replay every
+    judgement would miss, return a synthetic 504 and degrade to the keyword lane. So the
+    narrowing happens AFTER the run, on the written file only."""
+    monkeypatch.setenv("LEXORA_ONLY_INDICATOR", "p7-i3")   # case must not matter
+    cites = [_cite("P7-I3"), _cite("P6-I4"), _cite("P7-I3"), _cite("P7-I5")]
+    summaries = [{"economy": "Malaysia",
+                  "indicators_in_scope": ["P6-I4", "P7-I3", "P7-I5"]}]
+
+    kept = rs._narrow_output_to_indicator(cites, summaries)
+
+    assert [c.indicator_id for c in kept] == ["P7-I3", "P7-I3"]
+    out = capsys.readouterr().out
+    assert "2 of 4" in out
+    assert "judged every in-scope indicator" in out, "the screen must say the run was full"
+
+
+def test_a_mistyped_indicator_writes_the_full_output_not_an_empty_one(capsys, monkeypatch):
+    """An empty CSV on stage cannot be told apart from 'this economy has no such
+    provision'. A typo must be loud and must not fabricate that finding."""
+    monkeypatch.setenv("LEXORA_ONLY_INDICATOR", "P7-13")   # one instead of I
+    cites = [_cite("P7-I3"), _cite("P6-I4")]
+    summaries = [{"economy": "Malaysia", "indicators_in_scope": ["P6-I4", "P7-I3"]}]
+
+    kept = rs._narrow_output_to_indicator(cites, summaries)
+
+    assert len(kept) == 2, "a typo must not silently empty the file"
+    assert "is not one of the indicators" in capsys.readouterr().out
+
+
+def test_the_narrowing_is_off_unless_asked(capsys, monkeypatch):
+    monkeypatch.delenv("LEXORA_ONLY_INDICATOR", raising=False)
+    cites = [_cite("P7-I3"), _cite("P6-I4")]
+    assert rs._narrow_output_to_indicator(cites, [{}]) is cites
+    assert capsys.readouterr().out == ""
+
+
 def test_an_unfiltered_run_carries_no_such_warning(capsys):
     summaries = [{
         "economy": "Malaysia",

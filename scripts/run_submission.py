@@ -565,6 +565,42 @@ def summarize(iso: str, result: MapResult) -> dict:
     }
 
 
+def _narrow_output_to_indicator(citations: list, summaries: list[dict]) -> list:
+    """LIVE-PITCH ONLY. Narrow the WRITTEN OUTPUT to one indicator, after the run.
+
+    A judge names an economy and an indicator and expects to watch the engine answer THAT.
+    The obvious way -- load only that indicator -- is the wrong one: the per-clause judge
+    puts all nine indicators in one prompt, and the verdict cache is keyed on the RENDERED
+    prompt, so dropping eight of them changes every key. In replay an unanswered judgement
+    is a synthetic 504, the breaker opens, and every document degrades to the keyword lane.
+    The run would appear to work while every row said the model never saw it.
+
+    So nothing about the run changes: all nine indicators are discovered, mapped and judged
+    exactly as always, the cache still hits, and only the file we write is filtered. That
+    also keeps the empty answer meaningful -- the indicator really was judged across the
+    whole economy, so nothing found is a finding rather than an artefact of the filter,
+    which is the opposite of what LEXORA_ONLY_LAW can promise.
+
+    The printed indicator grid deliberately still shows all nine: the narrowing is a
+    presentation choice and the screen should say so.
+    """
+    want = os.environ.get("LEXORA_ONLY_INDICATOR", "").strip().upper()
+    if not want:
+        return citations
+    in_scope = sorted({i for s in summaries for i in (s.get("indicators_in_scope") or [])})
+    if in_scope and want not in in_scope:
+        # A typo would silently write an empty CSV, which on stage is indistinguishable
+        # from "this economy has no such provision" -- the one confusion we never allow.
+        print(f"\n!! LEXORA_ONLY_INDICATOR={want!r} is not one of the indicators this run "
+              f"asked about ({', '.join(in_scope)}). Writing the FULL output instead.")
+        return citations
+    kept = [c for c in citations if c.indicator_id.upper() == want]
+    print(f"\nLEXORA_ONLY_INDICATOR={want}: the run judged every in-scope indicator as "
+          f"usual; only the written file is narrowed, to {len(kept)} of {len(citations)} "
+          f"row(s). The grid below still shows the whole run.")
+    return kept
+
+
 def _print_indicator_grid(summaries: list[dict]) -> None:
     """One line per economy per indicator, INCLUDING the ones that found nothing.
 
@@ -847,6 +883,8 @@ def main() -> None:
         all_citations, dead_links = annotate_dead_links(all_citations, checks)
         print(f"\nLink check: probed {len(checks)} distinct URL(s), "
               f"{dead_links} citation row(s) carry a dead-link note.")
+
+    all_citations = _narrow_output_to_indicator(all_citations, summaries)
 
     # Same writer as main.py: the CSV, the JSON sidecar (per-provision OCR audit, timing,
     # model version, raw context), the JSON-LD dump and the reviewer console — and the
