@@ -39,6 +39,9 @@ jobs:
       - name: Test (pytest)
         # -u, because the six-hour hang produced ZERO output: pytest's dots go to a pipe,
         # a pipe is block-buffered, and a process that never exits never flushes. The log
-        # could not say whether it died on the first test or the last. Unbuffered, the
-        # next hang names itself. -v for the same reason.
-        run: python -u -m pytest -v --cov=lexora --cov-report=term-missing
+        # could not say whether it died on the first test or the last.
+        #
+        # -vv, not -v: pytest SUMS verbosity flags and pyproject's addopts already carries
+        # -q, so a single -v only cancels it back to the default. -vv reaches one line per
+        # test, which is the difference between "it hung in this file" and naming it.
+        run: python -u -m pytest -vv --cov=lexora --cov-report=term-missing
