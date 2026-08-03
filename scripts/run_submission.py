@@ -408,7 +408,19 @@ def run_one(
                if amendment_extractor.error_count else "")
         )
         _account("amendment", amendment_extractor._client)
-    if rationale_gen._client is not None:
+    # Always report, including when the layer is OFF. At the 2026-08-03 live pitch the
+    # judges asked for a full Singapore run and read a Mapping Rationale column that was
+    # 181/181 deterministic template, because the command omitted --rationale-llm. This
+    # line used to be printed only when the client existed, so a run with the layer off
+    # said nothing about rationales at all and the omission had no output signature --
+    # every rehearsal artifact was 0% LLM and nobody noticed for two weeks.
+    if rationale_gen._client is None:
+        print(
+            f"  LLM rationale [{iso}]: OFF -- the whole Mapping Rationale column is the "
+            "deterministic template (it restates the section number and indicator name). "
+            "Pass --rationale-llm to have the model author it."
+        )
+    else:
         print(
             f"  LLM rationale usage [{iso}]: {rationale_gen.llm_used} authored, "
             f"{rationale_gen.fallbacks} fell back to template"

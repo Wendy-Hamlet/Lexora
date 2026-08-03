@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# The live-pitch demo, for a bash shell (Git Bash). See demo.ps1 for PowerShell.
+# The live-pitch demo, for a bash shell (Git Bash). There is no demo.ps1 -- the
+# PowerShell operator handbook spells the commands out longhand instead.
 #
 # Why this file exists: every command handed to the operator during development was
 # written in bash, and Windows' default terminal is PowerShell, where `VAR=value cmd`
@@ -29,5 +30,15 @@ fi
 
 # A whole economy. Unset the filter explicitly: leaving it set would quietly turn a
 # full run into a one-law run, and the row count is the only symptom.
+#
+# --rationale-llm is NOT optional here, whatever it costs in wall clock. This line used
+# to carry only --verify-clauses, because it was first written to time a run. On
+# 2026-08-03 the judges asked for a full Singapore run, and it handed them 181 of 181
+# rows whose Mapping Rationale was the deterministic template -- strictly worse than the
+# submitted file (70.9% model-authored) that the same judges were holding. The clause
+# verdicts replay from cache; the rationale calls are live, so this run is slower and
+# does bill. That is the correct trade: the rationale is the column a policy judge reads.
 unset LEXORA_ONLY_LAW
-exec "$PY" scripts/run_submission.py -j "$1" --verify-clauses --out "outputs/live_$1.csv"
+exec "$PY" scripts/run_submission.py -j "$1" --verify-clauses \
+    --rationale-llm --metadata-llm \
+    --out "outputs/live_$1.csv"
