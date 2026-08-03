@@ -54,6 +54,34 @@ def _cached_tokens(usage) -> int:
     return int(getattr(usage, "prompt_cache_hit_tokens", 0) or 0)
 
 
+def _in_replay() -> bool:
+    """Is the whole process serving HTTP from a recording rather than the network?"""
+    try:
+        from lexora.collect import http_cache
+    except Exception:      # pragma: no cover - the record/replay layer is optional
+        return False
+    return http_cache.mode() == http_cache.REPLAY
+
+
+def _is_replay_miss(exc: Exception) -> bool:
+    """Was this failure the replay layer saying "I have no recording of that request"?
+
+    Such a failure is DETERMINISTIC. Retrying it -- at our layer or the SDK's -- cannot
+    change the answer; it only spends wall clock before the caller degrades anyway. The
+    marker is set where the synthetic response is built, so this stays true even if the
+    status code changes later.
+    """
+    resp = getattr(exc, "response", None)
+    headers = getattr(resp, "headers", None)
+    if headers is not None:
+        try:
+            if headers.get("x-lexora-cache") == "miss":
+                return True
+        except Exception:  # pragma: no cover - exotic header containers
+            pass
+    return "no recording for this request" in str(exc)
+
+
 class LlmClient:
     """Thin wrapper over an OpenAI-compatible chat endpoint.
 
@@ -155,9 +183,19 @@ class LlmClient:
             default_headers = (
                 {"User-Agent": self.user_agent} if self.user_agent else None
             )
+            kwargs = {}
+            if _in_replay():
+                # The SDK retries 5xx twice by default, with exponential backoff. Under
+                # replay a 5xx is OUR synthetic 504 for a request that was never recorded
+                # -- it is deterministic, so every retry is guaranteed to fail the same
+                # way and buys nothing but wall clock. Measured on Malaysia: three
+                # documents whose clauses had no cached verdict took 65.4s, 65.4s and
+                # 65.6s against ~1.8s for the other 106, which is 196s of a 483s run
+                # spent re-asking a question with a fixed answer.
+                kwargs["max_retries"] = 0
             self._client = OpenAI(
                 base_url=self.base_url, api_key=self.api_key, timeout=self.timeout,
-                default_headers=default_headers,
+                default_headers=default_headers, **kwargs,
             )
         return self._client
 
@@ -201,6 +239,8 @@ class LlmClient:
                     self._account_failure(exc)
                     raise
                 last_error = exc
+                if _is_replay_miss(exc):
+                    break        # a recording that lacks this request will lack it again
                 self._backoff(i, len(plan))
                 continue
             self._account(resp)

@@ -4,8 +4,11 @@ session's per-render call is faked)."""
 from __future__ import annotations
 
 import importlib.util
+import threading
 from pathlib import Path
 from types import SimpleNamespace
+
+import pytest
 
 from lexora.collect.browser import BrowserSession, RenderedResult
 from lexora.collect.discovery import sg_results_present
@@ -567,3 +570,95 @@ def test_an_unfiltered_run_carries_no_such_warning(capsys):
     out = capsys.readouterr().out
     assert "FILTERED" not in out
     assert "Malaysia    P6-I4   NO PROVISION FOUND" in out
+
+
+# --- retrying a replay miss is spending wall clock on a fixed answer -----------------
+
+def test_a_replay_miss_is_not_retried(monkeypatch):
+    """Under replay, a request with no recording comes back as OUR synthetic 504. It will
+    come back that way every time, so retrying it buys nothing. Measured on Malaysia:
+    the three documents whose clauses had no cached verdict took 65.4/65.4/65.6s against
+    ~1.8s for the other 106 -- 196s of a 483s run, re-asking a settled question."""
+    from lexora.classify import llm_client as lc
+
+    class _Resp:
+        headers = {"x-lexora-cache": "miss"}
+
+    class _Miss(Exception):
+        response = _Resp()
+
+    attempts = []
+
+    class _Chat:
+        class completions:
+            @staticmethod
+            def create(**kw):
+                attempts.append(kw)
+                raise _Miss("504 no recording for this request")
+
+    c = lc.LlmClient.__new__(lc.LlmClient)
+    c._client = SimpleNamespace(chat=_Chat)
+    c.max_retries, c.use_json_mode, c.retry_backoff = 5, False, 0.0
+    c.retry_backoff_cap, c.model, c.temperature, c.max_tokens = 8.0, "m", 0.0, 16
+    c.disable_thinking = False
+    c._account_lock = threading.Lock()
+    c.failed_calls, c.last_error = 0, ""
+    monkeypatch.setattr(c, "_ensure_client", lambda: c._client)
+
+    with pytest.raises(lc.LlmResponseError):
+        c.chat("sys", "user", json_schema={"type": "object"})
+
+    assert len(attempts) == 1, f"a deterministic miss was retried {len(attempts)} times"
+
+
+def test_a_real_api_error_is_still_retried(monkeypatch):
+    """The fast path must not swallow genuine flakiness: a 500 with no replay marker is
+    exactly the case retries exist for."""
+    from lexora.classify import llm_client as lc
+
+    attempts = []
+
+    class _Chat:
+        class completions:
+            @staticmethod
+            def create(**kw):
+                attempts.append(kw)
+                raise RuntimeError("500 upstream connect error")
+
+    c = lc.LlmClient.__new__(lc.LlmClient)
+    c._client = SimpleNamespace(chat=_Chat)
+    c.max_retries, c.use_json_mode, c.retry_backoff = 3, False, 0.0
+    c.retry_backoff_cap, c.model, c.temperature, c.max_tokens = 8.0, "m", 0.0, 16
+    c.disable_thinking = False
+    c._account_lock = threading.Lock()
+    c.failed_calls, c.last_error = 0, ""
+    monkeypatch.setattr(c, "_ensure_client", lambda: c._client)
+
+    with pytest.raises(lc.LlmResponseError):
+        c.chat("sys", "user", json_schema={"type": "object"})
+
+    assert len(attempts) > 1, "a transient error must still be retried"
+
+
+def test_the_sdk_is_told_not_to_retry_under_replay(monkeypatch):
+    """Our own loop is only half of it: the OpenAI SDK retries 5xx twice by default,
+    with backoff, before we ever see the exception."""
+    from lexora.classify import llm_client as lc
+
+    seen = {}
+
+    class _Fake:
+        def __init__(self, **kw):
+            seen.update(kw)
+
+    import openai
+    monkeypatch.setattr(openai, "OpenAI", _Fake)
+
+    for replay, expected in ((True, 0), (False, None)):
+        seen.clear()
+        monkeypatch.setattr(lc, "_in_replay", lambda r=replay: r)
+        c = lc.LlmClient.__new__(lc.LlmClient)
+        c._client = None
+        c.base_url, c.api_key, c.timeout, c.user_agent = "u", "k", 5.0, None
+        c._ensure_client()
+        assert seen.get("max_retries") == expected, f"replay={replay} -> {seen}"
