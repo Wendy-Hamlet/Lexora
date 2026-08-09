@@ -124,7 +124,10 @@ def test_llm_output_copying_provision_is_rejected():
 
 
 def test_llm_overlength_output_falls_back():
-    gen = RationaleGenerator(_FakeClient("x " * 200))  # > 300 chars
+    # Length expressed relative to the constant, not hardcoded: the cap moved from 300 to
+    # 1000 on 2026-08-09 and a test that pins a literal length silently stops testing the
+    # guard it is named after.
+    gen = RationaleGenerator(_FakeClient("x " * (RATIONALE_MAX_CHARS // 2 + 10)))
     out, _note = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
     assert len(out) <= RATIONALE_MAX_CHARS
     assert gen.fallbacks == 1
@@ -182,13 +185,16 @@ def test_a_rationale_that_scores_falls_back_to_the_template():
 # prompt or a less trigger-happy guard. These pin the attribution.
 
 _COPY = "transfer personal data to a country or territory"   # 8 words lifted from _TEXT
+# Comfortably over the cap, whatever the cap currently is. "Mechanism. " shares no 6-word
+# run with _TEXT, so it trips `too_long` and nothing else.
+_LONG = "Mechanism. " * (RATIONALE_MAX_CHARS // 11 + 4)
 
 
 def test_each_fallback_reason_is_named():
     cases = {
         "empty": "",
         "score_talk": "Section 26 conditions outbound flows and should score 0.",
-        "too_long": "Mechanism. " * 40,                       # >300 chars, no copied run
+        "too_long": _LONG,                                    # over the cap, no copied run
         "copied_provision": f"Section 26 says an organisation must not {_COPY}.",
     }
     for expected, output in cases.items():
@@ -206,8 +212,8 @@ def test_overlapping_reasons_are_all_recorded_not_just_the_first():
     """An `or` chain can only ever name the first reason, and the first reason is not
     the actionable one: a rationale that copies AND runs long is not fixed by relaxing
     the copy check."""
-    gen = RationaleGenerator(_FakeClient(f"It provides that an organisation must not {_COPY}. "
-                                         + "Mechanism. " * 30))
+    gen = RationaleGenerator(_FakeClient(
+        f"It provides that an organisation must not {_COPY}. " + _LONG))
     gen.generate(_indicator(), _profile(), _clause(), "S. 26")
     assert gen.fallback_reasons == {"copied_provision+too_long": 1}
 

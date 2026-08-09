@@ -28,7 +28,14 @@ from lexora.models.clause import Clause
 from lexora.models.indicator import RDTIIIndicator
 from lexora.models.source import SourceProfile
 
-RATIONALE_MAX_CHARS = 300
+# 300 was the ESCAP submission template's official cap on the Mapping Rationale cell. The
+# competition is over and that cap binds nothing, but it was still throwing away most of the
+# model's work: measured on a full Singapore run (2026-08-09), 59 of 77 fallbacks -- 28.5% of
+# all rationales -- were discarded for `too_long` ALONE, against 13 for the verbatim-copy
+# guard we had been blaming for two months. A rationale a few characters over the line was
+# replaced by a template sentence that restates the row's own two other columns, which is
+# strictly less information than the answer we threw away.
+RATIONALE_MAX_CHARS = 1000
 _COPY_NGRAM = 6  # a 6+ word run copied from the provision counts as reproducing it
 
 
