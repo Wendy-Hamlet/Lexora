@@ -157,10 +157,21 @@ class LiveMeter(threading.Thread):
                 # capsys) stayed green. Everything printed is ASCII now; this is the belt.
                 print(f"  ~ (meter: {type(exc).__name__}, continuing)", flush=True)
 
-    # How long the counters may stand still before that itself is the news. Long enough
-    # to sit through a big scan's OCR and a slow download (one Malaysian document
-    # legitimately took 21 minutes), short enough to beat the body deadline.
-    STILL_SECONDS = 480.0
+    # How long the counters may stand still before that itself is the news. This has to
+    # clear the longest LEGITIMATE quiet period, and it did not: the comment here claimed
+    # it was "long enough to sit through a big scan's OCR and a slow download (one
+    # Malaysian document legitimately took 21 minutes)" while the value was 8 minutes. So
+    # the one healthy 21-minute document reported itself as a possible hang, twice, on
+    # every run that fetched it -- and a monitor that cries wolf on a healthy run is worse
+    # than none, because the next person discounts the real one.
+    #
+    # 1500s = 25 minutes, clear of the 21-minute observation with margin. The real stall
+    # this exists for held for 27 minutes and is still caught, but only just, and that
+    # narrowness is the honest state of the art here: nothing in the process reports
+    # work-in-progress, so a long OCR and three workers blocked on dead sockets look
+    # identical from outside. Separating them needs a counter that moves DURING a document
+    # (pages recognised, bytes fetched), not just when one finishes.
+    STILL_SECONDS = 1500.0
 
     def _report_if_nothing_moved(self, totals: dict, elapsed: float) -> None:
         """Say when the numbers stop changing, because the heartbeat itself will not.
@@ -722,12 +733,23 @@ def main() -> None:
                          "discovery-attribution ceiling — a law surfaced by one indicator's "
                          "query is still mapped for the other eight (recovers e.g. MY PDPA "
                          "s.129 for P6-I4, SG PDPA s.26/s.11). Needs LEXORA_LLM_* endpoint.")
-    ap.add_argument("--rationale-llm", action="store_true",
+    # These two default ON, like --no-ocr below and for the same reason: the failure they
+    # prevent is silent and lands in a deliverable column. With the rationale layer off,
+    # every Mapping Rationale is a template restating the row's own Article and Indicator
+    # columns -- that is what a full Singapore run showed the judges on 2026-08-03, because
+    # the flag was optional and the command that got demonstrated had dropped it. With the
+    # metadata layer off, Law Number / Ref and Last Amended are empty on ALL 181 rows,
+    # because the Singapore portal publishes no structured metadata and nothing else fills
+    # them; a blank cell reads as "this Act has no number", not as "we did not look".
+    # Both are cached per corpus now, so the cost is paid once rather than every run.
+    ap.add_argument("--rationale-llm", action=argparse.BooleanOptionalAction, default=True,
                     help="Author the Mapping Rationale column with the LLM (template fallback "
-                         "+ verbatim-copy guard; needs LEXORA_LLM_* endpoint)")
-    ap.add_argument("--metadata-llm", action="store_true",
+                         "+ verbatim-copy guard; needs LEXORA_LLM_* endpoint). ON by default; "
+                         "--no-rationale-llm ships the deterministic template instead")
+    ap.add_argument("--metadata-llm", action=argparse.BooleanOptionalAction, default=True,
                     help="Extract Law Number / Last Amended from document text with the LLM "
-                         "(source-verified) when portal channel + curated anchor don't supply them")
+                         "(source-verified) when portal channel + curated anchor don't supply "
+                         "them. ON by default; --no-metadata-llm leaves both columns empty")
     ap.add_argument("--amendment-llm", action="store_true",
                     help="Extract amendment instructions (Tier-2 provision adjudication) with the "
                          "LLM, source-verified, regex fallback; runs concurrently under "
