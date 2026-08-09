@@ -297,6 +297,29 @@ following the instructions above pointed a local Ollama at a model it had never 
 every judgement 404'd. `tests/test_provenance.py::test_config_swap_reaches_every_llm_lane`
 now pins this lane by lane.)
 
+**Why you would actually use that override: the judge and the writing lanes want different
+models, and the gap is large.** Measured 2026-08-09 on a full Singapore run, changing only
+the judge:
+
+| judge model | citations | rationale lane | cold judge cost |
+| :---- | ----: | :---- | ----: |
+| GLM-5.2 | **181** | — | ¥7.8 equivalent |
+| DeepSeek-V4-Flash | **73** | — | ¥7.84 |
+
+Zero documents degraded and 8 failures in 7,705 calls, so that is the judge's real opinion,
+not an outage. Precision is not buying the difference back: on the Malaysian PDPA against
+the legal group's provision-level gold, the two score 35% and 32–34% precision, while gold
+recall is 62% (DeepSeek, identical on 3 cold passes) against 69–85% (GLM, 3 cold passes).
+Fewer citations at the same precision means fewer true positives, and for a tool whose job
+is to find provisions, that is the whole ballgame.
+
+The writing lanes are the opposite case. DeepSeek-V4-Flash authored 94.1% of Mapping
+Rationales against GLM's 93.2%, at roughly a thirteenth of the price. So the configuration
+this repo runs is **split**: `LEXORA_BRUTE_MODEL` for the judge, `LEXORA_LLM_MODEL` for
+rationale, metadata and amendment extraction. If you swap one model in for everything —
+which the paragraph above tells you how to do, and which is the right default for a stranger
+— expect the judge to dominate your output quality and price it accordingly.
+
 ### Open-source fallback (if commercial API)
 
 Swapping the endpoint works. **Swapping in a small open-weight model does not preserve the
