@@ -94,9 +94,13 @@ class LlmClient:
         cfg = load_config()
         self.base_url = cfg.llm_base_url
         self.api_key = cfg.llm_api_key
-        # ``model`` overrides the configured default (e.g. the per-clause verifier
-        # pins the reliable non-reasoning deepseek-v4-flash regardless of
-        # LEXORA_LLM_MODEL, which may point at a reasoning backend).
+        # ``model`` overrides the configured default. NOTE: the per-clause verifier used to
+        # pin a vendor model here regardless of LEXORA_LLM_MODEL; `a253b1a` removed that,
+        # because it broke the one promise the no-vendor-lock-in rubric tests -- point
+        # LEXORA_LLM_BASE_URL at a local server, as the README says to, and that lane still
+        # asked it for a model it had never heard of. Unset now means "follow
+        # LEXORA_LLM_MODEL", so changing that setting DOES change the judge, and with it
+        # every key in the verdict cache.
         self.model = model or cfg.llm_model
         self.max_tokens = cfg.llm_max_tokens
         self.max_retries = cfg.llm_max_retries

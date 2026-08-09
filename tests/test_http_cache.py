@@ -329,3 +329,38 @@ def test_both_caps_off_is_the_old_unbounded_read(monkeypatch):
 
     response = httpx.Response(200, stream=_Small())
     assert http_cache.read_body_within(response, deadline=0) == b"body"
+
+
+def test_replay_can_be_told_to_let_the_model_out(store, monkeypatch, capsys):
+    """Replay pins the CORPUS. Pinning the model too makes the layer unusable for the one
+    job it is most needed for: iterating on the LLM over a fixed corpus. Every model call
+    became a synthetic 504, so a run measuring how often the model declines would read
+    100% backend error -- which is why the rationale layer could never be exercised offline
+    at all. Opt-in, and it announces itself, because a replay that quietly reaches the
+    network is worth less than one that refuses to."""
+    monkeypatch.setenv("LEXORA_REPLAY_LIVE_LLM", "1")
+    monkeypatch.setenv("LEXORA_LLM_BASE_URL", "https://llmapi.example.com/v1")
+    calls = []
+    tr = RecordReplayTransport(_upstream(b'{"ok":1}', calls=calls), http_cache.REPLAY)
+
+    with httpx.Client(transport=tr) as c:
+        # The model host goes out live, twice, even though nothing was ever recorded...
+        assert c.post("https://llmapi.example.com/v1/chat").status_code == 200
+        assert c.post("https://llmapi.example.com/v1/chat").status_code == 200
+        # ...while an unrecorded PORTAL is still the honest 504.
+        assert c.get("https://sso.agc.gov.sg/Act/Nope").status_code == 504
+
+    assert len(calls) == 2
+    assert "letting LLM traffic out" in capsys.readouterr().out
+
+
+def test_the_model_is_pinned_by_default(store, monkeypatch):
+    """--offline promises no socket is opened. The escape hatch must stay shut unless
+    someone asks for it by name."""
+    monkeypatch.delenv("LEXORA_REPLAY_LIVE_LLM", raising=False)
+    monkeypatch.setenv("LEXORA_LLM_BASE_URL", "https://llmapi.example.com/v1")
+    calls = []
+    tr = RecordReplayTransport(_upstream(calls=calls), http_cache.REPLAY)
+    with httpx.Client(transport=tr) as c:
+        assert c.post("https://llmapi.example.com/v1/chat").status_code == 504
+    assert calls == []

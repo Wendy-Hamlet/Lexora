@@ -1712,15 +1712,44 @@ def _per_clause_specs(
     # raw score. Scores stay RAW (``_materialize`` normalizes); gate on normalized.
     pool_score: dict[str, float] = {}
     pair_score: dict[tuple[str, str], float] = {}
+    # This floor was inert for the whole of the project's life and is not any more, so it
+    # gets counted. `_normalize_score` was tanh(raw/5) until `addead5` (2026-07-28), which
+    # saturates at 1.000 for any real BM25 score, so `min_score` could not exclude a single
+    # candidate at any setting below 1.0. Rescaled to tanh(raw/40) it bites: the default
+    # 0.35 now means raw >= 14.6. That is a live cut on POOL ENTRY -- the one stage whose
+    # documented job is pure recall, widened to pool_k=40 precisely because a gold section
+    # can sit at rank 38 (measured ceiling: pool 3 -> 38%, 20 -> 76%, 40 -> 95%). A gate
+    # that silently changed from "never fires" to "fires" is this project's recurring bug;
+    # the least it can do is say how much it took.
+    dropped, dropped_max = 0, 0.0
+    dropped_ids: set[str] = set()
     for indicator in indicators:
         for hit in retrieve_candidates(
             indicator, profile, index, top_k=pool_k, pool_k=max(pool_k, 20),
             use_semantic=use_semantic, reranker=reranker,
         ):
             if _normalize_score(hit.score) < min_score:
+                dropped += 1
+                dropped_ids.add(hit.clause_id)
+                dropped_max = max(dropped_max, hit.score)
                 continue
             pool_score[hit.clause_id] = max(pool_score.get(hit.clause_id, 0.0), hit.score)
             pair_score[(indicator.submission_id, hit.clause_id)] = hit.score
+    # Logged unconditionally. The pool size IS the judge's bill for this document and the
+    # ceiling on what it can possibly find, so it is worth knowing on every run, not only
+    # on runs where the floor happened to bite. Two rejection numbers, because only the
+    # second is about recall: the pool is a UNION keyed by clause, so a clause turned away
+    # under one indicator can still walk in under another, and counting rejected
+    # (indicator, clause) PAIRS overstates the damage. What the judge never gets to see is
+    # the clauses that got in under nothing.
+    shut_out = dropped_ids - set(pool_score)
+    logger.info(
+        "pool is %d clause(s); min_score=%.2f rejected %d of %d (indicator, clause) "
+        "pair(s), shutting %d clause(s) out entirely%s",
+        len(pool_score), min_score, dropped, dropped + len(pair_score), len(shut_out),
+        f" (best rejected raw {dropped_max:.1f} = {_normalize_score(dropped_max):.3f})"
+        if dropped else "",
+    )
     if not pool_score:
         return [], 0, 0
 

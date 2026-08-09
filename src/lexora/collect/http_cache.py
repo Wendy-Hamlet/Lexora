@@ -492,16 +492,53 @@ def store() -> Store:
         return _STORE
 
 
+def llm_passthrough_host() -> str | None:
+    """Host that REPLAY should let out to the network, or ``None`` (the default).
+
+    Replay exists to pin the CORPUS. It should not have to pin the model as well. When the
+    point of a run is to iterate on the LLM layer over a fixed corpus -- retune a guard,
+    fill the rationale cache, measure how often the model declines -- intercepting the model
+    turns every call into a synthetic 504, and the measurement reads 100% backend error.
+    That is not a reproducible run, it is an unusable one, and it is why the rationale layer
+    could never be exercised offline at all.
+
+    Off by default, because ``--offline`` promises that no socket is opened and this breaks
+    that promise for exactly one host. Opt in with ``LEXORA_REPLAY_LIVE_LLM=1``; every run
+    that uses it says so, loudly, once -- a replay that quietly reached the network would be
+    worth less than no replay at all.
+    """
+    if os.environ.get("LEXORA_REPLAY_LIVE_LLM", "").lower() not in (
+        "1", "true", "yes", "on",
+    ):
+        return None
+    from lexora.config import env_value
+
+    base = env_value("LEXORA_LLM_BASE_URL", "", "OPENAI_BASE_URL")
+    host = httpx.URL(base).host if base else ""
+    return host or None
+
+
 class RecordReplayTransport(httpx.BaseTransport):
     """Wraps a real transport: records what it returns, or answers from the store."""
 
     def __init__(self, inner: httpx.BaseTransport, cache_mode: str) -> None:
         self._inner = inner
         self._mode = cache_mode
+        self._llm_host = llm_passthrough_host() if cache_mode == REPLAY else None
+        self._passed_through = 0
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         body = request.content or b""
         method, url = request.method, str(request.url)
+        if self._llm_host and request.url.host == self._llm_host:
+            # Announce it once per transport. A replay that reaches the network without
+            # saying so is a worse artifact than one that refuses to.
+            if not self._passed_through:
+                print(f"  !! replay: letting LLM traffic out to {self._llm_host} live "
+                      "(LEXORA_REPLAY_LIVE_LLM=1). The corpus is replayed; the model is not.")
+            self._passed_through += 1
+            clamp_read_timeout(request, body_idle_deadline())
+            return self._inner.handle_request(request)
         # Every client in the process comes through here while recording, which makes it
         # the one place that can put a socket-level deadline on all of them -- the same
         # reason `install()` patches the constructor instead of the call sites.

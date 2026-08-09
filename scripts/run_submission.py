@@ -281,6 +281,7 @@ def run_one(
     *,
     budget: int,
     verify: bool,
+    min_score: float = 0.35,
     rationale_llm: bool = False,
     metadata_llm: bool = False,
     amendment_llm: bool = False,
@@ -349,7 +350,8 @@ def run_one(
               "using the regex amendment parser only.")
     result = run_pipeline_map(
         portal=profile.portals[0], profile=profile, indicators=indicators,
-        budget=budget, timeout=timeout, verifier=verifier, rationale_gen=rationale_gen,
+        budget=budget, timeout=timeout, min_score=min_score,
+        verifier=verifier, rationale_gen=rationale_gen,
         meta_extractor=meta_extractor, llm_workers=llm_workers, doc_workers=doc_workers,
         fetch_min_interval=fetch_min_interval, serial_fetch=serial_fetch,
         secondary_signals=secondary, amendment_extractor=amendment_extractor,
@@ -693,6 +695,15 @@ def main() -> None:
     ap.add_argument("-j", "--jurisdiction", default="all", help="sg|au|my|all")
     ap.add_argument("--budget", type=int, default=20, help="Max instruments per economy")
     ap.add_argument("--timeout", type=float, default=60.0)
+    # Reachable from the production entry point because it is no longer inert. Until
+    # `addead5` (2026-07-28) `_normalize_score` saturated at 1.000, so this floor could not
+    # exclude a single candidate at any setting; rescaled, the default 0.35 means raw BM25
+    # >= 14.6 and it now drops ~40% of retrieved candidates BEFORE the judge sees them --
+    # on the one stage whose documented job is pure recall. A live gate you cannot set
+    # without editing source is a gate nobody will ever measure.
+    ap.add_argument("--min-score", type=float, default=0.35,
+                    help="Normalized BM25 floor for POOL ENTRY in the per-clause lane "
+                         "(0 = let the judge decide everything retrieval surfaced)")
     ap.add_argument("--verify", action="store_true",
                     help="Tighten mappings with the legacy pick-one LLM verifier "
                          "(≤1 clause/indicator/doc; needs LEXORA_LLM_* endpoint)")
@@ -854,6 +865,7 @@ def main() -> None:
 
     def _run(iso: str):
         return run_one(iso, budget=args.budget, verify=args.verify,
+                       min_score=args.min_score,
                        rationale_llm=args.rationale_llm, metadata_llm=args.metadata_llm,
                        amendment_llm=args.amendment_llm,
                        timeout=args.timeout, llm_workers=args.llm_workers,
