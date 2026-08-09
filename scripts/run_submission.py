@@ -702,8 +702,12 @@ def main() -> None:
     # on the one stage whose documented job is pure recall. A live gate you cannot set
     # without editing source is a gate nobody will ever measure.
     ap.add_argument("--min-score", type=float, default=0.35,
-                    help="Normalized BM25 floor for POOL ENTRY in the per-clause lane "
-                         "(0 = let the judge decide everything retrieval surfaced)")
+                    help="Normalized BM25 floor for the RANKING lane (used when the judge "
+                         "is off or has been declared dead)")
+    ap.add_argument("--pool-min-score", type=float, default=None,
+                    help="Normalized BM25 floor for POOL ENTRY in the per-clause lane. "
+                         "Default 0: the judge decides what retrieval surfaced, which is "
+                         "worth +3 citations per Singapore run for +11.7%% judge calls")
     ap.add_argument("--verify", action="store_true",
                     help="Tighten mappings with the legacy pick-one LLM verifier "
                          "(≤1 clause/indicator/doc; needs LEXORA_LLM_* endpoint)")
@@ -799,6 +803,12 @@ def main() -> None:
     ap.add_argument("--verbose", action="store_true",
                     help="Do not quieten httpx/openai/PIL loggers.")
     args = ap.parse_args()
+
+    # The per-clause pool floor lives in the environment (`pipeline._pool_min_score`) so
+    # that both entry points and the bench share one knob. Only override when asked, so an
+    # explicit LEXORA_MAP_POOL_MIN_SCORE in the environment still wins over the default.
+    if args.pool_min_score is not None:
+        os.environ["LEXORA_MAP_POOL_MIN_SCORE"] = str(args.pool_min_score)
 
     # OCR defaults ON for submission (kill the silent-scan-drop footgun). An explicit
     # LEXORA_OCR in the environment still wins; --no-ocr forces it off.

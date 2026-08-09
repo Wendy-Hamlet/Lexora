@@ -169,6 +169,34 @@ def _degraded_min_score() -> float:
         return 0.7
 
 
+def _pool_min_score() -> float:
+    """Relevance floor for POOL ENTRY in the per-clause lane. Default **0** — none.
+
+    The two lanes want opposite things from a floor and now have separate knobs. The
+    ranking lane needs one (`min_score`): it has no way to say "this indicator has nothing
+    here", so it emits top_k for every indicator and a weak floor is how a document ends up
+    cited against indicators it has nothing to do with. The per-clause pool is the
+    opposite: it is a pure RECALL gate, and the judge — not the rank — decides what ships
+    (commit e4590d6). A clause the judge never sees it can never admit.
+
+    Measured 2026-08-09 on a full Singapore replay with the judge really judging (0
+    documents degraded): dropping this floor from 0.35 to 0 grows the pool 8,019 -> 8,958
+    clauses (+11.7%) and yields 181 -> 184 citations with none lost. All three recovered
+    rows scored BELOW the old floor against their own indicator (0.186-0.299), and one is
+    PDPA 2012 Schedule 2 s.3 — disclosure of patient data to a public agency for policy
+    review, which is exactly what P7-I5 (government access without court orders) asks for.
+    A lexical score is a poor proxy for legal relevance, which is the whole reason the
+    judge was made the decision.
+
+    ``LEXORA_MAP_POOL_MIN_SCORE`` restores a floor; the cost of not having one is judge
+    calls, and those are cached per corpus, so it is paid once.
+    """
+    try:
+        return float(os.environ.get("LEXORA_MAP_POOL_MIN_SCORE", "0"))
+    except ValueError:
+        return 0.0
+
+
 def _judge_breaker_at() -> int:
     """Consecutive judge failures after which we stop calling it for this document.
 
@@ -1699,9 +1727,11 @@ def _per_clause_specs(
     picks; and on both, every indicator the legal group marked N/A came back EMPTY —
     the padding those N/A false positives came from is gone.
 
-    ``min_score`` still gates pool entry, and each indicator's boundary rule still applies
-    (both tightening-only). ``top_k``/``rel_floor`` are accepted for signature
-    compatibility with the ranking lane and deliberately unused."""
+    Pool entry has its OWN floor (:func:`_pool_min_score`, default 0 = none), not the
+    ranking lane's ``min_score``: the two lanes want opposite things from a floor. Each
+    indicator's boundary rule still applies (tightening-only). ``min_score``/``top_k``/
+    ``rel_floor`` are accepted for signature compatibility with the ranking lane and
+    deliberately unused here."""
     ind_by_id = {i.submission_id: i for i in indicators}
     # Recall gate: a wide per-indicator pool, unioned. Wide because the judge — not the
     # rank — decides: a gold section sitting at BM25 rank 38 (MY 7.1 s.45) is unreachable
@@ -1712,15 +1742,14 @@ def _per_clause_specs(
     # raw score. Scores stay RAW (``_materialize`` normalizes); gate on normalized.
     pool_score: dict[str, float] = {}
     pair_score: dict[tuple[str, str], float] = {}
-    # This floor was inert for the whole of the project's life and is not any more, so it
-    # gets counted. `_normalize_score` was tanh(raw/5) until `addead5` (2026-07-28), which
-    # saturates at 1.000 for any real BM25 score, so `min_score` could not exclude a single
-    # candidate at any setting below 1.0. Rescaled to tanh(raw/40) it bites: the default
-    # 0.35 now means raw >= 14.6. That is a live cut on POOL ENTRY -- the one stage whose
-    # documented job is pure recall, widened to pool_k=40 precisely because a gold section
-    # can sit at rank 38 (measured ceiling: pool 3 -> 38%, 20 -> 76%, 40 -> 95%). A gate
-    # that silently changed from "never fires" to "fires" is this project's recurring bug;
-    # the least it can do is say how much it took.
+    # Default 0: the judge decides, not the rank. Still counted, because this floor was
+    # inert for most of the project's life (`_normalize_score` was tanh(raw/5) until
+    # `addead5`, which saturates at 1.000 for any real BM25 score) and then silently became
+    # live at 0.35 = raw >= 14.6, cutting ~40% of retrieved pairs before the judge saw
+    # them. A gate that changes from "never fires" to "fires" without saying so is this
+    # project's recurring bug; anyone who sets `LEXORA_MAP_POOL_MIN_SCORE` gets told what
+    # it cost. See :func:`_pool_min_score` for the measurement.
+    pool_min = _pool_min_score()
     dropped, dropped_max = 0, 0.0
     dropped_ids: set[str] = set()
     for indicator in indicators:
@@ -1728,7 +1757,7 @@ def _per_clause_specs(
             indicator, profile, index, top_k=pool_k, pool_k=max(pool_k, 20),
             use_semantic=use_semantic, reranker=reranker,
         ):
-            if _normalize_score(hit.score) < min_score:
+            if pool_min and _normalize_score(hit.score) < pool_min:
                 dropped += 1
                 dropped_ids.add(hit.clause_id)
                 dropped_max = max(dropped_max, hit.score)
