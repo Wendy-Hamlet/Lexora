@@ -260,3 +260,46 @@ def test_the_audit_csv_keeps_the_raw_title(tmp_path):
     to_audit_csv([_sg_citation(SSO_PDPA)], out)
     row = next(iter(_csv.DictReader(out.open(encoding="utf-8-sig"))))
     assert row["title"] == SSO_PDPA
+
+
+def test_the_exporter_says_when_a_column_carries_nothing(tmp_path, caplog):
+    """A blank column does not read as "we did not look", it reads as "there is nothing
+    there" -- for Law Number / Ref, that a statute has no number. Measured 2026-08-09:
+    without --metadata-llm both metadata columns are empty on all 181 rows of a Singapore
+    run. This lives at export time, not in a test, because "someone remembers to read every
+    column" is exactly the mechanism that failed at the 2026-08-03 pitch."""
+    import logging
+
+    from lexora.export.csv_exporter import to_csv
+
+    a = _sg_citation("Personal Data Protection Act 2012")
+    dead = [a.model_copy(update={"law_number": "", "last_amended": "",
+                                 "article_path": f"S. {i}", "confidence": 0.9})
+            for i in range(30)]
+    with caplog.at_level(logging.WARNING):
+        to_csv(dead, tmp_path / "dead.csv")
+
+    assert "'Law Number / Ref' is EMPTY on all 30 row(s)" in caplog.text
+    assert "'Last Amended' is EMPTY on all 30 row(s)" in caplog.text
+    # Constant-but-populated is the weaker signal, and it fires too: every row carrying the
+    # same confidence is what a saturated scale looked like before addead5.
+    assert "'Confidence' is the same value on all 30 row(s)" in caplog.text
+    # Economy is legitimately constant on a single-economy run, and an empty Notes is the
+    # healthy state. A warning people learn to ignore protects nothing.
+    assert "'Economy'" not in caplog.text
+    assert "'Notes' is EMPTY" not in caplog.text
+
+    caplog.clear()
+    alive = [a.model_copy(update={"article_path": f"S. {i}", "confidence": 0.3 + i / 100})
+             for i in range(30)]
+    with caplog.at_level(logging.WARNING):
+        to_csv(alive, tmp_path / "ok.csv")
+    assert "EMPTY on all" not in caplog.text
+    assert "'Confidence'" not in caplog.text
+
+    # Below the row threshold the question is not meaningful: a 2-row export is constant in
+    # almost every column by construction.
+    caplog.clear()
+    with caplog.at_level(logging.WARNING):
+        to_csv(dead[:2], tmp_path / "tiny.csv")
+    assert caplog.text == ""
