@@ -99,7 +99,31 @@ spirit: a thing that is either true or false, not a feeling that the code got ni
 
 ---
 
-## Phase 0 — Stop shipping columns that lie (days)
+## Phase 0 — Stop shipping columns that lie (days) — DONE 2026-08-09
+
+Outcome, so the next reader does not have to reconstruct it from commits:
+
+* **The rationale layer is cached** (`df38771`) and stores the model's RAW response, not the
+  answer we accepted. That decision paid for itself the same day: retuning the length guard
+  below was measured over 205 cached answers and 5 live calls.
+* **Every LLM layer says ON or OFF**, in `run_submission.py` and in `cli.py` — the command
+  that survives Phase 2 and was the silent one.
+* **The 29% mystery was our own character cap** (`07b2f70`). Reason-level counters showed 59
+  of 77 fallbacks were `too_long` and only 13 involved the copy guard we had blamed for two
+  months. The model obeys its "max 280 characters" instruction (median 273 over 205
+  responses) but the tail reaches 549, and the cap allowed 20 characters of slack. Raised to
+  1000: **62.8% → 93.2% model-authored**, median rationale length unchanged at 271.
+* **`Confidence` was already fixed** (`addead5`) and the README already documented the judge's
+  non-reproducibility. Both roadmap items were written from memory and were stale.
+* **The floor that replaced them** is measured: see `--min-score` below.
+* **The acceptance check found one more**: `Law Number / Ref` and `Last Amended` are empty on
+  all 181 rows without `--metadata-llm`, because the portal publishes no structured metadata.
+  A permanently empty column lies by omission. Open as task #40, and the column-constancy
+  check itself should become automated rather than something someone remembers to run.
+
+---
+
+### Original plan
 
 Trust is the only asset an open-source verification tool has. Everything currently published that
 overstates itself gets fixed or deleted before strangers read it.
