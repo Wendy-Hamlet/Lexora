@@ -392,7 +392,17 @@ def run_one(
         tokens["cached_prompt"] += cached
         tokens["failed"] += failed
 
-    if meta_extractor._client is not None:
+    # Every LLM layer reports whether it is on or off. `d6e4350` did this for the rationale
+    # layer alone, after the 2026-08-03 pitch; these two kept the old shape, so
+    # `Law Number`, `Last Amended` and the amendment chain could all degrade without the
+    # run saying one word. Same defect, same columns a reader actually looks at.
+    if meta_extractor._client is None:
+        print(
+            f"  LLM metadata [{iso}]: OFF -- Law Number and Last Amended carry only what the "
+            "portal published as structured metadata; nothing is read out of the document "
+            "text. Pass --metadata-llm to have the model extract them."
+        )
+    else:
         print(
             f"  LLM metadata usage [{iso}]: {meta_extractor.extracted} doc(s) extracted, "
             f"{meta_extractor.rejected} field(s) rejected by source-check"
@@ -400,7 +410,13 @@ def run_one(
                if meta_extractor.error_count else "")
         )
         _account("metadata", meta_extractor._client)
-    if amendment_extractor._client is not None:
+    if amendment_extractor._client is None:
+        print(
+            f"  LLM amendment [{iso}]: OFF -- amending instruments are found by the regex "
+            "parser only, so an amendment worded in a way the pattern does not cover is "
+            "silently absent. Pass --amendment-llm to add the model extractor."
+        )
+    else:
         print(
             f"  LLM amendment usage [{iso}]: {amendment_extractor.extracted} amending Act(s) "
             f"extracted, {amendment_extractor.rejected} instruction(s) rejected by source-check"
@@ -421,12 +437,25 @@ def run_one(
             "Pass --rationale-llm to have the model author it."
         )
     else:
+        total = rationale_gen.llm_used + rationale_gen.fallbacks
+        share = f" ({rationale_gen.llm_used / total:.1%} model-authored)" if total else ""
         print(
             f"  LLM rationale usage [{iso}]: {rationale_gen.llm_used} authored, "
-            f"{rationale_gen.fallbacks} fell back to template"
-            + (f" ({rationale_gen.error_count} backend error(s))"
-               if rationale_gen.error_count else "")
+            f"{rationale_gen.fallbacks} fell back to template{share}"
         )
+        # Which guard fired, not just how often something did. Four of the five reasons are
+        # ours, not the model's, and only this line distinguishes "the model declined" from
+        # "we rejected a usable answer".
+        if rationale_gen.fallback_reasons:
+            print(f"    fallback reasons [{iso}]: {rationale_gen.fallback_summary()}")
+        # A cache whose hit rate is invisible is how you mistake a broken run for a cheap
+        # one. Report it the way the judge cache is reported, including when it is off.
+        rc = rationale_gen._cache
+        if rc is None:
+            print(f"    rationale cache [{iso}]: OFF -- every rationale was a live call")
+        else:
+            print(f"    rationale cache [{iso}]: {rc.hits} hit / {rc.misses} miss "
+                  f"({rc.hit_rate:.0%}), {rc.writes} stored")
         _account("rationale", rationale_gen._client)
     if verifier is not None and getattr(verifier, "error_count", 0):
         print(

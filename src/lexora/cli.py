@@ -194,11 +194,17 @@ def map(  # noqa: A001 - CLI verb
         console.print("[yellow]--amendment-llm requested but the LLM backend is unavailable; "
                       "using the regex amendment parser only.[/yellow]")
     console.print(f"[bold]Autonomous multi-map — {profile.jurisdiction} ({profile.iso_code})[/bold]")
+    # Every layer says ON or OFF. Printing only the ON ones is how a full Singapore run
+    # reached the 2026-08-03 pitch judges with a 100%-template Mapping Rationale column and
+    # no line anywhere in its output admitting it: an omission with no output signature.
+    def _lane(name: str, on: bool) -> str:
+        return f" · LLM {name} [green]ON[/green]" if on else f" · LLM {name} [yellow]OFF[/yellow]"
+
     console.print(f"  portal: {portal.name} · {len(indicators)} indicators · budget {budget}"
-                  f"{' · LLM verifier ON' if verifier is not None else ''}"
-                  f"{' · LLM rationale ON' if rationale_gen._client is not None else ''}"
-                  f"{' · LLM metadata ON' if meta_extractor._client is not None else ''}"
-                  f"{' · LLM amendment ON' if amendment_extractor._client is not None else ''}")
+                  + _lane("verifier", verifier is not None)
+                  + _lane("rationale", rationale_gen._client is not None)
+                  + _lane("metadata", meta_extractor._client is not None)
+                  + _lane("amendment", amendment_extractor._client is not None))
 
     result = run_pipeline_map(
         portal=portal, profile=profile, indicators=indicators,
@@ -235,6 +241,31 @@ def map(  # noqa: A001 - CLI verb
         f"  fetched {ok_docs}/{len(result.documents)} full texts · "
         f"{len(result.citations)} citation(s) across instruments"
     )
+
+    # What actually went into the Mapping Rationale column. `run_submission.py` has reported
+    # this since d6e4350; this is the command that survives Phase 2, and it was silent.
+    if rationale_gen._client is None:
+        console.print(
+            "[yellow]  Mapping Rationale: 100% deterministic template[/yellow] — every row "
+            "restates its own section number and indicator name. Pass --rationale-llm to "
+            "have the model author it."
+        )
+    else:
+        used, fell = rationale_gen.llm_used, rationale_gen.fallbacks
+        total = used + fell
+        console.print(
+            f"  Mapping Rationale: {used} model-authored, {fell} template"
+            + (f" ({used / total:.1%} authored)" if total else "")
+        )
+        if rationale_gen.fallback_reasons:
+            console.print(f"    fallback reasons: {rationale_gen.fallback_summary()}")
+        rc = rationale_gen._cache
+        if rc is None:
+            console.print("    rationale cache: [yellow]OFF[/yellow] — every rationale "
+                          "was a live call")
+        else:
+            console.print(f"    rationale cache: {rc.hits} hit / {rc.misses} miss "
+                          f"({rc.hit_rate:.0%}), {rc.writes} stored")
 
     out.parent.mkdir(parents=True, exist_ok=True)
     n = to_jsonld(result.citations, out)

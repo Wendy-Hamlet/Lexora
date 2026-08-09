@@ -501,6 +501,28 @@ the difference between a pipeline you can re-run and one you can only run.
 - The cache ships **empty** (gitignored). Your first run pays the cold cost and judges every
   clause itself; your second run is free and identical to your first.
 
+### The rationale cache
+
+The Mapping Rationale column has the same shape of problem and now has the same answer. A
+rationale is a pure function of `(model, system prompt, rendered user prompt)`, so it is
+cached in `data/cache/rationale.sqlite` under a hash of exactly that, with the same rule:
+change how you ask and the model is asked again; failures are never stored.
+
+This mattered more than the money. Without it, `--rationale-llm` turned a full Malaysia run
+from 554 s into 2,545 s — every rationale a fresh live call, with no cache to replay from.
+The flag was therefore dropped from the full-economy commands, and a full Singapore run was
+demonstrated with a Mapping Rationale column that was 181 of 181 deterministic template.
+**A layer that cannot be replayed is a layer that gets switched off**, and then the output
+column that a human actually reads is the one that quietly degrades.
+
+- What is stored is the model's **raw answer**, not the rationale we accepted. The guards
+  (length, score talk, the 6-word verbatim-copy check) re-run on every read, so tuning a
+  guard can be evaluated across the whole corpus without paying for a single new call. Cache
+  the accepted answer instead and a guard change would leave every stored row untouched —
+  the experiment would measure nothing and look like it worked.
+- `LEXORA_RATIONALE_CACHE=0` bypasses it; `LEXORA_RATIONALE_CACHE_PATH` moves it.
+- Every run prints the hit/miss split, and prints `OFF` when there is no cache at all.
+
 **Open-weight swap = $0.000 per document.** OCR, embedding, parsing, retrieval and crawling
 are already self-hosted; pointing `LEXORA_LLM_BASE_URL` at a local Ollama/vLLM server (see
 *Swapping the LLM*) removes the only metered call. Compute only, no API spend.

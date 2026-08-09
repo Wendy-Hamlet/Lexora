@@ -22,6 +22,7 @@ only), mirroring the verifier, so the offline test suite needs no server.
 from __future__ import annotations
 
 import re
+from collections import Counter
 
 from lexora.models.clause import Clause
 from lexora.models.indicator import RDTIIIndicator
@@ -141,15 +142,65 @@ class RationaleGenerator:
     deterministic template on any failure, over-length, or verbatim-copy output.
 
     ``client`` is ``None`` for the inert (template-only) generator. Counters let a
-    run report how often the LLM was used vs fell back."""
+    run report how often the LLM was used vs fell back.
 
-    def __init__(self, client=None) -> None:
+    WHY THE REASONS ARE COUNTED SEPARATELY. 29.1% of the Round-1 submission's rationales
+    were template despite the LLM layer being on, and for two months nobody could say why,
+    because a single ``fallbacks`` counter was incremented from five different places for
+    five different reasons. "Read the counter" cannot answer the question the counter was
+    added for. Four of those five reasons are OUR guards rejecting the model's answer, not
+    the model failing to give one -- a distinction that decides whether the fix is a better
+    prompt or a less trigger-happy guard.
+
+    ``fallback_reasons`` is keyed by the "+"-joined set of every reason that fired, so the
+    counts sum exactly to ``fallbacks`` AND overlap stays visible: a rationale that both
+    copies the provision and runs long will not be fixed by relaxing the copy check alone.
+    """
+
+    def __init__(self, client=None, cache=None) -> None:
         self._client = client
+        self._cache = cache
         self.llm_used = 0
         self.fallbacks = 0
+        self.fallback_reasons: Counter[str] = Counter()
         self.score_talk_stripped = 0
         self.error_count = 0
         self.last_error_type: str | None = None
+
+    def _record_fallback(self, *reasons: str) -> None:
+        self.fallbacks += 1
+        self.fallback_reasons["+".join(sorted(reasons))] += 1
+
+    def _model_id(self) -> str:
+        return str(getattr(self._client, "model", "") or "")
+
+    def _cached(self, user: str) -> dict | None:
+        """The model's RAW previous answer to this exact question, if we have it.
+
+        Deliberately NOT the accepted rationale: the guards below re-run on every read, so
+        tuning them is measurable over the whole corpus instead of being invisible on cached
+        rows. See :mod:`lexora.cite.rationale_cache`."""
+        if self._cache is None:
+            return None
+        return self._cache.get(self._cache.key(self._model_id(), _SYSTEM, user))
+
+    def _store(self, user: str, data: dict) -> None:
+        if self._cache is None or not isinstance(data, dict):
+            return
+        from lexora.cite.rationale_cache import system_fingerprint
+
+        self._cache.put(
+            self._cache.key(self._model_id(), _SYSTEM, user),
+            self._model_id(),
+            data,
+            system_fingerprint(_SYSTEM),
+        )
+
+    def fallback_summary(self) -> str:
+        """Reasons, commonest first — e.g. ``copied_provision 41, empty 7``."""
+        return ", ".join(
+            f"{reason} {n}" for reason, n in self.fallback_reasons.most_common()
+        )
 
     def generate(
         self,
@@ -165,17 +216,17 @@ class RationaleGenerator:
         template = template_rationale(indicator, profile, clause, article_path)
         if self._client is None:
             return template, ""
-        try:
-            data = self._client.chat(
-                _SYSTEM,
-                self._user_prompt(indicator, profile, clause, article_path),
-                json_schema=_RESPONSE_SCHEMA,
-            )
-        except Exception as exc:  # noqa: BLE001 — never let the LLM break a citation
-            self.error_count += 1
-            self.last_error_type = type(exc).__name__
-            self.fallbacks += 1
-            return template, ""
+        user = self._user_prompt(indicator, profile, clause, article_path)
+        data = self._cached(user)
+        if data is None:
+            try:
+                data = self._client.chat(_SYSTEM, user, json_schema=_RESPONSE_SCHEMA)
+            except Exception as exc:  # noqa: BLE001 — never let the LLM break a citation
+                self.error_count += 1
+                self.last_error_type = type(exc).__name__
+                self._record_fallback("backend_error")
+                return template, ""
+            self._store(user, data)
 
         rationale = (data.get("rationale") or "").strip()
         raw_note = (data.get("notes") or "").strip()
@@ -183,15 +234,21 @@ class RationaleGenerator:
         if review_note != raw_note:
             self.score_talk_stripped += 1
         review_note = f"{_REVIEW_PREFIX} {review_note}" if review_note else ""
-        if (
-            not rationale
-            # A rationale that scores is out of scope, not merely wordy: fall back to
-            # the deterministic template rather than ship it.
-            or _SCORE_TALK.search(rationale)
-            or len(rationale) > RATIONALE_MAX_CHARS
-            or copies_provision(rationale, clause.span.text)
-        ):
-            self.fallbacks += 1
+        # Every reason is evaluated, not short-circuited: which guard fired is the whole
+        # point (see the class docstring), and an `or` chain can only ever name the first.
+        reasons: list[str] = []
+        if not rationale:
+            reasons.append("empty")
+        # A rationale that scores is out of scope, not merely wordy: fall back to the
+        # deterministic template rather than ship it.
+        if _SCORE_TALK.search(rationale):
+            reasons.append("score_talk")
+        if len(rationale) > RATIONALE_MAX_CHARS:
+            reasons.append("too_long")
+        if copies_provision(rationale, clause.span.text):
+            reasons.append("copied_provision")
+        if reasons:
+            self._record_fallback(*reasons)
             return template, review_note
         self.llm_used += 1
         return rationale, review_note
@@ -226,6 +283,18 @@ class RationaleGenerator:
         return "\n".join(lines)
 
 
+def _open_cache():
+    """Best-effort cache. A store we cannot open must cost money, never correctness."""
+    from lexora.cite import rationale_cache
+
+    if not rationale_cache.cache_enabled():
+        return None
+    try:
+        return rationale_cache.RationaleCache()
+    except Exception:  # noqa: BLE001 — unwritable path, locked file, read-only volume
+        return None
+
+
 def make_rationale_generator(use_llm: bool = False) -> RationaleGenerator:
     """Construct a :class:`RationaleGenerator`. Always returns a usable generator:
     template-only when ``use_llm`` is false or the LLM backend is unavailable, so
@@ -237,7 +306,7 @@ def make_rationale_generator(use_llm: bool = False) -> RationaleGenerator:
     if not llm_client.is_available():
         return RationaleGenerator(client=None)
     try:
-        return RationaleGenerator(client=llm_client.LlmClient())
+        return RationaleGenerator(client=llm_client.LlmClient(), cache=_open_cache())
     except Exception:  # noqa: BLE001
         return RationaleGenerator(client=None)
 

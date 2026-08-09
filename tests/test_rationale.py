@@ -171,3 +171,54 @@ def test_a_rationale_that_scores_falls_back_to_the_template():
     out, _note = gen.generate(_indicator(), _profile(), _clause(), "S. 26")
     assert out == template_rationale(_indicator(), _profile(), _clause(), "S. 26")
     assert gen.llm_used == 0 and gen.fallbacks == 1
+
+
+# --- which guard fired ----------------------------------------------------------------
+#
+# 29.1% of the Round-1 submission's rationales were template while the LLM layer was ON,
+# and nobody could say why: one `fallbacks` counter was bumped from five places for five
+# reasons. Four of the five are OUR guards rejecting the model's answer rather than the
+# model failing to give one, and that distinction decides whether the fix is a better
+# prompt or a less trigger-happy guard. These pin the attribution.
+
+_COPY = "transfer personal data to a country or territory"   # 8 words lifted from _TEXT
+
+
+def test_each_fallback_reason_is_named():
+    cases = {
+        "empty": "",
+        "score_talk": "Section 26 conditions outbound flows and should score 0.",
+        "too_long": "Mechanism. " * 40,                       # >300 chars, no copied run
+        "copied_provision": f"Section 26 says an organisation must not {_COPY}.",
+    }
+    for expected, output in cases.items():
+        gen = RationaleGenerator(_FakeClient(output))
+        gen.generate(_indicator(), _profile(), _clause(), "S. 26")
+        assert gen.fallbacks == 1
+        assert gen.fallback_reasons == {expected: 1}, f"{expected} mis-attributed"
+
+    gen = RationaleGenerator(_BoomClient())
+    gen.generate(_indicator(), _profile(), _clause(), "S. 26")
+    assert gen.fallback_reasons == {"backend_error": 1}
+
+
+def test_overlapping_reasons_are_all_recorded_not_just_the_first():
+    """An `or` chain can only ever name the first reason, and the first reason is not
+    the actionable one: a rationale that copies AND runs long is not fixed by relaxing
+    the copy check."""
+    gen = RationaleGenerator(_FakeClient(f"It provides that an organisation must not {_COPY}. "
+                                         + "Mechanism. " * 30))
+    gen.generate(_indicator(), _profile(), _clause(), "S. 26")
+    assert gen.fallback_reasons == {"copied_provision+too_long": 1}
+
+
+def test_reason_counts_sum_to_the_fallback_total():
+    """Keyed by the whole set, so the two numbers can never drift apart — otherwise a
+    percentage computed from either one is quietly wrong."""
+    gen = RationaleGenerator(_FakeClient(""))
+    for _ in range(3):
+        gen.generate(_indicator(), _profile(), _clause(), "S. 26")
+    gen._client = _FakeClient(f"An organisation must not {_COPY}.")
+    gen.generate(_indicator(), _profile(), _clause(), "S. 26")
+    assert sum(gen.fallback_reasons.values()) == gen.fallbacks == 4
+    assert gen.fallback_summary() == "empty 3, copied_provision 1"
